@@ -1,0 +1,290 @@
+<section class="ols-view ols-surface ols-surface--tight isc">
+  <!-- Toolbar -->
+  <div class="isc__toolbar">
+    <div class="isc__search">
+      <svg class="isc__search-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+        <path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      </svg>
+      <input
+        #q
+        type="text"
+        class="isc__search-input"
+        placeholder="Search server hostname…"
+        [value]="query()"
+        (input)="onQuery(q.value)"
+      />
+      @if (query()) {
+        <button type="button" class="isc__clear" (click)="clearQuery(); q.value = ''">Clear</button>
+      }
+    </div>
+
+    <div class="isc__controls">
+      <select #sel class="isc__select" (change)="onIntervalChange(+sel.value)">
+        @for (m of intervals; track m) {
+          <option [value]="m" [selected]="refreshEveryMin() === m">Refresh Every {{ m }} Minutes</option>
+        }
+      </select>
+      <button type="button" class="isc__icon-btn" title="Refresh all" aria-label="Refresh all" (click)="refreshAll()">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button type="button" class="isc__text-btn" (click)="toggleCollapseAll()">
+        {{ anyExpanded() ? 'Collapse All' : 'Expand All' }}
+      </button>
+      <div class="isc__views" role="tablist">
+        <button type="button" class="isc__view" [class.is-active]="view() === 'app'" (click)="setView('app')">By APP</button>
+        <button type="button" class="isc__view" [class.is-active]="view() === 'status'" (click)="setView('status')">By STATUS</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="isc__showing">
+    @if (query()) {
+      Showing servers matching “{{ query() }}”
+    } @else {
+      Showing all servers
+    }
+  </p>
+
+  @if (view() === 'app') {
+    <!-- ============================ BY APPLICATION ============================ -->
+    @for (panel of panels; track trackPanel($index, panel)) {
+      <section class="isc-sec" [class.isc-sec--open]="panel.expanded()">
+        <div class="isc-sec__bar" [class.isc-sec__bar--down]="count(panel, 'down') > 0" (click)="toggle(panel)">
+          <span class="isc-sec__appicon">
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+              <circle cx="12" cy="5" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7" />
+              <circle cx="5.5" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7" />
+              <circle cx="18.5" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7" />
+              <path d="M12 7.4V12M12 12 5.9 15.8M12 12l6.1 3.8" fill="none" stroke="currentColor" stroke-width="1.7" />
+            </svg>
+          </span>
+          <span class="isc-sec__label">{{ panel.label }}</span>
+
+          <div class="isc-sec__counts">
+            @if (count(panel, 'down') > 0) {
+              <span class="isc-cbox isc-cbox--down">{{ count(panel, 'down') }} Stopped</span>
+            }
+            @if (count(panel, 'running') > 0) {
+              <span class="isc-cbox isc-cbox--up">{{ count(panel, 'running') }} Running</span>
+            }
+            @if (count(panel, 'unaccessible') > 0) {
+              <span class="isc-cbox isc-cbox--unacc">{{ count(panel, 'unaccessible') }} Unaccessible</span>
+            }
+          </div>
+
+          <span class="isc-sec__spacer"></span>
+
+          <button
+            type="button"
+            class="isc-sec__refresh"
+            [class.is-spinning]="panel.loading()"
+            title="Refresh {{ panel.label }}"
+            aria-label="Refresh {{ panel.label }}"
+            (click)="refresh(panel); $event.stopPropagation()"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <span class="isc-sec__servers">{{ serverCount(panel) }} servers</span>
+
+          <button type="button" class="isc-sec__chev" [attr.aria-expanded]="panel.expanded()"
+            aria-label="Collapse or expand" (click)="toggle(panel); $event.stopPropagation()">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        @if (panel.expanded()) {
+          <div class="isc-sec__body">
+            @if (panel.loading() && !panel.data()) {
+              <app-loader variant="skeleton" [rows]="3" message="Loading {{ panel.label }} services…" />
+            } @else if (panel.error()) {
+              <div class="isc-empty isc-empty--error">Couldn't load services for {{ panel.label }}. Try refresh.</div>
+            } @else {
+              @let servers = filteredServers(panel);
+              @if (!servers.length) {
+                <div class="isc-empty">No servers match your search.</div>
+              } @else {
+                @for (server of servers; track trackServer($index, server)) {
+                  <div class="isc-srv" [class.isc-srv--open]="isServerExpanded(panel, server.serverId)">
+                    <div class="isc-srv__bar"
+                      [class.isc-srv__bar--down]="serverDown(server) > 0"
+                      [class.isc-srv__bar--unacc]="serverDown(server) === 0 && serverUnaccessible(server) > 0"
+                      [class.isc-srv__bar--up]="serverDown(server) === 0 && serverUnaccessible(server) === 0"
+                      (click)="toggleServer(panel, server.serverId)">
+                      <span class="isc-srv__os" [attr.data-os]="server.os">
+                        @switch (server.os) {
+                          @case ('windows') {
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                              <path fill="currentColor" d="M3 5.5 11 4.3v7.2H3V5.5Zm0 13 8 1.2v-7.1H3v5.9ZM12 4.15 21 3v8.5h-9V4.15ZM12 12.5h9V21l-9-1.25V12.5Z" />
+                            </svg>
+                          }
+                          @default {
+                            <svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true">
+                              <ellipse cx="11" cy="29" rx="3.6" ry="1.9" fill="#f6a800" transform="rotate(-13 11 29)" />
+                              <ellipse cx="21" cy="29" rx="3.6" ry="1.9" fill="#f6a800" transform="rotate(13 21 29)" />
+                              <path fill="#1a1a1a" d="M16 2c-4 0-6.4 3.2-6.4 7.2 0 2-.6 3.2-1.6 5.2C6.8 17 5.6 19 5.6 21.6c0 4.2 4.6 7 10.4 7s10.4-2.8 10.4-7c0-2.6-1.2-4.6-2.4-7.2-1-2-1.6-3.2-1.6-5.2C22.4 5.2 20 2 16 2Z" />
+                              <ellipse cx="16" cy="19.5" rx="5.4" ry="6.8" fill="#fff" />
+                              <ellipse cx="13.4" cy="9.4" rx="2" ry="2.6" fill="#fff" />
+                              <ellipse cx="18.6" cy="9.4" rx="2" ry="2.6" fill="#fff" />
+                              <circle cx="14.2" cy="10" r="1" fill="#1a1a1a" />
+                              <circle cx="17.8" cy="10" r="1" fill="#1a1a1a" />
+                              <path fill="#f6a800" d="M16 9.6c-2 0-3.4 1.1-3.4 2.3 0 1 1.5 1.8 3.4 1.8s3.4-.8 3.4-1.8c0-1.2-1.4-2.3-3.4-2.3Z" />
+                            </svg>
+                          }
+                        }
+                      </span>
+                      <span class="isc-srv__name">{{ server.serverName }}</span>
+
+                      @if (serverDown(server) > 0) {
+                        <span class="isc-badge isc-badge--down">{{ serverDown(server) }} Stopped</span>
+                      }
+                      @if (serverUnaccessible(server) > 0) {
+                        <span class="isc-badge isc-badge--unacc">{{ serverUnaccessible(server) }} Unaccessible</span>
+                      }
+
+                      <span class="isc-sec__spacer"></span>
+
+                      <button
+                        type="button"
+                        class="isc-srv__refresh"
+                        [class.is-spinning]="isServerRefreshing(server.serverId)"
+                        title="Refresh {{ server.serverName }}"
+                        aria-label="Refresh {{ server.serverName }}"
+                        (click)="refreshServer(panel, server); $event.stopPropagation()"
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+                          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                      </button>
+
+                      <button type="button" class="isc-srv__chev" [attr.aria-expanded]="isServerExpanded(panel, server.serverId)"
+                        aria-label="Collapse or expand server" (click)="toggleServer(panel, server.serverId); $event.stopPropagation()">
+                        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                          <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    @if (isServerExpanded(panel, server.serverId)) {
+                      <div class="isc-srv__body">
+                        <div class="isc-table" role="table">
+                          <div class="isc-table__head isc-table__head--srv" role="row">
+                            <span role="columnheader">Service</span>
+                            <span role="columnheader">Status</span>
+                            <span role="columnheader">Last Heartbeat</span>
+                            <span role="columnheader" class="isc-actions-h">Actions</span>
+                          </div>
+                          @for (svc of server.services; track trackService($index, svc)) {
+                            <div class="isc-row isc-row--srv" [class]="'isc-row--' + category(svc.state)" role="row">
+                              <span class="isc-row__name" role="cell" [title]="svc.name">{{ svc.name }}</span>
+                              <span role="cell">
+                                <span class="isc-chip" [class]="'isc-chip--' + category(svc.state)">
+                                  <span class="isc-chip__dot"></span>{{ stateText(svc.state) }}
+                                </span>
+                              </span>
+                              <span class="isc-row__hb" role="cell">
+                                <span class="isc-row__hb-abs">{{ formatDateTime(svc.lastHeartbeat) }}</span>
+                                <span class="isc-row__hb-rel">{{ timeAgo(svc.lastHeartbeat) }}</span>
+                              </span>
+                              <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
+                                <button type="button" class="isc-btn isc-btn--start"
+                                  [disabled]="isUp(svc) || isPending(svc)" (click)="start(panel.app, server, svc)">
+                                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
+                                  Start
+                                </button>
+                                <button type="button" class="isc-btn isc-btn--stop"
+                                  [disabled]="!isUp(svc) || isPending(svc)" (click)="stop(panel.app, server, svc)">
+                                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
+                                  Stop
+                                </button>
+                              </span>
+                            </div>
+                          }
+                        </div>
+                      </div>
+                    }
+                  </div>
+                }
+              }
+            }
+          </div>
+        }
+      </section>
+    }
+  } @else {
+    <!-- ============================== BY STATUS ============================== -->
+    @for (group of statusGroups; track trackStatus($index, group)) {
+      <section class="isc-sec" [class.isc-sec--open]="group.expanded()">
+        <div class="isc-sec__bar" [class]="'isc-sec__bar--cat-' + group.category" (click)="toggleStatus(group)">
+          <span class="isc-sec__label">{{ group.label }}</span>
+          <span class="isc-statusbox" [class]="'isc-statusbox--' + group.category">{{ statusCount(group.category) }}</span>
+          <span class="isc-sec__spacer"></span>
+          <button type="button" class="isc-sec__chev" [attr.aria-expanded]="group.expanded()"
+            aria-label="Collapse or expand" (click)="toggleStatus(group); $event.stopPropagation()">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        @if (group.expanded()) {
+          <div class="isc-sec__body">
+            @let items = statusServices(group.category);
+            @if (!items.length) {
+              <div class="isc-empty">No services in this state.</div>
+            } @else {
+              <div class="isc-table" role="table">
+                <div class="isc-table__head isc-table__head--status" role="row">
+                  <span role="columnheader">Service</span>
+                  <span role="columnheader">Application</span>
+                  <span role="columnheader">Server</span>
+                  <span role="columnheader">Status</span>
+                  <span role="columnheader">Last Heartbeat</span>
+                  <span role="columnheader" class="isc-actions-h">Actions</span>
+                </div>
+                @for (item of items; track trackAgg($index, item)) {
+                  <div class="isc-row isc-row--status" [class]="'isc-row--' + group.category" role="row">
+                    <span class="isc-row__name" role="cell" [title]="item.service.name">{{ item.service.name }}</span>
+                    <span class="isc-row__app" role="cell">{{ item.appLabel }}</span>
+                    <span class="isc-row__server" role="cell">{{ item.server.serverName }}</span>
+                    <span role="cell">
+                      <span class="isc-chip" [class]="'isc-chip--' + category(item.service.state)">
+                        <span class="isc-chip__dot"></span>{{ stateText(item.service.state) }}
+                      </span>
+                    </span>
+                    <span class="isc-row__hb" role="cell">
+                      <span class="isc-row__hb-abs">{{ formatDateTime(item.service.lastHeartbeat) }}</span>
+                      <span class="isc-row__hb-rel">{{ timeAgo(item.service.lastHeartbeat) }}</span>
+                    </span>
+                    <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
+                      <button type="button" class="isc-btn isc-btn--start"
+                        [disabled]="isUp(item.service) || isPending(item.service)" (click)="start(item.app, item.server, item.service)">
+                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
+                        Start
+                      </button>
+                      <button type="button" class="isc-btn isc-btn--stop"
+                        [disabled]="!isUp(item.service) || isPending(item.service)" (click)="stop(item.app, item.server, item.service)">
+                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
+                        Stop
+                      </button>
+                    </span>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </section>
+    }
+  }
+</section>

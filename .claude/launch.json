@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ols-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/@angular/cli/bin/bootstrap.js", "serve", "--port", "4200", "--no-hmr"],
+      "port": 4200
+    }
+  ]
+}

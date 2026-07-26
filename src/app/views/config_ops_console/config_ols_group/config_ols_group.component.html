@@ -1,0 +1,37 @@
+<section class="ols-view ols-surface ols-surface--tight">
+  <div class="scope-tabs" role="tablist">
+    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'config'" (click)="activeTab.set('config')" role="tab">
+      Config
+    </button>
+    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'misc'" (click)="activeTab.set('misc')" role="tab">
+      MISC Activity
+    </button>
+  </div>
+
+  @if (activeTab() === 'config') {
+    <app-grid-data
+      #grid
+      [columns]="columns"
+      [rows]="rows()"
+      [loading]="loading()"
+      [expandable]="true"
+      [viewable]="true"
+      [getDetail]="getDetail"
+      [isRowActive]="isRowActive"
+      [isRowCob]="isRowCob"
+      [readOnly]="readOnly()"
+      idField="table_name"
+      gridHeight="calc(100vh - 268px)"
+      (action)="onAction($event)"
+      (refreshRequested)="reload()"
+      (rollData)="onRollData($event, grid)"
+      (retrieveRequested)="onRetrieve($event, grid)"
+      (rowsCreated)="onRowsCreated($event)"
+    />
+  } @else {
+    <div class="ols-card scope-misc">
+      <h3 class="scope-misc__title">MISC Activity</h3>
+      <p class="scope-misc__text">Reserved for miscellaneous activity for this scope. Coming soon.</p>
+    </div>
+  }
+</section>

@@ -1,0 +1,364 @@
+/* ============================================================================
+   AI-powered 3D sign-in — deep-space backdrop, neural motif, extruded brand,
+   tactile 3D SSO button. Self-contained dark theme.
+   ========================================================================== */
+:host {
+  display: block;
+}
+
+.ai-login {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(1400px 900px at 50% -20%, #17203a, #070a13 64%);
+  color: #e7ecf5;
+  perspective: 1600px;
+}
+
+/* ---- Backdrop ------------------------------------------------------------- */
+.ai-login__bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ai-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.55;
+  will-change: transform;
+
+  &--1 { width: 540px; height: 540px; left: -150px; top: -130px; background: radial-gradient(circle at 30% 30%, #4d5dfb, transparent 70%); animation: ai-float-1 16s ease-in-out infinite; }
+  &--2 { width: 470px; height: 470px; right: -130px; top: 30px; background: radial-gradient(circle at 40% 40%, #23d3a3, transparent 70%); animation: ai-float-2 19s ease-in-out infinite; }
+  &--3 { width: 540px; height: 540px; left: 28%; bottom: -240px; background: radial-gradient(circle at 50% 50%, #a855f7, transparent 70%); animation: ai-float-3 22s ease-in-out infinite; }
+}
+
+.ai-grid {
+  position: absolute;
+  inset: 42% -20% -30% -20%;
+  background-image:
+    linear-gradient(rgba(120, 140, 255, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 140, 255, 0.16) 1px, transparent 1px);
+  background-size: 46px 46px;
+  transform: rotateX(74deg);
+  transform-origin: center top;
+  mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
+  animation: ai-grid-scroll 6s linear infinite;
+}
+
+.ai-beam {
+  position: absolute;
+  width: 2px;
+  height: 150%;
+  top: -25%;
+  background: linear-gradient(transparent, rgba(120, 140, 255, 0.5), transparent);
+  filter: blur(1px);
+
+  &--1 { left: 32%; transform: rotate(16deg); animation: ai-beam 7s ease-in-out infinite; }
+  &--2 { right: 28%; transform: rotate(-13deg); animation: ai-beam 9s ease-in-out infinite reverse; }
+}
+
+.ai-net {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.5;
+
+  &__lines line { stroke: rgba(130, 150, 255, 0.35); stroke-width: 1; stroke-dasharray: 6 8; animation: ai-dash 5s linear infinite; }
+  &__nodes circle { fill: #6b78ff; animation: ai-node 3.2s ease-in-out infinite; }
+  &__nodes circle:nth-child(2n) { fill: #23d3a3; animation-delay: 0.8s; }
+  &__nodes circle:nth-child(3n) { fill: #a855f7; animation-delay: 1.6s; }
+}
+
+/* ---- 3D card ------------------------------------------------------------- */
+.ai-login__stage {
+  position: relative;
+  z-index: 1;
+  transform-style: preserve-3d;
+  animation: ai-stage-float 8s ease-in-out infinite;
+}
+
+.ai-card {
+  position: relative;
+  width: min(92vw, 400px);
+  padding: 34px 32px 24px;
+  text-align: center;
+  border-radius: 24px;
+  background: linear-gradient(160deg, rgba(30, 39, 66, 0.82), rgba(12, 17, 30, 0.92));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 40px 90px rgba(0, 0, 0, 0.6),
+    0 8px 0 rgba(255, 255, 255, 0.02),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+  transform: rotateX(8deg);
+  transform-style: preserve-3d;
+  animation: ai-card-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: 24px;
+    padding: 1px;
+    background: linear-gradient(135deg, #4d5dfb, #23d3a3, #a855f7);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0.6;
+    pointer-events: none;
+  }
+}
+
+.ai-card__sheen {
+  position: absolute;
+  top: -60%;
+  left: -30%;
+  width: 55%;
+  height: 220%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+  transform: rotate(18deg);
+  animation: ai-sheen 6s ease-in-out infinite;
+}
+
+/* ---- AI core ------------------------------------------------------------- */
+.ai-core {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin: 2px auto 12px;
+  transform: translateZ(40px);
+}
+
+.ai-core__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+
+  &--1 { border-top-color: #6b78ff; border-right-color: rgba(107, 120, 255, 0.3); animation: ai-spin 3s linear infinite; }
+  &--2 { inset: 13px; border-bottom-color: #23d3a3; border-left-color: rgba(35, 211, 163, 0.3); animation: ai-spin 2.2s linear infinite reverse; }
+  &--3 { inset: 26px; border-top-color: #a855f7; border-right-color: rgba(168, 85, 247, 0.3); animation: ai-spin 1.6s linear infinite; }
+}
+
+.ai-core__orbit {
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  animation: ai-spin 6s linear infinite;
+
+  .ai-core__sat {
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    width: 9px;
+    height: 9px;
+    margin-left: -4.5px;
+    border-radius: 50%;
+    background: #23d3a3;
+    box-shadow: 0 0 14px #23d3a3;
+  }
+}
+
+.ai-core__dot {
+  position: absolute;
+  inset: 40px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #cfe0ff, #4d5dfb 70%);
+  box-shadow: 0 0 26px rgba(107, 120, 255, 0.85);
+  animation: ai-pulse 2s ease-in-out infinite;
+}
+
+/* ---- Extruded 3D brand + logo ------------------------------------------- */
+.ai-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 2px 0 22px;
+  transform-style: preserve-3d;
+}
+
+.ai-brand__logo {
+  height: clamp(2.6rem, 9vw, 3.6rem);
+  width: auto;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 18px rgba(107, 120, 255, 0.55));
+  animation: ai-brand-float 5s ease-in-out infinite;
+}
+
+.ai-brand3d {
+  margin: 0;
+  font-size: clamp(3rem, 12vw, 4.4rem);
+  font-weight: 900;
+  letter-spacing: 10px;
+  padding-left: 10px;
+  color: #f2f5ff;
+  transform: translateZ(60px) rotateX(14deg);
+  text-shadow:
+    0 1px 0 #cfd8ff,
+    0 2px 0 #b3bff2,
+    0 3px 0 #97a5e2,
+    0 4px 0 #7f8ed2,
+    0 5px 0 #6a79c0,
+    0 6px 0 #56659f,
+    0 9px 14px rgba(0, 0, 0, 0.55),
+    0 0 34px rgba(107, 120, 255, 0.6);
+  animation: ai-brand-float 5s ease-in-out infinite;
+}
+
+/* ---- 3D SSO button ------------------------------------------------------- */
+.ai-sso {
+  position: relative;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  transform: translateZ(30px);
+
+  &__glow {
+    position: absolute;
+    inset: -5px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #6b78ff, #23d3a3);
+    filter: blur(16px);
+    opacity: 0.45;
+    animation: ai-pulse 3s ease-in-out infinite;
+  }
+
+  &__inner {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 15px 18px;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: #fff;
+    background: linear-gradient(135deg, #5a68ff, #4d5dfb 42%, #23d3a3 135%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.4),
+      inset 0 -3px 0 rgba(0, 0, 0, 0.28),
+      0 10px 0 #2c37a0,
+      0 18px 34px rgba(77, 93, 251, 0.5);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  &:hover:not(:disabled) .ai-sso__inner {
+    transform: translateY(-2px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      inset 0 -3px 0 rgba(0, 0, 0, 0.28),
+      0 12px 0 #2c37a0,
+      0 22px 42px rgba(77, 93, 251, 0.6);
+  }
+
+  &:active:not(:disabled) .ai-sso__inner {
+    transform: translateY(7px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.25),
+      0 3px 0 #2c37a0,
+      0 8px 18px rgba(77, 93, 251, 0.45);
+  }
+
+  &:disabled {
+    cursor: progress;
+    .ai-sso__inner { opacity: 0.8; }
+  }
+}
+
+.ai-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 18px 0 0;
+  font-size: 12px;
+  color: #8b95b3;
+
+  &__dot { width: 7px; height: 7px; border-radius: 50%; background: #23d3a3; box-shadow: 0 0 10px #23d3a3; animation: ai-pulse 1.8s ease-in-out infinite; }
+}
+
+.ai-error {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: #ff8f8f;
+  background: rgba(239, 83, 83, 0.12);
+  border: 1px solid rgba(239, 83, 83, 0.3);
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+
+.ai-foot {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: #6b7492;
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+
+  &__pulse {
+    position: relative;
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #39ffb0;
+    box-shadow: 0 0 8px #39ffb0, 0 0 16px rgba(57, 255, 176, 0.7);
+    animation: ai-fluoro 1.8s ease-in-out infinite;
+
+    &::after {
+      content: "";
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 1px solid rgba(57, 255, 176, 0.6);
+      animation: ai-ripple 1.8s ease-out infinite;
+    }
+  }
+}
+
+@keyframes ai-fluoro {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 8px #39ffb0, 0 0 16px rgba(57, 255, 176, 0.7); }
+  50% { transform: scale(1.25); box-shadow: 0 0 12px #39ffb0, 0 0 28px rgba(57, 255, 176, 0.95); }
+}
+
+@keyframes ai-ripple {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+
+/* ---- Keyframes ----------------------------------------------------------- */
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+@keyframes ai-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.15); opacity: 0.75; } }
+@keyframes ai-sheen { 0%, 100% { left: -40%; } 50% { left: 120%; } }
+@keyframes ai-card-in { from { opacity: 0; transform: rotateX(8deg) translateY(28px) scale(0.97); } to { opacity: 1; transform: rotateX(8deg) translateY(0) scale(1); } }
+@keyframes ai-stage-float { 0%, 100% { transform: translateY(0) rotateY(-3deg); } 50% { transform: translateY(-10px) rotateY(3deg); } }
+@keyframes ai-brand-float { 0%, 100% { transform: translateZ(60px) rotateX(14deg) translateY(0); } 50% { transform: translateZ(60px) rotateX(14deg) translateY(-6px); } }
+@keyframes ai-dash { to { stroke-dashoffset: -140; } }
+@keyframes ai-node { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes ai-grid-scroll { to { background-position: 0 46px; } }
+@keyframes ai-beam { 0%, 100% { opacity: 0.2; transform: translateY(0) rotate(16deg); } 50% { opacity: 0.7; transform: translateY(30px) rotate(16deg); } }
+@keyframes ai-float-1 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(40px, 30px); } }
+@keyframes ai-float-2 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-36px, 40px); } }
+@keyframes ai-float-3 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(30px, -34px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-orb, .ai-grid, .ai-beam, .ai-net__lines line, .ai-net__nodes circle,
+  .ai-card__sheen, .ai-core__ring, .ai-core__orbit, .ai-core__dot,
+  .ai-brand3d, .ai-brand__logo, .ai-sso__glow, .ai-foot__pulse, .ai-foot__pulse::after,
+  .ai-card, .ai-login__stage {
+    animation: none;
+  }
+}

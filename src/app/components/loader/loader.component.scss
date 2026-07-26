@@ -1,0 +1,178 @@
+:host {
+  display: block;
+}
+
+/* Overlay mode — floats above the host panel with a blurred backdrop */
+:host(.ols-loader-host--overlay) {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--cui-body-bg, #fff) 68%, transparent);
+  backdrop-filter: blur(3px) saturate(1.1);
+  animation: ols-fade-in .18s ease both;
+}
+
+.ols-loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 18px;
+}
+
+/* ---- Rings ---------------------------------------------------------------- */
+.ols-loader__rings {
+  position: relative;
+  width: var(--ols-loader-size, 46px);
+  height: var(--ols-loader-size, 46px);
+  display: grid;
+  place-items: center;
+}
+
+.ols-loader[data-size='sm'] .ols-loader__rings { --ols-loader-size: 28px; }
+.ols-loader[data-size='lg'] .ols-loader__rings { --ols-loader-size: 66px; }
+
+.ols-loader__ring {
+  position: absolute;
+  border-radius: 50%;
+  /* conic gradient masked into a ring */
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+
+  &--outer {
+    inset: 0;
+    background: conic-gradient(from 0deg, transparent 0deg, var(--cui-primary, #4d5dfb) 140deg, #23d3a3 260deg, transparent 320deg);
+    animation: ols-spin 1.15s cubic-bezier(.6, .05, .35, .95) infinite;
+  }
+
+  &--inner {
+    inset: 22%;
+    background: conic-gradient(from 180deg, transparent 0deg, #23d3a3 120deg, var(--cui-primary, #4d5dfb) 240deg, transparent 300deg);
+    animation: ols-spin-rev 1.6s cubic-bezier(.6, .05, .35, .95) infinite;
+    opacity: .85;
+  }
+}
+
+.ols-loader__core {
+  width: 18%;
+  height: 18%;
+  min-width: 5px;
+  min-height: 5px;
+  border-radius: 50%;
+  background: var(--cui-primary, #4d5dfb);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--cui-primary, #4d5dfb) 70%, transparent);
+  animation: ols-pulse 1.15s ease-in-out infinite;
+}
+
+.ols-loader__msg {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: .2px;
+  color: var(--cui-secondary-color, #6c757d);
+
+  &--center {
+    text-align: center;
+    margin-top: 10px;
+  }
+}
+
+/* ---- Indeterminate bar ---------------------------------------------------- */
+.ols-loader--bar {
+  width: 100%;
+  padding: 8px 0;
+  gap: 8px;
+}
+
+.ols-loader__bar {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--cui-tertiary-bg, #eceef3);
+
+  span {
+    position: absolute;
+    inset-block: 0;
+    width: 38%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, transparent, var(--cui-primary, #4d5dfb), #23d3a3, transparent);
+    animation: ols-sweep 1.1s ease-in-out infinite;
+  }
+}
+
+/* ---- Skeleton ------------------------------------------------------------- */
+.ols-skeleton {
+  width: 100%;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ols-skeleton__row {
+  display: grid;
+  grid-template-columns: 60px 1fr 140px 80px;
+  gap: 14px;
+  align-items: center;
+}
+
+.ols-skeleton__cell {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--cui-tertiary-bg, #eceef3) 25%,
+    color-mix(in srgb, var(--cui-primary, #4d5dfb) 12%, var(--cui-tertiary-bg, #eceef3)) 37%,
+    var(--cui-tertiary-bg, #eceef3) 63%
+  );
+  background-size: 400% 100%;
+  animation: ols-shimmer 1.3s ease infinite;
+
+  &--sm { width: 70%; }
+  &--md { width: 85%; }
+  &--lg { width: 100%; }
+}
+
+/* ---- Keyframes ------------------------------------------------------------ */
+@keyframes ols-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ols-spin-rev {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes ols-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.45); opacity: .55; }
+}
+
+@keyframes ols-sweep {
+  0% { inset-inline-start: -40%; }
+  100% { inset-inline-start: 100%; }
+}
+
+@keyframes ols-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@keyframes ols-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .ols-loader__ring,
+  .ols-loader__core,
+  .ols-loader__bar span,
+  .ols-skeleton__cell {
+    animation-duration: 2.4s;
+  }
+}

@@ -1,0 +1,29 @@
+<!-- Mounted only while open — a closed CoreUI modal lingers as a full-screen
+     transparent overlay that intercepts clicks across the whole app. -->
+@if (payload()) {
+<c-modal
+  size="lg"
+  scrollable
+  [visible]="true"
+  (visibleChange)="onVisibleChange($event)"
+  aria-labelledby="valueModalTitle"
+>
+  <c-modal-header>
+    <h5 cModalTitle id="valueModalTitle" class="ols-value-modal__title">
+      <span class="ols-value-modal__badge">{{ payload()?.type }}</span>
+      {{ payload()?.field }}
+    </h5>
+    <button cButtonClose (click)="close()" aria-label="Close"></button>
+  </c-modal-header>
+  <c-modal-body>
+    @if (payload()?.type === 'blob') {
+      <p class="text-body-secondary small mb-2">Binary content (base64 preview):</p>
+    }
+    <pre class="ols-value-modal__content"><code>{{ formatted() }}</code></pre>
+  </c-modal-body>
+  <c-modal-footer>
+    <button cButton color="secondary" variant="outline" size="sm" (click)="copy()">Copy</button>
+    <button cButton color="primary" size="sm" (click)="close()">Close</button>
+  </c-modal-footer>
+</c-modal>
+}

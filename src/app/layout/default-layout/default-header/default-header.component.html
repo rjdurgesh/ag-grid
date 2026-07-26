@@ -1,0 +1,66 @@
+<ng-container>
+  <c-container [fluid]="true" class="border-bottom px-4">
+    <button
+      [cSidebarToggle]="sidebarId()"
+      cHeaderToggler
+      class="btn"
+      toggle="visible"
+      style="margin-inline-start: -14px;"
+      aria-label="Toggle sidebar navigation"
+    >
+      <svg cIcon name="cilMenu" size="lg"></svg>
+    </button>
+
+    <!-- Live memory-usage monitor (fed by ArrowStreamService) -->
+    <div class="ols-memory d-none d-md-flex align-items-center ms-2">
+      <svg cIcon name="cilSpeedometer" size="lg" class="ols-memory__icon me-2"></svg>
+      @if (memory(); as m) {
+        <div class="ols-memory__body">
+          <div class="ols-memory__label">
+            Memory Usage:
+            <span class="ols-memory__stat">Free: <b>{{ m.free }}{{ m.unit }}</b></span>,
+            <span class="ols-memory__stat">Used: <b>{{ m.used }}{{ m.unit }}</b></span>,
+            <span class="ols-memory__stat">Total: <b>{{ m.total }}{{ m.unit }}</b></span>
+            <span class="ols-memory__pct">({{ m.percent }}%)</span>
+          </div>
+          <c-progress class="ols-memory__bar" [value]="m.percent" thin [color]="memoryColor()" />
+        </div>
+      } @else {
+        <span class="text-body-secondary small">Memory Usage: (Free: —, Used: —, Total: —) (—%)</span>
+      }
+    </div>
+
+    <c-header-nav class="ms-auto ols-headnav">
+      <div class="ols-envbadge" [class]="'ols-envbadge--' + envClass" title="Environment">
+        <span class="ols-envbadge__dot"></span>{{ envLabel }}
+      </div>
+      <ng-container *ngTemplateOutlet="themeDropdown" />
+      <app-user-profile />
+    </c-header-nav>
+
+  </c-container>
+  <c-container [fluid]="true" class="px-4">
+    <c-breadcrumb-router />
+  </c-container>
+</ng-container>
+
+<ng-template #themeDropdown>
+  <c-dropdown alignment="end" variant="nav-item">
+    <button [caret]="false" cDropdownToggle aria-label="Open theme picker">
+      <svg cIcon [name]="icons()" size="lg"></svg>
+    </button>
+    <div cDropdownMenu>
+      @for (mode of colorModes; track mode.name) {
+        <button
+          (click)="colorMode.set(mode.name)"
+          [active]="colorMode()===mode.name"
+          cDropdownItem
+          class="d-flex align-items-center"
+        >
+          <svg cIcon class="me-2" [name]="mode.icon" size="lg"></svg>
+          {{ mode.text }}
+        </button>
+      }
+    </div>
+  </c-dropdown>
+</ng-template>

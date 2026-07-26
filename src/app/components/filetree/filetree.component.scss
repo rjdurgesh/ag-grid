@@ -1,0 +1,197 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.filetree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.filetree__toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--cui-border-color, #e0e0e0);
+}
+
+.filetree__search {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.filetree__search-icon {
+  position: absolute;
+  inset-inline-start: 10px;
+  color: var(--cui-secondary-color, #8a93a2);
+  pointer-events: none;
+}
+
+.filetree__input {
+  width: 100%;
+  border: 1px solid var(--cui-border-color, #d8dbe0);
+  border-radius: 8px;
+  background: var(--cui-body-bg, #fff);
+  color: var(--cui-body-color);
+  padding: 7px 10px 7px 30px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+
+  &:focus {
+    border-color: var(--cui-primary, #4d5dfb);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-primary, #4d5dfb) 20%, transparent);
+  }
+}
+
+.filetree__actions {
+  display: flex;
+  gap: 4px;
+}
+
+.filetree__btn {
+  border: 1px solid var(--cui-border-color, #d8dbe0);
+  background: var(--cui-body-bg, #fff);
+  color: var(--cui-secondary-color, #6c757d);
+  border-radius: 7px;
+  font-size: 12px;
+  padding: 6px 9px;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+
+  &:hover {
+    background: var(--cui-tertiary-bg, #f1f2f5);
+    color: var(--cui-body-color);
+  }
+}
+
+.filetree__meta {
+  padding: 6px 14px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  color: var(--cui-secondary-color, #8a93a2);
+  border-bottom: 1px solid var(--cui-border-color, #eee);
+}
+
+.filetree__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.filetree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--cui-body-color);
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 1px 6px;
+  user-select: none;
+  transition: background-color .12s ease;
+
+  &:hover {
+    background: var(--cui-tertiary-bg, rgba(77, 93, 251, .07));
+  }
+
+  &--folder {
+    font-weight: 500;
+  }
+
+  &--selected {
+    background: color-mix(in srgb, var(--cui-primary, #4d5dfb) 16%, transparent);
+    color: var(--cui-primary, #4d5dfb);
+    font-weight: 600;
+  }
+}
+
+.filetree__chevron {
+  color: var(--cui-secondary-color, #8a93a2);
+  transition: transform .15s ease;
+  flex: 0 0 12px;
+
+  &--open {
+    transform: rotate(90deg);
+  }
+}
+
+.filetree__chevron-spacer {
+  display: inline-block;
+  width: 12px;
+  flex: 0 0 12px;
+}
+
+.filetree__icon--folder {
+  color: var(--cui-warning, #f0a020);
+}
+
+.filetree__icon--file {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  color: var(--cui-secondary-color, #8a93a2);
+
+  /* Colour-coded per file type */
+  &[data-kind='json']    { color: #e8a33d; }
+  &[data-kind='html']    { color: #e34f26; }
+  &[data-kind='xml']     { color: #f2777a; }
+  &[data-kind='config']  { color: #9b8cff; }
+  &[data-kind='sheet']   { color: #1d9d5c; }
+  &[data-kind='archive'] { color: #c9a227; }
+  &[data-kind='script']  { color: #4a5568; }
+  &[data-kind='log']     { color: #4d9dfb; }
+  &[data-kind='sql']     { color: #00a3b4; }
+  &[data-kind='pdf']     { color: #d93025; }
+  &[data-kind='text']    { color: #7a8598; }
+}
+
+.filetree__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filetree__ext {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  color: var(--cui-secondary-color, #8a93a2);
+  background: var(--cui-tertiary-bg, #eef0f4);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.filetree__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 16px;
+  font-size: 13px;
+  color: var(--cui-secondary-color, #8a93a2);
+}
+
+.filetree__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--cui-border-color, #ccc);
+  border-top-color: var(--cui-primary, #4d5dfb);
+  border-radius: 50%;
+  animation: ols-spin .7s linear infinite;
+}
+
+@keyframes ols-spin {
+  to { transform: rotate(360deg); }
+}
