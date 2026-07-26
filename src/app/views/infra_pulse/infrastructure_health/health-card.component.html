@@ -1,0 +1,102 @@
+<article [class]="'ipcard ipcard--' + target().status">
+  <span class="ipcard__rail"></span>
+
+  <header class="ipcard__head">
+    <span class="ipcard__os" [attr.data-os]="target().os">
+      @switch (target().os) {
+        @case ('windows') {
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path fill="currentColor" d="M3 5.5 11 4.3v7.2H3V5.5Zm0 13 8 1.2v-7.1H3v5.9ZM12 4.15 21 3v8.5h-9V4.15ZM12 12.5h9V21l-9-1.25V12.5Z" />
+          </svg>
+        }
+        @case ('linux') {
+          <!-- Tux, coloured to read on the same dark chip as the Windows icon -->
+          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+            <!-- feet (drawn first so the body overlaps their top halves) -->
+            <ellipse cx="11" cy="29" rx="3.6" ry="1.9" fill="#e8912a" transform="rotate(-13 11 29)" />
+            <ellipse cx="21" cy="29" rx="3.6" ry="1.9" fill="#e8912a" transform="rotate(13 21 29)" />
+            <!-- body -->
+            <path fill="#f6a800" d="M16 2c-4 0-6.4 3.2-6.4 7.2 0 2-.6 3.2-1.6 5.2C6.8 17 5.6 19 5.6 21.6c0 4.2 4.6 7 10.4 7s10.4-2.8 10.4-7c0-2.6-1.2-4.6-2.4-7.2-1-2-1.6-3.2-1.6-5.2C22.4 5.2 20 2 16 2Z" />
+            <!-- belly -->
+            <ellipse cx="16" cy="19.5" rx="5.4" ry="6.8" fill="#fff6e6" />
+            <!-- eye whites -->
+            <ellipse cx="13.4" cy="9.4" rx="2" ry="2.6" fill="#fff6e6" />
+            <ellipse cx="18.6" cy="9.4" rx="2" ry="2.6" fill="#fff6e6" />
+            <!-- pupils -->
+            <circle cx="14.2" cy="10" r="1" fill="#2b2000" />
+            <circle cx="17.8" cy="10" r="1" fill="#2b2000" />
+            <!-- beak -->
+            <path fill="#e8912a" d="M16 9.6c-2 0-3.4 1.1-3.4 2.3 0 1 1.5 1.8 3.4 1.8s3.4-.8 3.4-1.8c0-1.2-1.4-2.3-3.4-2.3Z" />
+          </svg>
+        }
+        @default {
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M3 7.5h7l2 2h9V18a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18V7.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+          </svg>
+        }
+      }
+    </span>
+
+    <span class="ipcard__name">{{ osLabel() }} / <strong>{{ target().name }}</strong></span>
+
+    <span class="ipcard__btns">
+      <button
+        type="button"
+        class="ipcard__btn"
+        [class.is-spinning]="refreshing()"
+        title="Refresh this server"
+        aria-label="Refresh this server"
+        (click)="refresh.emit()"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        class="ipcard__btn"
+        title="Server details"
+        aria-label="Server details"
+        (click)="info.emit()"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <circle cx="12" cy="8" r="1.15" fill="currentColor" />
+          <path d="M12 11v6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+        </svg>
+      </button>
+    </span>
+  </header>
+
+  @if (showApp() && appLabel()) {
+    <span class="ipcard__app">{{ appLabel() }}</span>
+  }
+
+  <div class="ipcard__metrics">
+    @for (m of target().metrics; track trackMetric($index, m)) {
+      <div class="ipm">
+        <div class="ipm__row">
+          <span class="ipm__label">{{ m.label }}</span>
+          <span class="ipm__value">{{ metricValue(m) }}</span>
+        </div>
+        <div class="ipm__track">
+          <i class="ipm__tick ipm__tick--warn" [style.left.%]="warnAt"></i>
+          <i class="ipm__tick ipm__tick--crit" [style.left.%]="critAt"></i>
+          <span class="ipm__fill" [class]="'ipm__fill--' + m.status" [style.width.%]="m.percent"></span>
+        </div>
+      </div>
+    }
+  </div>
+
+  @if (target().path) {
+    <p class="ipcard__path" [title]="target().path">{{ target().path }}</p>
+  }
+
+  <footer class="ipcard__foot">
+    <span class="ipcard__status" [class]="'ipcard__status--' + target().status">
+      <span class="ipcard__status-dot"></span>{{ statusText(target().status) }}
+    </span>
+    <span class="ipcard__updated">Last Updated = {{ formatDateTime(target().lastUpdated) }}</span>
+  </footer>
+</article>

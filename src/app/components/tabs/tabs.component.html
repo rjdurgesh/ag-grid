@@ -1,0 +1,20 @@
+<div class="ols-tabs">
+  <nav class="ols-tabs__list" role="tablist">
+    @for (tab of tabs(); track tab.label) {
+      <a
+        class="ols-tabs__tab"
+        role="tab"
+        [routerLink]="tab.link"
+        routerLinkActive="ols-tabs__tab--active"
+      >
+        @if (tab.icon) {
+          <svg cIcon [name]="tab.icon" width="16" height="16" class="ols-tabs__icon"></svg>
+        }
+        <span>{{ tab.label }}</span>
+      </a>
+    }
+  </nav>
+  <div class="ols-tabs__content">
+    <ng-content />
+  </div>
+</div>

@@ -1,0 +1,318 @@
+:host {
+  --ip-ok: #22c55e;
+  --ip-warn: #f59e0b;
+  --ip-crit: #ef4444;
+  --ipc-text: #e7ecf5;
+  --ipc-muted: #949db2;
+  --ipc-border: rgba(255, 255, 255, 0.08);
+  --ipc-track: rgba(255, 255, 255, 0.1);
+  display: block;
+}
+
+.ipcard {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  padding: 15px 17px 13px;
+  background: linear-gradient(160deg, #161d2b 0%, #0f141d 100%);
+  border: 1px solid var(--ipc-border);
+  color: var(--ipc-text);
+  box-shadow: 0 10px 26px rgba(6, 10, 20, 0.28);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  height: 100%;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 34px rgba(6, 10, 20, 0.38);
+  }
+
+  &__rail {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 4px;
+    background: var(--ip-ok);
+    overflow: hidden;
+
+    /* Slow light-sweep across the rail for a premium, "live" feel. */
+    &::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+      transform: translateX(-100%);
+      animation: ipc-rail-sweep 4s ease-in-out infinite;
+    }
+  }
+
+  &--warn {
+    border-color: color-mix(in srgb, var(--ip-warn) 45%, var(--ipc-border));
+    .ipcard__rail {
+      background: var(--ip-warn);
+    }
+  }
+  &--crit {
+    border-color: color-mix(in srgb, var(--ip-crit) 55%, var(--ipc-border));
+    animation: ipc-crit-glow 2.6s ease-in-out infinite;
+    .ipcard__rail {
+      background: var(--ip-crit);
+    }
+  }
+}
+
+.ipcard__head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 4px 0 12px;
+}
+
+.ipcard__os {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cdd6e6;
+
+  &[data-os='windows'] {
+    color: #4aa3ff;
+  }
+  &[data-os='share'] {
+    color: #59d9c0;
+  }
+}
+
+.ipcard__name {
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13.5px;
+  letter-spacing: 0.2px;
+  color: var(--ipc-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  strong {
+    color: var(--ipc-text);
+    font-weight: 600;
+  }
+}
+
+.ipcard__btns {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ipcard__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cdd6e6;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #fff;
+  }
+
+  &.is-spinning svg {
+    animation: ipc-spin 0.9s linear infinite;
+  }
+}
+
+.ipcard__app {
+  display: inline-block;
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #b9c2d6;
+}
+
+.ipcard__metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.ipm__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+
+.ipm__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #c4ccdb;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.ipm__value {
+  font-size: 12px;
+  color: var(--ipc-muted);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  white-space: nowrap;
+}
+
+.ipm__track {
+  position: relative;
+  height: 7px;
+  border-radius: 5px;
+  background: var(--ipc-track);
+  overflow: hidden;
+}
+
+.ipm__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 5px;
+  background: var(--ip-ok);
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+
+  &--warn {
+    background: var(--ip-warn);
+  }
+  &--crit {
+    background: var(--ip-crit);
+  }
+}
+
+.ipm__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  z-index: 1;
+
+  &--warn {
+    background: rgba(255, 255, 255, 0.35);
+  }
+  &--crit {
+    background: rgba(255, 255, 255, 0.55);
+  }
+}
+
+.ipcard__path {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  color: #7f889b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ipcard__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: #6f7789;
+}
+
+.ipcard__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+
+  &--ok {
+    color: var(--ip-ok);
+  }
+  &--warn {
+    color: var(--ip-warn);
+  }
+  &--crit {
+    color: var(--ip-crit);
+  }
+}
+
+.ipcard__status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.ipcard--crit .ipcard__status-dot {
+  animation: ipc-dot-pulse 1.5s ease-in-out infinite;
+}
+
+.ipcard__updated {
+  white-space: nowrap;
+}
+
+@keyframes ipc-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 26%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 6%, transparent);
+  }
+}
+
+@keyframes ipc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ipc-rail-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  60%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes ipc-crit-glow {
+  0%,
+  100% {
+    box-shadow: 0 10px 26px rgba(6, 10, 20, 0.28), 0 0 0 1px color-mix(in srgb, var(--ip-crit) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 10px 26px rgba(6, 10, 20, 0.28), 0 0 0 1px color-mix(in srgb, var(--ip-crit) 60%, transparent),
+      0 0 22px color-mix(in srgb, var(--ip-crit) 34%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ipcard__btn.is-spinning svg,
+  .ipcard--crit,
+  .ipcard--crit .ipcard__status-dot,
+  .ipcard__rail::after,
+  .ipm__fill {
+    animation: none;
+    transition: none;
+  }
+}

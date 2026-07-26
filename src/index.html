@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <base href="/">
+  <meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport" />
+  <meta content="OLS Dashboard — operational log &amp; configuration suite" name="description" />
+  <meta content="OLS,Dashboard,Log Analytics,Config Ops,Angular" name="keyword" />
+  <link href="assets/favicon.ico" rel="icon" type="image/x-icon">
+  <title>OLS Dashboard</title>
+
+  <!--
+    Boot loader: pure CSS/HTML so it paints before Angular (and any CSS bundle)
+    has loaded. Letters are built from a 5x5 module grid — the "Tile matrix"
+    animation — lit by a diagonal indigo -> teal wave.
+  -->
+  <style>
+    .ols-boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      /* Solid branded loading screen so the OLS animation reads clearly. */
+      background: radial-gradient(1200px 720px at 50% -10%, #172038, #0b0e18 62%);
+      color: #eef1ff;
+      font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+      z-index: 9999;
+    }
+
+    /* Dark theme: a distinct, "relevant" dark rather than the same flat black. */
+    html[data-boot='dark'] .ols-boot {
+      background: radial-gradient(1200px 720px at 50% -10%, #26304a, #0e1220 62%);
+    }
+
+    .ols-boot__word { display: flex; gap: 18px; }
+
+    .ols-boot__letter {
+      display: grid;
+      grid-template-columns: repeat(5, 11px);
+      grid-auto-rows: 11px;
+      gap: 4px;
+    }
+
+    .ols-boot__tile {
+      border-radius: 2px;
+      background: #eef1ff;
+      opacity: .08;
+    }
+
+    .ols-boot__tile--on {
+      animation: ols-boot-lite 1.9s ease-in-out infinite;
+    }
+
+    @keyframes ols-boot-lite {
+      0%, 100% { opacity: .12; background: #eef1ff; }
+      45%      { opacity: 1;   background: #4d5dfb; }
+      62%      { opacity: 1;   background: #23d3a3; }
+    }
+
+    .ols-boot__label {
+      font-size: 11px;
+      letter-spacing: .38em;
+      text-transform: uppercase;
+      opacity: .5;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ols-boot__tile--on { animation: none; opacity: 1; background: #4d5dfb; }
+    }
+  </style>
+
+  <!-- Pick the theme-appropriate boot-loader background before first paint. -->
+  <script>
+    (function () {
+      try {
+        var raw = localStorage.getItem('coreui-free-angular-admin-template-theme-default');
+        var t = raw ? raw.replace(/"/g, '') : 'auto';
+        var dark = t === 'dark' || (t !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-boot', dark ? 'dark' : 'light');
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+<noscript>You need to enable JavaScript to run this app.</noscript>
+<app-root>
+  <div class="ols-boot">
+    <div class="ols-boot__word">
+      <!-- O -->
+      <div class="ols-boot__letter">
+        <i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.05s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.11s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.16s"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.05s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.22s"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.11s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.27s"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.16s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.33s"></i>
+        <i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.22s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.27s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.33s"></i><i class="ols-boot__tile"></i>
+      </div>
+      <!-- L -->
+      <div class="ols-boot__letter">
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.27s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.33s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.38s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.44s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.49s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.55s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.60s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.66s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.71s"></i>
+      </div>
+      <!-- S -->
+      <div class="ols-boot__letter">
+        <i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.55s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.60s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.66s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.71s"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.60s"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.71s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.77s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.82s"></i><i class="ols-boot__tile"></i>
+        <i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.88s"></i>
+        <i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.82s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.88s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.93s"></i><i class="ols-boot__tile ols-boot__tile--on" style="animation-delay:.99s"></i><i class="ols-boot__tile"></i>
+      </div>
+    </div>
+    <span class="ols-boot__label">OLS Operation Dashboard</span>
+  </div>
+</app-root>
+</body>
+</html>

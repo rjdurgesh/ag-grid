@@ -1,0 +1,19 @@
+<div class="na">
+      <div class="na__card">
+        <div class="na__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="34" height="34">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
+        </div>
+        <h1 class="na__title">Access not granted</h1>
+        <p class="na__text">
+          Your account is authenticated but has no roles assigned for this application.
+          Please contact OLS Team to request access.
+        </p>
+        @if (user(); as u) {
+          <p class="na__user">Signed in as <strong>{{ u.displayName }}</strong> ({{ u.username }})</p>
+        }
+        <button type="button" class="na__btn" (click)="logout()">Sign out</button>
+      </div>
+    </div>

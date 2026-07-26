@@ -1,0 +1,108 @@
+<div class="filetree">
+  <div class="filetree__toolbar">
+    <div class="filetree__search">
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" class="filetree__search-icon">
+        <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2" />
+        <path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      </svg>
+      <input
+        #filterBox
+        type="text"
+        class="filetree__input"
+        placeholder="Filter files…"
+        [value]="filterText()"
+        (input)="setFilter(filterBox.value)"
+        aria-label="Filter files"
+      />
+    </div>
+    <div class="filetree__actions">
+      <button type="button" class="filetree__btn" (click)="expandAll()" title="Expand all">Expand</button>
+      <button type="button" class="filetree__btn" (click)="collapseAll()" title="Collapse all">Collapse</button>
+    </div>
+  </div>
+
+  <div class="filetree__meta">
+    <span>{{ fileCount() }} files</span>
+  </div>
+
+  <div class="filetree__body">
+    @if (loading()) {
+      <app-loader variant="skeleton" [rows]="8" message="Loading files…" />
+    } @else if (!visibleNodes().length) {
+      <div class="filetree__state">No files match.</div>
+    } @else {
+      <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: visibleNodes(), depth: 0 }" />
+    }
+  </div>
+</div>
+
+<ng-template #nodeTpl let-nodes let-depth="depth">
+  @for (node of nodes; track node.path) {
+    <div
+      class="filetree__row"
+      [class.filetree__row--folder]="node.type === 'folder'"
+      [class.filetree__row--selected]="node.type === 'file' && selectedPath() === node.path"
+      [style.padding-inline-start.px]="10 + depth * 16"
+      (click)="onRowClick(node)"
+    >
+      @if (node.type === 'folder') {
+        <svg class="filetree__chevron" [class.filetree__chevron--open]="node.expanded" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <svg class="filetree__icon filetree__icon--folder" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill="currentColor" opacity="0.85" />
+        </svg>
+      } @else {
+        <span class="filetree__chevron-spacer"></span>
+        <span class="filetree__icon filetree__icon--file" [attr.data-kind]="fileKind(node.name)" aria-hidden="true">
+          @switch (fileKind(node.name)) {
+            @case ('json') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M9 4c-2 0-3 1-3 3v2c0 1.5-.7 2.5-2 3 1.3.5 2 1.5 2 3v2c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2c0 1.5.7 2.5 2 3-1.3.5-2 1.5-2 3v2c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            }
+            @case ('html') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M9.5 8.5 6 12l3.5 3.5M14.5 8.5 18 12l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            }
+            @case ('xml') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M8.5 8 5 12l3.5 4M15.5 8 19 12l-3.5 4M13.5 6l-3 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            }
+            @case ('config') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            }
+            @case ('sheet') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><rect x="3.5" y="4.5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 9.5h17M9 9.5v10M15 9.5v10" stroke="currentColor" stroke-width="1.5"/></svg>
+            }
+            @case ('archive') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M11 5v3M13 8v3M11 11v3M13 14v2.5a1 1 0 0 1-2 0V14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            }
+            @case ('script') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><rect x="3" y="4.5" width="18" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7 10l2.5 2L7 14M12 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            }
+            @case ('log') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 2h8l4 4v16H6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2v4h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12h6M9 15h6M9 18h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            }
+            @case ('sql') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><ellipse cx="12" cy="6" rx="7" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M5 6v12c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8V6M5 12c0 1.6 3.1 2.8 7 2.8s7-1.2 7-2.8" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+            }
+            @case ('pdf') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 2h8l4 4v16H6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2v4h4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 17c3-1 4.5-6 3-6.6-1.2-.5-1.4 3.4 1.2 5 1 .6 2.3.8 3.3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            }
+            @case ('text') {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 2h8l4 4v16H6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2v4h4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 12h6M9 15h6M9 18h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            }
+            @default {
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 2h8l4 4v16H6Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 2v4h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            }
+          }
+        </span>
+      }
+      <span class="filetree__name">{{ node.name }}</span>
+      @if (node.type === 'file' && extension(node.name)) {
+        <span class="filetree__ext">{{ extension(node.name) }}</span>
+      }
+    </div>
+
+    @if (node.type === 'folder' && node.expanded && node.children.length) {
+      <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: node.children, depth: depth + 1 }" />
+    }
+  }
+</ng-template>

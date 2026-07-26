@@ -1,0 +1,80 @@
+/* Layered above the data modal (CoreUI modal z-index is 1055). */
+.ols-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1080;
+  background: rgba(15, 20, 36, 0.55);
+  backdrop-filter: blur(1px);
+  animation: ols-confirm-fade 0.15s ease both;
+}
+
+.ols-confirm-box {
+  position: fixed;
+  z-index: 1081;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 440px);
+  background: var(--cui-body-bg, #fff);
+  color: var(--cui-body-color, #212631);
+  border: 1px solid var(--cui-border-color, #e0e3e9);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  padding: 20px 22px 18px;
+  animation: ols-confirm-pop 0.16s ease both;
+}
+
+.ols-confirm-box__head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 12px;
+}
+
+.ols-confirm__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  flex: 0 0 34px;
+
+  &--primary { color: var(--cui-primary, #4d5dfb); background: color-mix(in srgb, var(--cui-primary, #4d5dfb) 14%, transparent); }
+  &--success { color: var(--cui-success, #2eb85c); background: color-mix(in srgb, var(--cui-success, #2eb85c) 14%, transparent); }
+  &--danger  { color: var(--cui-danger, #e55353);  background: color-mix(in srgb, var(--cui-danger, #e55353) 14%, transparent); }
+}
+
+.ols-confirm__title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 650;
+}
+
+.ols-confirm__msg {
+  margin: 0 0 18px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--cui-secondary-color, #5b6470);
+}
+
+.ols-confirm-box__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@keyframes ols-confirm-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ols-confirm-pop {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ols-confirm-backdrop,
+  .ols-confirm-box { animation: none; }
+}

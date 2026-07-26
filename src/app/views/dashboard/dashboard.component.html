@@ -1,0 +1,171 @@
+<section class="ols-view cc">
+  <!-- HERO -->
+  <div class="cc-hero" [class]="'cc-hero--' + posture()">
+    <div class="cc-hero__left">
+      <h1 class="cc-hero__title">{{ greeting() }}</h1>
+      <div class="cc-posture" [class]="'cc-posture--' + posture()">
+        <span class="cc-posture__pulse"></span>{{ postureText() }}
+      </div>
+      <p class="cc-hero__sync">
+        {{ loading() ? 'Synchronising estate…' : 'Last Synced ' + lastSync() }}
+        <button type="button" class="cc-refresh" (click)="load()" [disabled]="loading()">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Re-scan
+        </button>
+      </p>
+    </div>
+
+    <div class="cc-score">
+      <div class="cc-score__gauge" [style.background]="scoreGauge()">
+        <div class="cc-score__inner">
+          <span class="cc-score__num">{{ healthScore() }}</span>
+          <span class="cc-score__pct">/ 100</span>
+        </div>
+      </div>
+      <span class="cc-score__label">Health Index</span>
+    </div>
+  </div>
+
+  <!-- KPI TILES -->
+  <div class="cc-kpis">
+    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health">
+      <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--srv">▦</span> Servers</div>
+      <div class="cc-kpi__value">{{ serverTotal() }}</div>
+      <div class="cc-kpi__break">
+        <span class="cc-chip cc-chip--ok">{{ serverCounts().ok }} Healthy</span>
+        @if (serverCounts().warn) { <span class="cc-chip cc-chip--warn">{{ serverCounts().warn }} Warning</span> }
+        @if (serverCounts().crit) { <span class="cc-chip cc-chip--crit">{{ serverCounts().crit }} Critical</span> }
+      </div>
+    </a>
+
+    <a class="cc-kpi" routerLink="/infra_pulse/service_console">
+      <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--svc">⚙</span> Services</div>
+      <div class="cc-kpi__value">{{ serviceCounts().total }}</div>
+      <div class="cc-kpi__break">
+        <span class="cc-chip cc-chip--ok">{{ serviceCounts().running }} running</span>
+        @if (serviceCounts().down) { <span class="cc-chip cc-chip--crit">{{ serviceCounts().down }} down</span> }
+        @if (serviceCounts().unaccessible) { <span class="cc-chip cc-chip--unacc">{{ serviceCounts().unaccessible }} n/a</span> }
+      </div>
+    </a>
+
+    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health">
+      <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--share">▤</span> Share Drives</div>
+      <div class="cc-kpi__value">{{ shareTotal() }}</div>
+      <div class="cc-kpi__break">
+        <span class="cc-chip cc-chip--ok">{{ shareCounts().ok }} within limits</span>
+        @if (shareCounts().warn) { <span class="cc-chip cc-chip--warn">{{ shareCounts().warn }} warn</span> }
+        @if (shareCounts().crit) { <span class="cc-chip cc-chip--crit">{{ shareCounts().crit }} full</span> }
+      </div>
+    </a>
+
+    <div class="cc-kpi cc-kpi--static">
+      <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--app">◈</span> Applications</div>
+      <div class="cc-kpi__value">{{ appRows().length }}</div>
+      <div class="cc-kpi__break"><span class="cc-chip cc-chip--muted">monitored in {{ env }}</span></div>
+    </div>
+  </div>
+
+  <!-- APPLICATION STATUS MATRIX -->
+  <div class="cc-card cc-apps">
+    <div class="cc-card__head">
+      Application Status Matrix
+      <span class="cc-legend">
+        <!--<span class="cc-legend__grp"><span class="cc-legend__ico cc-legend__ico--health"></span> Infra Health</span>
+        <span class="cc-legend__grp"><span class="cc-legend__ico cc-legend__ico--svc"></span> Services</span>-->
+        <span class="cc-legend__keys">
+          <span class="cc-dot cc-dot--ok">n</span> ok
+          <span class="cc-dot cc-dot--warn">n</span> warn
+          <span class="cc-dot cc-dot--crit">n</span> crit / down
+        </span>
+      </span>
+    </div>
+
+    <div class="cc-apps__list">
+      @for (row of appRows(); track row.app) {
+        <div class="cc-app" [class]="'cc-app--' + row.posture">
+          <span class="cc-app__rail"></span>
+          <span class="cc-app__name">{{ row.label }}</span>
+
+          <div class="cc-app__cluster">
+            <span class="cc-app__ctitle">
+              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                <path d="M12 3 5 6v5c0 4 3 7 7 8 4-1 7-4 7-8V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+              </svg>
+              Infra Health
+            </span>
+            <span class="cc-dot cc-dot--ok" title="Healthy servers">{{ row.ok }}</span>
+            <span class="cc-dot cc-dot--warn" title="Warning servers">{{ row.warn }}</span>
+            <span class="cc-dot cc-dot--crit" title="Critical servers">{{ row.crit }}</span>
+          </div>
+
+          <div class="cc-app__cluster">
+            <span class="cc-app__ctitle">
+              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" fill="none" stroke="currentColor" stroke-width="1.5" />
+                <path d="M12 2.5v3m0 13v3m9.5-9.5h-3m-13 0h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+              Services
+            </span>
+            <span class="cc-dot cc-dot--ok" title="Running services">{{ row.running }}</span>
+            <span class="cc-dot cc-dot--crit" title="Down services">{{ row.down }}</span>
+            @if (row.unaccessible) {
+              <span class="cc-dot cc-dot--unacc" title="Unaccessible services">{{ row.unaccessible }}</span>
+            }
+          </div>
+
+          <span class="cc-app__badge" [class]="'cc-app__badge--' + row.posture">
+            {{ row.posture === 'operational' ? 'OK' : row.posture === 'degraded' ? 'WATCH' : 'ALERT' }}
+          </span>
+        </div>
+      }
+    </div>
+  </div>
+
+  <!-- ATTENTION -->
+  <div class="cc-grid">
+    <div class="cc-card cc-attn">
+      <div class="cc-card__head">
+        Needs Attention · Servers Health
+        <a class="cc-card__link" routerLink="/infra_pulse/infrastructure_health">Open →</a>
+      </div>
+      @if (!attentionServers().length) {
+        <div class="cc-empty cc-empty--good">✓ Every server is within healthy limits.</div>
+      } @else {
+        <div class="cc-attn__list">
+          @for (s of attentionServers(); track s.app + s.name) {
+            <div class="cc-attn__row" [class]="'cc-attn__row--' + s.status">
+              <span class="cc-attn__sev"></span>
+              <span class="cc-attn__name">{{ s.name }}</span>
+              <span class="cc-attn__app">{{ s.appLabel }}</span>
+              <span class="cc-attn__detail">{{ s.detail }}</span>
+            </div>
+          }
+        </div>
+      }
+    </div>
+
+    <div class="cc-card cc-attn">
+      <div class="cc-card__head">
+        Needs Attention · Services
+        <a class="cc-card__link" routerLink="/infra_pulse/service_console">Open →</a>
+      </div>
+      @if (!attentionServices().length) {
+        <div class="cc-empty cc-empty--good">✓ All monitored services are running.</div>
+      } @else {
+        <div class="cc-attn__list">
+          @for (s of attentionServices(); track s.app + s.server + s.name) {
+            <div class="cc-attn__row cc-attn__row--crit">
+              <span class="cc-attn__sev"></span>
+              <span class="cc-attn__name">{{ s.name }}</span>
+              <span class="cc-attn__app">{{ s.appLabel }} · {{ s.server }}</span>
+              <span class="cc-attn__detail cc-attn__detail--state">{{ s.state }}</span>
+            </div>
+          }
+        </div>
+      }
+    </div>
+  </div>
+</section>

@@ -1,0 +1,38 @@
+@switch (variant()) {
+  @case ('skeleton') {
+    <div class="ols-skeleton" [attr.data-size]="size()">
+      @for (row of skeletonRows; track row) {
+        <div class="ols-skeleton__row">
+          <span class="ols-skeleton__cell ols-skeleton__cell--sm"></span>
+          <span class="ols-skeleton__cell ols-skeleton__cell--lg"></span>
+          <span class="ols-skeleton__cell ols-skeleton__cell--md"></span>
+          <span class="ols-skeleton__cell ols-skeleton__cell--sm"></span>
+        </div>
+      }
+      @if (message()) {
+        <div class="ols-loader__msg ols-loader__msg--center">{{ message() }}</div>
+      }
+    </div>
+  }
+  @case ('bar') {
+    <div class="ols-loader ols-loader--bar">
+      <div class="ols-loader__bar"><span></span></div>
+      @if (message()) {
+        <span class="ols-loader__msg">{{ message() }}</span>
+      }
+    </div>
+  }
+  @default {
+    <div class="ols-loader" [attr.data-size]="size()">
+      <div class="ols-loader__rings" aria-hidden="true">
+        <span class="ols-loader__ring ols-loader__ring--outer"></span>
+        <span class="ols-loader__ring ols-loader__ring--inner"></span>
+        <span class="ols-loader__core"></span>
+      </div>
+      @if (message()) {
+        <span class="ols-loader__msg">{{ message() }}</span>
+      }
+      <span class="visually-hidden" role="status">{{ message() || 'Loading' }}</span>
+    </div>
+  }
+}

@@ -1,0 +1,51 @@
+:host {
+  position: relative;
+}
+
+/* Centered database indicator, independent of the left/right footer widths. */
+.ols-db {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--cui-secondary-color);
+  white-space: nowrap;
+  pointer-events: none;
+
+  &__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.75);
+    animation: ols-db-pulse 2s ease-in-out infinite;
+  }
+
+  &__label {
+    font-weight: 600;
+  }
+
+  &__name {
+    color: var(--cui-body-color);
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    letter-spacing: 0.3px;
+  }
+}
+
+@keyframes ols-db-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.2); }
+}
+
+/* On narrow footers hide the centered DB label to avoid overlap. */
+@media (max-width: 720px) {
+  .ols-db { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ols-db__dot { animation: none; }
+}

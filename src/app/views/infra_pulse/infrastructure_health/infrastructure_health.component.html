@@ -1,0 +1,196 @@
+<section class="ols-view ols-surface ols-surface--tight iph">
+  <!-- Toolbar: view switcher + auto-refresh interval + refresh all (no page title) -->
+  <div class="iph__toolbar">
+    <div class="iph__views" role="tablist">
+      <button type="button" class="iph__view" [class.is-active]="view() === 'app'" (click)="setView('app')" role="tab">
+        By Application
+      </button>
+      <button type="button" class="iph__view" [class.is-active]="view() === 'status'" (click)="setView('status')" role="tab">
+        By Status
+      </button>
+    </div>
+
+    <div class="iph__controls">
+      <label class="iph__interval">
+        <span class="iph__interval-label">Auto-refresh</span>
+        <select #sel class="iph__select" (change)="onIntervalChange(+sel.value)">
+          @for (m of intervals; track m) {
+            <option [value]="m" [selected]="refreshEveryMin() === m">Every {{ m }} minutes</option>
+          }
+        </select>
+      </label>
+      <button type="button" class="iph__refresh-all" (click)="refreshAll()">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Refresh all
+      </button>
+    </div>
+  </div>
+
+  @if (view() === 'app') {
+    <!-- ============================ BY APPLICATION ============================ -->
+    @for (panel of panels; track trackPanel($index, panel)) {
+      <section class="iph-sec" [class.iph-sec--open]="panel.expanded()">
+        <div class="iph-sec__bar" [class]="'iph-sec__bar--' + worstOf(panel)" (click)="toggle(panel)">
+          <span class="iph-sec__label">{{ panel.label }}</span>
+
+          <button
+            type="button"
+            class="iph-sec__refresh"
+            [class.is-spinning]="panel.loading()"
+            title="Refresh {{ panel.label }}"
+            aria-label="Refresh {{ panel.label }}"
+            (click)="refresh(panel); $event.stopPropagation()"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <div class="iph-sec__counts" (click)="$event.stopPropagation()">
+            @if (count(panel, 'crit') > 0) {
+              <button type="button" class="iph-pill iph-pill--crit"
+                [class.is-active]="panel.filter() === 'crit'"
+                [class.is-dim]="panel.filter() !== 'all' && panel.filter() !== 'crit'"
+                title="Critical alerts" (click)="setFilter(panel, 'crit')">{{ count(panel, 'crit') }}</button>
+            }
+            @if (count(panel, 'warn') > 0) {
+              <button type="button" class="iph-pill iph-pill--warn"
+                [class.is-active]="panel.filter() === 'warn'"
+                [class.is-dim]="panel.filter() !== 'all' && panel.filter() !== 'warn'"
+                title="Warnings" (click)="setFilter(panel, 'warn')">{{ count(panel, 'warn') }}</button>
+            }
+            @if (count(panel, 'ok') > 0) {
+              <button type="button" class="iph-pill iph-pill--ok"
+                [class.is-active]="panel.filter() === 'ok'"
+                [class.is-dim]="panel.filter() !== 'all' && panel.filter() !== 'ok'"
+                title="Healthy servers" (click)="setFilter(panel, 'ok')">{{ count(panel, 'ok') }}</button>
+            }
+          </div>
+
+          @if (panel.data(); as d) {
+            <span class="iph-sec__updated">updated {{ timeAgo(d.generatedAt) }}</span>
+          }
+
+          <span class="iph-sec__spacer"></span>
+
+          <button type="button" class="iph-sec__chev" [attr.aria-expanded]="panel.expanded()"
+            aria-label="Collapse or expand section" (click)="toggle(panel); $event.stopPropagation()">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        @if (panel.expanded()) {
+          <div class="iph-sec__body">
+            @if (panel.loading() && !panel.data()) {
+              <app-loader variant="skeleton" [rows]="2" message="Loading {{ panel.label }} health…" />
+            } @else if (panel.error()) {
+              <div class="iph-empty iph-empty--error">Couldn't load health for {{ panel.label }}. Try refresh.</div>
+            } @else {
+              @let targets = visibleTargets(panel);
+              @if (!targets.length) {
+                <div class="iph-empty">No servers match this filter.</div>
+              } @else {
+                <div class="iph-grid" [class.is-refreshing]="panel.loading()">
+                  @for (t of targets; track trackTarget($index, t)) {
+                    <app-health-card
+                      [target]="t"
+                      [refreshing]="isTargetRefreshing(t.id)"
+                      (refresh)="refreshTarget(panel.app, t)"
+                      (info)="openInfo(panel.app, panel.label, t)"
+                    />
+                  }
+                </div>
+              }
+            }
+          </div>
+        }
+      </section>
+    }
+  } @else {
+    <!-- ============================== BY STATUS ============================== -->
+    @for (group of statusGroups; track trackStatus($index, group)) {
+      <section class="iph-sec" [class.iph-sec--open]="group.expanded()">
+        <div class="iph-sec__bar" [class]="'iph-sec__bar--' + group.status" (click)="toggleStatus(group)">
+          <span class="iph-sec__label">{{ group.label }}</span>
+          <span class="iph-statusbox" [class]="'iph-statusbox--' + group.status">{{ statusCount(group.status) }}</span>
+
+          <span class="iph-sec__spacer"></span>
+
+          <button type="button" class="iph-sec__chev" [attr.aria-expanded]="group.expanded()"
+            aria-label="Collapse or expand section" (click)="toggleStatus(group); $event.stopPropagation()">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        @if (group.expanded()) {
+          <div class="iph-sec__body">
+            @let items = statusTargets(group.status);
+            @if (!items.length) {
+              <div class="iph-empty">No servers in this state.</div>
+            } @else {
+              <div class="iph-grid">
+                @for (item of items; track trackAgg($index, item)) {
+                  <app-health-card
+                    [target]="item.target"
+                    [appLabel]="item.appLabel"
+                    [showApp]="true"
+                    [refreshing]="isTargetRefreshing(item.target.id)"
+                    (refresh)="refreshTarget(item.app, item.target)"
+                    (info)="openInfo(item.app, item.appLabel, item.target)"
+                  />
+                }
+              </div>
+            }
+          </div>
+        }
+      </section>
+    }
+  }
+</section>
+
+<!-- Info dialog is kept outside .ols-surface so its position:fixed isn't reset. -->
+@if (infoTarget(); as info) {
+  <div class="iph-info-backdrop" (click)="closeInfo()"></div>
+    <div class="iph-info" role="dialog" aria-modal="true" aria-labelledby="iphInfoTitle">
+      <header class="iph-info__head">
+        <h5 id="iphInfoTitle" class="iph-info__title">{{ osLabelFor(info.target) }} / {{ info.target.name }}</h5>
+        <button type="button" class="iph-info__close" aria-label="Close" (click)="closeInfo()">×</button>
+      </header>
+
+      <span class="iph-info__badge" [class]="'iph-info__badge--' + info.target.status">
+        {{ statusText(info.target.status) }}
+      </span>
+
+      @if (info.target.note) {
+        <p class="iph-info__note">{{ info.target.note }}</p>
+      }
+
+      <dl class="iph-info__grid">
+        <div><dt>Application</dt><dd>{{ info.appLabel }}</dd></div>
+        <div><dt>Type</dt><dd>{{ info.target.kind === 'share' ? 'Share path' : 'Server' }}</dd></div>
+        <div><dt>Host</dt><dd>{{ info.target.host }}</dd></div>
+        <div><dt>Environment</dt><dd>{{ info.target.environment }}</dd></div>
+        @if (info.target.path) {
+          <div class="iph-info__wide"><dt>Path</dt><dd>{{ info.target.path }}</dd></div>
+        }
+        <div class="iph-info__wide"><dt>Last updated</dt><dd>{{ formatDateTime(info.target.lastUpdated) }}</dd></div>
+      </dl>
+
+      <div class="iph-info__metrics">
+        @for (m of info.target.metrics; track m.label) {
+          <div class="iph-info__metric" [class]="'iph-info__metric--' + m.status">
+            <span class="iph-info__mlabel">{{ m.label }}</span>
+            <span class="iph-info__mval">{{ metricValue(m) }}</span>
+          </div>
+        }
+      </div>
+    </div>
+}

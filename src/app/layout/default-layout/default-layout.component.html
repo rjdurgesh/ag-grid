@@ -1,0 +1,52 @@
+<!--sidebar-->
+<c-sidebar
+  #sidebar1="cSidebar"
+  class="d-print-none sidebar sidebar-fixed border-end"
+  colorScheme="dark"
+  id="sidebar1"
+  visible
+>
+  <c-sidebar-header class="border-bottom ols-sidebar-header">
+    <c-sidebar-brand class="ols-brand" routerLink="/home">
+      <span class="ols-brand__mark" aria-hidden="true">
+        <svg cIcon name="cilSpreadsheet" height="26"></svg>
+      </span>
+      <span class="sidebar-brand-full ols-brand__full">
+        <span class="ols-brand__text">OLS<span class="ols-brand__accent"> DASHBOARD</span></span>
+        <span class="ols-brand__sub">OLS Operations Command Center</span>
+      </span>
+      <span class="sidebar-brand-narrow ols-brand__short">OLS</span>
+    </c-sidebar-brand>
+  </c-sidebar-header>
+
+  <ng-scrollbar pointerEventsMethod="scrollbar" visibility="hover">
+    <c-sidebar-nav [navItems]="navItems()" dropdownMode="close" compact />
+  </ng-scrollbar>
+
+  @if (!sidebar1.narrow) {
+    <c-sidebar-footer cSidebarToggle="sidebar1" class="border-top d-none d-lg-flex" toggle="unfoldable" style="cursor: pointer;">
+      <button cSidebarToggler aria-label="Toggle sidebar fold"></button>
+    </c-sidebar-footer>
+  }
+</c-sidebar>
+
+<!--main-->
+<div class="wrapper d-flex flex-column min-vh-100">
+  <!--app-header-->
+  <app-default-header
+    [cShadowOnScroll]="'sm'"
+    class="mb-4 d-print-none header header-sticky p-0 shadow-sm"
+    position="sticky"
+    sidebarId="sidebar1"
+  />
+  <!--app-body-->
+  <div class="body flex-grow-1">
+    <!-- Fluid: this is a data dashboard, so it should use the whole width of
+         large monitors rather than being boxed to a reading-width container. -->
+    <c-container [fluid]="true" class="h-auto px-4">
+      <router-outlet />
+    </c-container>
+  </div>
+  <!--app footer-->
+  <app-default-footer />
+</div>

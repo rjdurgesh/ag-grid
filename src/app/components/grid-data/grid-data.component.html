@@ -1,0 +1,203 @@
+<div class="ols-grid-wrap" [style.height]="gridHeight()" (click)="onGridClick($event, 'main')">
+  <ag-grid-angular
+    class="ols-grid"
+    [theme]="theme()"
+    [rowData]="displayRows()"
+    [columnDefs]="columnDefs()"
+    [defaultColDef]="defaultColDef"
+    [getRowId]="getRowId"
+    [isFullWidthRow]="isFullWidthRow"
+    [fullWidthCellRenderer]="fullWidthCellRenderer"
+    [getRowHeight]="getRowHeight"
+    [getRowClass]="getRowClass"
+    [context]="gridContext"
+    [suppressCellFocus]="true"
+    [animateRows]="true"
+    [pagination]="pagination()"
+    [paginationPageSize]="pageSize()"
+    [paginationPageSizeSelector]="pageSizeOptions()"
+    [alwaysShowHorizontalScroll]="true"
+    [alwaysShowVerticalScroll]="true"
+    (gridReady)="onGridReady($event)"
+  />
+
+  @if (loading()) {
+    <app-loader [overlay]="true" message="Loading records…" />
+  }
+</div>
+
+<!-- "Eye" detail modal.
+     Only mounted while open: a closed CoreUI modal stays in the DOM as a
+     full-screen, pointer-capturing overlay (opacity 0 but display:block), which
+     silently swallows every click on the page underneath. -->
+@if (modalVisible()) {
+<c-modal
+  size="xl"
+  class="ols-grid-modal"
+  [visible]="true"
+  (visibleChange)="onModalVisibleChange($event)"
+  aria-labelledby="gridModalTitle"
+>
+  <c-modal-header>
+    <h5 cModalTitle id="gridModalTitle" class="ols-grid-modal__title">
+      {{ modalTitle() }}
+      <button
+        type="button"
+        class="ols-modal-act"
+        (click)="refreshModalContent()"
+        [class.ols-modal-act--spin]="modalLoading()"
+        title="Refresh table data"
+        aria-label="Refresh table data"
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    </h5>
+
+    <div class="ols-grid-modal__tools">
+      <c-dropdown alignment="end">
+        <button cDropdownToggle [caret]="false" class="ols-modal-act" title="More actions" aria-label="More actions">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="12" cy="5" r="1.6" fill="currentColor" />
+            <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+            <circle cx="12" cy="19" r="1.6" fill="currentColor" />
+          </svg>
+        </button>
+        <ul cDropdownMenu class="ols-modal-menu">
+          <li>
+            <button cDropdownItem type="button" (click)="exportData()" [disabled]="!modalContent()">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M12 3v12m0 0 4-4m-4 4-4-4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+              Export Data
+            </button>
+          </li>
+          @if (modalIsCob() && !readOnly()) {
+            <li>
+              <button cDropdownItem type="button" (click)="uploadData()">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M12 21V9m0 0 4 4m-4-4-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                Upload Data
+              </button>
+            </li>
+            <li>
+              <button cDropdownItem type="button" (click)="toggleRollPanel()">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M4 12a8 8 0 1 1 2.5 5.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M4 18v-5h5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Roll Data
+              </button>
+            </li>
+          }
+        </ul>
+      </c-dropdown>
+      <button cButtonClose (click)="closeModal()" aria-label="Close"></button>
+    </div>
+  </c-modal-header>
+
+  <c-modal-body>
+    <!-- Date filter bar (COB tables only) -->
+    @if (modalIsCob()) {
+      <div class="ols-retrieve">
+        <label class="ols-retrieve__field">
+          <span>StartDate</span>
+          <input type="date" class="form-control form-control-sm" [value]="retrieveStart()" (change)="onRetrieveStartChange($event)" />
+        </label>
+        <label class="ols-retrieve__field">
+          <span>EndDate</span>
+          <input type="date" class="form-control form-control-sm" [value]="retrieveEnd()" (change)="onRetrieveEndChange($event)" />
+        </label>
+        <label class="ols-retrieve__check">
+          <input type="checkbox" class="form-check-input" [checked]="retrieveRange()" (change)="onRetrieveRangeChange($event)" />
+          <span>Date Range</span>
+        </label>
+        <button
+          cButton
+          color="primary"
+          variant="outline"
+          size="sm"
+          [disabled]="!retrieveStart() || !retrieveEnd()"
+          (click)="retrieve()"
+        >Retrieve</button>
+      </div>
+    }
+
+    @if (uploadNotice()) {
+      <div class="ols-notice ols-notice--info">
+        <span>{{ uploadNotice() }}</span>
+        <button type="button" class="ols-notice__close" (click)="uploadNotice.set(null)" aria-label="Dismiss">×</button>
+      </div>
+    }
+
+    @if (rollOpen()) {
+      <div class="ols-roll">
+        <div class="ols-roll__head">
+          <span class="ols-roll__table">{{ modalTitle() }}</span>
+          <button type="button" class="ols-roll__close" (click)="rollOpen.set(false)" title="Close" aria-label="Close Roll Data">×</button>
+        </div>
+        <div class="ols-roll__fields">
+          <label class="ols-roll__field">
+            <span>From</span>
+            <input type="date" class="form-control" [value]="rollFrom()" (change)="onRollFromChange($event)" />
+          </label>
+          <label class="ols-roll__field">
+            <span>To</span>
+            <input type="date" class="form-control" [value]="rollTo()" (change)="onRollToChange($event)" />
+          </label>
+        </div>
+        <button cButton color="primary" variant="outline" class="ols-roll__process" (click)="processRoll()">Process</button>
+        @if (rollNotice()) {
+          <p class="ols-roll__notice">{{ rollNotice() }}</p>
+        }
+      </div>
+    }
+
+    @if (modalLoading()) {
+      <div class="ols-modal-loading">
+        <app-loader message="Fetching table content…" />
+        <app-loader variant="skeleton" [rows]="7" />
+      </div>
+    } @else if (modalError()) {
+      <div class="ols-modal-state text-danger">{{ modalError() }}</div>
+    } @else if (modalContent()) {
+      <div class="ols-modal-grid" [attr.data-ag-theme-mode]="themeMode()" (click)="onGridClick($event, 'modal')">
+        <ag-grid-angular
+          class="ols-grid"
+          [theme]="theme()"
+          [rowData]="modalRows()"
+          [columnDefs]="modalColumnDefs()"
+          [defaultColDef]="defaultColDef"
+          [getRowId]="modalGetRowId"
+          [stopEditingWhenCellsLoseFocus]="true"
+          [rowSelection]="modalRowSelection"
+          [pagination]="true"
+          [paginationPageSize]="modalPageSize()"
+          [paginationPageSizeSelector]="modalPageSizeOptions()"
+          [alwaysShowHorizontalScroll]="true"
+          [alwaysShowVerticalScroll]="true"
+          [context]="gridContext"
+          (gridReady)="onModalGridReady($event)"
+          (selectionChanged)="onModalSelectionChanged($event)"
+        />
+      </div>
+    }
+  </c-modal-body>
+
+  <c-modal-footer>
+    <span class="ols-total-rows">Total Rows : {{ modalTotalRows() }}</span>
+    <span class="me-auto small text-body-secondary ms-3">{{ modalSelectedCount() }} selected</span>
+
+    @if (!readOnly()) {
+      <button cButton color="primary" variant="outline" size="sm" [disabled]="!modalContent()" (click)="addRow()">Add</button>
+      @if (hasDrafts()) {
+        <button cButton color="success" size="sm" (click)="saveAllDrafts()">
+          Save <span class="ols-save-count">{{ draftRows().length }}</span>
+        </button>
+      }
+      @if (modalSelectedCount() > 0) {
+        <button cButton color="danger" variant="outline" size="sm" (click)="deleteSelected()">
+          Delete selected <span class="ols-save-count">{{ modalSelectedCount() }}</span>
+        </button>
+      }
+    }
+    <button cButton color="secondary" size="sm" (click)="closeModal()">Close</button>
+  </c-modal-footer>
+</c-modal>
+}

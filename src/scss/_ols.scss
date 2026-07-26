@@ -1,0 +1,819 @@
+// =============================================================================
+// OLS Dashboard — advanced theme layer on top of CoreUI.
+// Shared classes used across the redesigned views/components.
+// =============================================================================
+
+// ---- View scaffolding --------------------------------------------------------
+.ols-view {
+  padding-bottom: 28px;
+}
+
+.ols-view__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.ols-view__eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--cui-primary);
+}
+
+.ols-view__title {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin: 6px 0 6px;
+  line-height: 1.2;
+}
+
+.ols-view__subtitle {
+  color: var(--cui-secondary-color);
+  margin: 0;
+  max-width: 68ch;
+}
+
+// ---- Generic card ------------------------------------------------------------
+.ols-card {
+  background: var(--cui-body-bg);
+  border: 1px solid var(--cui-border-color);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 55, .04), 0 8px 24px rgba(20, 30, 80, .05);
+  padding: 18px 20px;
+}
+
+.ols-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: .95rem;
+  margin-bottom: 14px;
+  color: var(--cui-body-color);
+
+  svg {
+    color: var(--cui-primary);
+    flex: 0 0 auto;
+  }
+}
+
+// ---- Sidebar brand -----------------------------------------------------------
+.ols-sidebar-header {
+  min-height: 4rem;
+}
+
+.ols-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.ols-brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #4d5dfb, #23d3a3);
+  color: #fff;
+}
+
+.ols-brand__text {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: .4px;
+  background: linear-gradient(90deg, #7ee8b6, #4d9dfb);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.ols-brand__accent {
+  font-weight: 500;
+}
+
+/* Stack the wordmark + tagline when the sidebar is expanded. */
+.ols-brand__full {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.ols-brand__sub {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  text-transform: none;
+  color: rgba(255, 255, 255, .55);
+  margin-top: 1px;
+}
+
+.ols-brand__short {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #7ee8b6;
+}
+
+// ---- Header right-side nav (env badge + theme + profile) --------------------
+.ols-headnav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ols-envbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: .6px;
+  color: var(--cui-body-color);
+  background: color-mix(in srgb, var(--cui-body-color) 6%, transparent);
+  border: 1px solid var(--cui-border-color);
+  user-select: none;
+
+  &__dot {
+    position: relative;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #22e6a8;
+    box-shadow: 0 0 8px #22e6a8, 0 0 14px rgba(34, 230, 168, .7);
+    animation: ols-env-pulse 1.8s ease-in-out infinite;
+
+    &::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 1px solid rgba(34, 230, 168, .6);
+      animation: ols-env-ripple 1.8s ease-out infinite;
+    }
+  }
+
+  // PROD (LIVE) = green; STG = amber; DEV = indigo.
+  &--stg &__dot { background: #f7b733; box-shadow: 0 0 8px #f7b733; &::after { border-color: rgba(247, 183, 51, .6); } }
+  &--dev &__dot { background: #6b8afd; box-shadow: 0 0 8px #6b8afd; &::after { border-color: rgba(107, 138, 253, .6); } }
+}
+
+@keyframes ols-env-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+
+@keyframes ols-env-ripple {
+  0% { transform: scale(1); opacity: .8; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ols-envbadge__dot, .ols-envbadge__dot::after { animation: none; }
+}
+
+// ---- Header live memory monitor ---------------------------------------------
+.ols-memory {
+  min-width: 340px;
+}
+
+.ols-memory__icon {
+  color: var(--cui-primary);
+}
+
+.ols-memory__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 320px;
+}
+
+.ols-memory__label {
+  font-size: 12.5px;
+  color: var(--cui-body-color);
+  white-space: nowrap;
+
+  b {
+    color: var(--cui-primary);
+  }
+}
+
+.ols-memory__pct {
+  font-weight: 700;
+  margin-inline-start: 4px;
+}
+
+.ols-memory__bar {
+  width: 100%;
+}
+
+// ---- Value modal (clob/json/xml/blob) ---------------------------------------
+.ols-value-modal__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.ols-value-modal__badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  color: #fff;
+  background: var(--cui-primary);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.ols-value-modal__content {
+  margin: 0;
+  padding: 16px;
+  background: var(--cui-tertiary-bg);
+  border-radius: 10px;
+  font-family: var(--cui-font-monospace, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--cui-body-color);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+// ---- ag-grid cell helpers (global so grid-rendered cells pick them up) -------
+.ols-cell-center {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.ols-bool-badge {
+  font-weight: 600;
+}
+
+// ---- ag-grid cell controls (rendered as plain HTML, so styled globally) ------
+.ols-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cui-body-color, #333);
+  cursor: pointer;
+  transition: transform .18s ease, background-color .18s ease;
+
+  &:hover { background: var(--cui-tertiary-bg, rgba(0, 0, 0, .06)); }
+
+  &--open {
+    transform: rotate(180deg);
+    color: var(--cui-primary, #4d5dfb);
+  }
+}
+
+.ols-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  /* body-color based so it reliably follows light/dark (secondary-color can lag). */
+  color: color-mix(in srgb, var(--cui-body-color, #333) 62%, transparent);
+  cursor: pointer;
+  transition: color .18s ease, background-color .18s ease;
+
+  &:hover {
+    background: var(--cui-tertiary-bg, rgba(0, 0, 0, .06));
+    color: var(--cui-primary, #4d5dfb);
+  }
+}
+
+.ols-special {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--cui-font-monospace, monospace);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+
+  &__type {
+    color: var(--cui-info, #3399ff);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+  }
+
+  &__dots {
+    color: var(--cui-primary, #4d5dfb);
+    font-weight: 700;
+  }
+
+  &:hover .ols-special__type,
+  &:hover .ols-special__dots { text-decoration: underline; }
+}
+
+/* Inactive (ACTIVE = N) rows are muted and their view control is disabled */
+.ols-row--inactive .ag-cell {
+  opacity: .55;
+  font-style: italic;
+}
+
+.ols-eye--disabled {
+  opacity: .35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Refresh control inside the first column header */
+.ols-head-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.ols-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cui-body-color, #333);
+  cursor: pointer;
+  transition: background-color .15s ease;
+
+  &:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+  &--spin svg { animation: ols-spin .8s linear infinite; }
+}
+
+/* Modal header controls */
+/* ---- Data modal: the grid is the ONLY scroller -----------------------------
+   Previously the modal body scrolled as well as the grid, so wheel events
+   fought each other and the table felt stuck. */
+.ols-grid-modal {
+  .modal-dialog {
+    /* A real floating dialog: wide enough for the grid, but with a clear
+       backdrop margin so it reads as a modal, capped on ultra-wide monitors. */
+    max-width: min(92vw, 1600px);
+    margin: 4vh auto;
+  }
+
+  .modal-content {
+    height: 92vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Compact chrome so the grid keeps as much height as possible */
+  .modal-header, .modal-footer { padding: 10px 16px; }
+
+  .ols-retrieve {
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    gap: 12px;
+  }
+  .ols-retrieve__field input { height: 32px; }
+
+  .modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ols-modal-grid {
+    flex: 1;
+    min-height: 420px;
+    height: auto;
+  }
+}
+
+/* The confirmation prompt is a self-contained standalone overlay; its styles
+   live in confirm.component.scss (see ConfirmComponent). */
+
+/* Modal title + its refresh control (kept off the table name) */
+.ols-grid-modal__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* Date cell: value + a solid corner triangle (PL/SQL Developer style) */
+.ols-cell-date {
+  padding-right: 3px !important;
+}
+
+.ols-date-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  padding-inline-end: 12px;
+}
+
+.ols-date-cell__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ols-date-tri {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* CSS triangle pointing down-right, drawn solid */
+  border-left: 9px solid transparent;
+  border-bottom: 9px solid #111318;
+  transform: rotate(0deg);
+
+  &::after {
+    /* enlarge the hit area without changing the visual size */
+    content: '';
+    position: absolute;
+    left: -14px;
+    bottom: -9px;
+    width: 22px;
+    height: 20px;
+  }
+
+  &:hover { border-bottom-color: var(--cui-primary, #4d5dfb); }
+
+  &--muted {
+    opacity: .45;
+    cursor: default;
+    &:hover { border-bottom-color: #111318; }
+  }
+}
+
+/* Keep the marker visible on dark backgrounds */
+[data-ag-theme-mode='dark'] .ols-date-tri {
+  border-bottom-color: #dfe4f2;
+  &--muted:hover { border-bottom-color: #dfe4f2; }
+}
+
+/* Muted hint shown in empty cells of editable rows */
+.ols-cell-placeholder {
+  color: var(--cui-secondary-color, #9aa3b0);
+  font-style: italic;
+  opacity: .75;
+  font-size: 12.5px;
+}
+
+.ols-grid-modal__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+.ols-modal-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cui-secondary-color, #6c757d);
+  cursor: pointer;
+  transition: color .15s ease, background-color .15s ease, border-color .15s ease;
+
+  &:hover {
+    color: var(--cui-primary, #4d5dfb);
+    background: var(--cui-tertiary-bg, #f0f1f4);
+    border-color: var(--cui-border-color, #e0e3e9);
+  }
+
+  &--spin svg { animation: ols-spin .8s linear infinite; }
+}
+
+.ols-modal-menu {
+  min-width: 195px;
+
+  button { display: flex; align-items: center; }
+}
+
+/* Footer/toolbars wrap instead of overflowing on narrower laptops */
+.ols-grid-modal .modal-footer,
+.ols-retrieve {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+/* Short laptop screens: claw back vertical space from the chrome */
+@media (max-height: 800px) {
+  .ols-surface--tight { padding: 10px 12px 12px; }
+  .scope-tabs { margin-bottom: 12px; }
+  .ols-grid-modal .ols-retrieve { padding: 6px 10px; margin-bottom: 8px; }
+}
+
+.ols-total-rows {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #4d5dfb, #6b78ff);
+  border-radius: 8px;
+  padding: 4px 12px;
+}
+
+/* Retrieve (date filter) bar */
+.ols-retrieve {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--cui-border-color, #e0e3e9);
+  border-radius: 12px;
+  background: var(--cui-tertiary-bg, #f7f8fa);
+}
+
+.ols-retrieve__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cui-secondary-color, #6c757d);
+
+  input { min-width: 165px; }
+}
+
+.ols-retrieve__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cui-body-color);
+  padding-bottom: 6px;
+  cursor: pointer;
+
+  input { margin: 0; cursor: pointer; }
+}
+
+/* Unsaved draft rows */
+.ols-grid .ag-row .ag-cell.ag-cell-inline-editing { padding: 0; }
+
+.ols-date-editor {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--cui-primary, #4d5dfb);
+  border-radius: 4px;
+  padding: 0 8px;
+  font-size: 13px;
+  background: var(--cui-body-bg, #fff);
+  color: var(--cui-body-color);
+}
+
+.ols-save-count {
+  display: inline-block;
+  margin-inline-start: 6px;
+  background: rgba(255, 255, 255, .3);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Roll Data panel */
+.ols-roll {
+  border: 1px solid var(--cui-border-color, #e0e3e9);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  background: var(--cui-tertiary-bg, #f7f8fa);
+}
+
+.ols-roll__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ols-roll__close {
+  border: 0;
+  background: transparent;
+  color: var(--cui-secondary-color, #6c757d);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 6px;
+
+  &:hover {
+    color: var(--cui-danger, #e55353);
+    background: var(--cui-body-bg, #fff);
+  }
+}
+
+.ols-roll__table {
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #4d5dfb, #6b78ff);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-family: var(--cui-font-monospace, monospace);
+}
+
+.ols-roll__fields {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.ols-roll__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cui-secondary-color, #6c757d);
+
+  input { min-width: 190px; }
+}
+
+.ols-roll__notice {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--cui-primary, #4d5dfb);
+}
+
+/* Inline notice (e.g. Upload Data placeholder) */
+.ols-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13.5px;
+
+  &--info {
+    background: color-mix(in srgb, var(--cui-info, #3399ff) 14%, transparent);
+    color: var(--cui-info, #2b8bea);
+  }
+
+  &__close {
+    margin-inline-start: auto;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+}
+
+.ols-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 100%;
+
+  &__btn {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    line-height: 1.6;
+    background: var(--cui-tertiary-bg, #eee);
+    color: var(--cui-body-color, #333);
+    transition: filter .15s ease;
+
+    &:hover { filter: brightness(.95); }
+    &--primary { background: var(--cui-primary, #4d5dfb); color: #fff; }
+    &--danger { background: var(--cui-danger, #e55353); color: #fff; }
+    &--warning { background: var(--cui-warning, #f9b115); color: #1a1a1a; }
+    &--secondary { background: var(--cui-secondary, #9da5b1); color: #fff; }
+  }
+}
+
+// ---- Advanced page backdrop (shared by Log Analytics + Config scope pages) ---
+.ols-surface {
+  position: relative;
+  border-radius: 20px;
+  padding: 22px;
+  background:
+    radial-gradient(1100px 380px at 8% -10%, color-mix(in srgb, var(--cui-primary, #4d5dfb) 20%, transparent), transparent 60%),
+    radial-gradient(900px 360px at 100% 0%, color-mix(in srgb, #23d3a3 18%, transparent), transparent 55%),
+    linear-gradient(160deg, color-mix(in srgb, var(--cui-primary, #4d5dfb) 8%, var(--cui-body-bg)) 0%, var(--cui-body-bg) 70%);
+  border: 1px solid var(--cui-border-color, #e4e6ec);
+  overflow: hidden;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-image:
+      linear-gradient(color-mix(in srgb, var(--cui-primary, #4d5dfb) 6%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--cui-primary, #4d5dfb) 6%, transparent) 1px, transparent 1px);
+    background-size: 34px 34px;
+    mask-image: radial-gradient(circle at 20% 10%, #000, transparent 70%);
+    pointer-events: none;
+  }
+
+  // Keep real content above the decorative grid overlay.
+  > * {
+    position: relative;
+  }
+
+  > *:not(app-grid-data),
+  > app-grid-data .ols-grid-wrap {
+    z-index: 1;
+  }
+
+  // No page title on this surface — trim the padding so the table gets the height.
+  &--tight {
+    padding: 14px 16px 16px;
+  }
+}
+
+// ---- In-page scope tabs (Config / MISC Activity) -----------------------------
+.scope-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  background: var(--cui-tertiary-bg, #f0f1f4);
+  border-radius: 12px;
+}
+
+.scope-tab {
+  border: 0;
+  background: transparent;
+  color: var(--cui-secondary-color, #6c757d);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 20px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease;
+
+  &:hover {
+    color: var(--cui-body-color);
+  }
+
+  &--active {
+    background: var(--cui-body-bg, #fff);
+    color: var(--cui-primary, #4d5dfb);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+  }
+}
+
+.scope-misc {
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.scope-misc__title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.scope-misc__text {
+  color: var(--cui-secondary-color, #6c757d);
+  margin: 0;
+}
