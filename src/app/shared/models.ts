@@ -1,11 +1,35 @@
 /** Shared data-model contracts for the OLS Dashboard API. */
 
-/** A server option shown in the Log Analytics server dropdown. */
-export interface ServerInfo {
-  id: string;
-  name: string;
-  host?: string;
-  environment?: string;
+/**
+ * One row of the log-server config table as returned by the servers API.
+ * Real table columns: `Server_name, base_log_path, is_base_server, is_active,
+ * server_type, db_source, app_env`. The API returns only the fields the UI
+ * needs for active rows in the current environment.
+ */
+export interface LogServerRow {
+  server_name: string;
+  base_log_path: string;
+  server_type: string;
+  db_source: string;
+}
+
+/**
+ * Response of `GET /api/log/servers`: a map keyed by a composite id
+ * (`{db_source}_{server_type}_{server_name}`, e.g. "OLSCIB_WEB_A_1_eur17")
+ * whose value is the matching config row(s).
+ */
+export type LogServersResponse = Record<string, LogServerRow[]>;
+
+/** Flattened, UI-friendly log server — one option in the server dropdown. */
+export interface LogServer {
+  /** Composite unique key from the API map, e.g. "OLSCIB_WEB_A_1_eur17". */
+  key: string;
+  serverName: string;
+  serverType: string;
+  dbSource: string;
+  /** Every configured `base_log_path` for this server (the value array can hold
+   *  several). Each becomes a separate root in the file tree. */
+  basePaths: string[];
 }
 
 /** File metadata shown in the Log Analytics "Properties" dialog. */
@@ -51,12 +75,29 @@ export interface TableContent {
   rows: Record<string, unknown>[];
 }
 
-/** A row in a Config Ops Console catalogue table. */
-export interface ConfigTableRow {
-  table_name: string;
-  active: boolean;
-  is_cob: boolean;
-  last_update: string;
+/**
+ * Generic tabular payload: column names + row value arrays. The Config Ops
+ * catalogue (`/tables`) and table content (`/retrieve`) both use this, so the
+ * grid renders whatever columns the API returns — no hardcoded headers.
+ */
+export interface TabularData {
+  cols: string[];
+  rows: unknown[][];
+}
+
+/**
+ * One column's metadata as returned by the table-columns API (backed by
+ * `dba_tab_columns`): the column name + its DB data type.
+ */
+export interface ColumnDetail {
+  name: string;
+  /** DB data type, e.g. VARCHAR2 | NUMBER | DATE | TIMESTAMP | CLOB | JSON | XMLTYPE | BLOB. */
+  type: string;
+}
+
+/** Response of the table-columns API. */
+export interface ColumnsResponse {
+  columns: ColumnDetail[];
 }
 
 /** Live memory usage stats shown in the header. */

@@ -128,6 +128,8 @@ export class GridDataComponent {
   readonly getDetail = input<(row: Record<string, unknown>) => Observable<TableContent>>();
   /** Optional stable id field (falls back to row index). */
   readonly idField = input<string>();
+  /** Row field used for the modal title + as the table name in API payloads. */
+  readonly titleField = input('table_name');
   readonly gridHeight = input('520px');
 
   // --- pagination (main grid) -----------------------------------------------
@@ -489,7 +491,7 @@ export class GridDataComponent {
     }
     this.gridContext.actions = this.actions().length ? this.actions() : DEFAULT_MODAL_ACTIONS;
     this.modalRow.set(row);
-    this.modalTitle.set(String(row['table_name'] ?? 'Content'));
+    this.modalTitle.set(String(row[this.titleField()] ?? 'Content'));
     this.rollOpen.set(false);
     this.rollNotice.set(null);
     this.uploadNotice.set(null);
@@ -844,7 +846,7 @@ export class GridDataComponent {
     }
 
     if (id === 'delete') {
-      const label = String(row['code'] ?? row['id'] ?? '').trim();
+      const label = String(row['code'] ?? row['CODE'] ?? row['id'] ?? row['ID'] ?? '').trim();
       const suffix = label ? ` (${label})` : '';
       const ok = await this.confirm.ask({
         title: 'Delete this row',
@@ -955,13 +957,20 @@ export class GridDataComponent {
    */
   private readonly _renderFix = effect(() => {
     const hasRows = this.displayRows().length > 0;
-    if (!hasRows) {
+    // Columns can arrive asynchronously too (dynamic catalogues), so react to
+    // them as well — otherwise function cell renderers (boolean/date/special)
+    // paint before the columns settle and stay blank.
+    const hasCols = this.columns().length > 0;
+    if (!hasRows || !hasCols) {
       this.rowsPainted = false;
       return;
     }
     if (!this.rowsPainted) {
       this.rowsPainted = true;
-      queueMicrotask(() => this.colsVersion.update((v) => v + 1));
+      queueMicrotask(() => {
+        this.colsVersion.update((v) => v + 1);
+        this.gridApi?.refreshCells({ force: true });
+      });
     }
   });
 

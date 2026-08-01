@@ -94,8 +94,9 @@
 
 /* ---- Menu --------------------------------------------------------------- */
 .up__menu {
-  --cui-dropdown-min-width: 288px;
-  width: 288px;
+  --cui-dropdown-min-width: 340px;
+  width: 340px;
+  max-width: calc(100vw - 24px);
   padding: 0;
   border: 1px solid var(--cui-border-color);
   border-radius: 16px;

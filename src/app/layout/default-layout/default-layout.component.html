@@ -13,7 +13,6 @@
       </span>
       <span class="sidebar-brand-full ols-brand__full">
         <span class="ols-brand__text">OLS<span class="ols-brand__accent"> DASHBOARD</span></span>
-        <span class="ols-brand__sub">OLS Operations Command Center</span>
       </span>
       <span class="sidebar-brand-narrow ols-brand__short">OLS</span>
     </c-sidebar-brand>
@@ -24,7 +23,8 @@
   </ng-scrollbar>
 
   @if (!sidebar1.narrow) {
-    <c-sidebar-footer cSidebarToggle="sidebar1" class="border-top d-none d-lg-flex" toggle="unfoldable" style="cursor: pointer;">
+    <c-sidebar-footer cSidebarToggle="sidebar1" class="border-top ols-sidebar-footer d-none d-lg-flex" toggle="unfoldable" style="cursor: pointer;">
+      <span class="ols-cmd-foot">OLS Operations Command Center</span>
       <button cSidebarToggler aria-label="Toggle sidebar fold"></button>
     </c-sidebar-footer>
   }

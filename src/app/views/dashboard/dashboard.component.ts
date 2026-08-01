@@ -1,11 +1,11 @@
 import { Component, DestroyRef, computed, inject, OnInit, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
-import { forkJoin } from 'rxjs';
+import { forkJoin, interval } from 'rxjs';
 
 import { AuthService } from '../../auth/auth.service';
 import { APP_ENV, INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoints';
-import { formatDateTime } from '../../shared/date-utils';
+import { formatDateTime, syncAgo } from '../../shared/date-utils';
 import { AppHealth, AppServices, HealthStatus, serviceCategory } from '../../shared/infra-models';
 import { InfraDataService } from '../infra_pulse/infra-data.service';
 
@@ -63,7 +63,17 @@ export class DashboardComponent implements OnInit {
 
   readonly env = APP_ENV;
   readonly loading = signal(true);
+  /** Absolute timestamp of the last successful sync (shown as a hover tooltip). */
   readonly lastSync = signal<string>('');
+  /** Same moment as a Date, plus a ticking clock, so the relative label re-computes. */
+  private readonly lastSyncAt = signal<Date | null>(null);
+  private readonly nowTick = signal<number>(Date.now());
+
+  /** Live "5 min ago" style label for the last sync. */
+  readonly lastSyncRel = computed(() => {
+    const at = this.lastSyncAt();
+    return at ? syncAgo(at, this.nowTick()) : '';
+  });
 
   readonly healthByApp = signal<AppHealth[]>([]);
   readonly servicesByApp = signal<AppServices[]>([]);
@@ -202,6 +212,10 @@ export class DashboardComponent implements OnInit {
 
   ngOnInit(): void {
     this.load();
+    // Tick every 10s so the "x ago" last-synced label stays current.
+    interval(10_000)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.nowTick.set(Date.now()));
   }
 
   /** Pull health + services for every app (1 shared config call + agent fan-out). */
@@ -214,7 +228,10 @@ export class DashboardComponent implements OnInit {
       .subscribe({
         next: (list) => {
           this.healthByApp.set(list);
-          this.lastSync.set(formatDateTime(new Date()));
+          const at = new Date();
+          this.lastSyncAt.set(at);
+          this.lastSync.set(formatDateTime(at));
+          this.nowTick.set(at.getTime());
           this.loading.set(false);
         },
         error: () => this.loading.set(false)

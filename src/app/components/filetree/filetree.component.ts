@@ -13,6 +13,16 @@ export interface TreeNode {
 }
 
 /**
+ * A labelled root for the tree — e.g. one configured `base_log_path`. Its
+ * `label` (the full base path) is shown as a single, un-split root node and its
+ * `paths` (relative to that base) become its subtree.
+ */
+export interface TreeRoot {
+  label: string;
+  paths: string[];
+}
+
+/**
  * Generic, reusable file tree. Takes a flat list of file paths and renders a
  * collapsible folder/file hierarchy with a live filter. Emits the selected file
  * path. No third-party dependency — recursion via a self-referencing template.
@@ -26,6 +36,12 @@ export interface TreeNode {
 export class FiletreeComponent {
   /** Flat list of file paths, e.g. `/var/log/app/app.log`. */
   readonly paths = input<string[]>([]);
+  /**
+   * Labelled roots (one per configured base path). When provided, takes
+   * precedence over `paths`: each root's full label is shown as a single node
+   * and its relative `paths` form the subtree.
+   */
+  readonly roots = input<TreeRoot[] | null>(null);
   readonly loading = input(false);
 
   readonly fileSelect = output<string>();
@@ -36,9 +52,17 @@ export class FiletreeComponent {
   /** Bumped whenever a folder is toggled so `visibleNodes` recomputes. */
   private readonly rev = signal(0);
 
-  private readonly tree = computed<TreeNode[]>(() => buildTree(this.paths()));
+  private readonly tree = computed<TreeNode[]>(() => {
+    const roots = this.roots();
+    return roots && roots.length ? buildRootedTree(roots) : buildTree(this.paths());
+  });
 
-  readonly fileCount = computed(() => this.paths().length);
+  readonly fileCount = computed(() => {
+    const roots = this.roots();
+    return roots && roots.length
+      ? roots.reduce((n, r) => n + r.paths.length, 0)
+      : this.paths().length;
+  });
 
   readonly visibleNodes = computed<TreeNode[]>(() => {
     this.rev();
@@ -149,6 +173,38 @@ function buildTree(paths: string[]): TreeNode[] {
   }
   sortTree(root.children);
   return root.children;
+}
+
+/**
+ * Build a forest where each {@link TreeRoot} becomes one un-split root node
+ * (its full `label`, e.g. `C:/my/cib`), with its relative `paths` as the
+ * subtree. Each file node's `path` is the full absolute path (base + relative)
+ * so selection reports the real location. The first root starts expanded.
+ */
+function buildRootedTree(roots: TreeRoot[]): TreeNode[] {
+  return roots.map((root, i) => {
+    const label = root.label;
+    const sep = label.includes('\\') ? '\\' : '/';
+    const baseAcc = label.replace(/[\\/]+$/, '');
+    const rootNode: TreeNode = { name: label, path: label, type: 'folder', children: [], expanded: i === 0 };
+    for (const rawRel of root.paths) {
+      const parts = rawRel.split(/[\\/]+/).filter(Boolean);
+      let cursor = rootNode;
+      let acc = baseAcc;
+      parts.forEach((part, index) => {
+        acc = acc + sep + part;
+        const isFile = index === parts.length - 1;
+        let child = cursor.children.find((c) => c.name === part && c.type === (isFile ? 'file' : 'folder'));
+        if (!child) {
+          child = { name: part, path: acc, type: isFile ? 'file' : 'folder', children: [], expanded: false };
+          cursor.children.push(child);
+        }
+        cursor = child;
+      });
+    }
+    sortTree(rootNode.children);
+    return rootNode;
+  });
 }
 
 /** Folders first, then alphabetical. */
