@@ -99,26 +99,40 @@
   font-weight: 500;
 }
 
-/* Stack the wordmark + tagline when the sidebar is expanded. */
 .ols-brand__full {
   display: inline-flex;
-  flex-direction: column;
+  align-items: center;
   line-height: 1.15;
-}
-
-.ols-brand__sub {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: .3px;
-  text-transform: none;
-  color: rgba(255, 255, 255, .55);
-  margin-top: 1px;
 }
 
 .ols-brand__short {
   font-size: 1.05rem;
   font-weight: 800;
   color: #7ee8b6;
+}
+
+// ---- Sidebar footer (fold toggle + command-center tagline) -------------------
+.ols-sidebar-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ols-cmd-foot {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: rgba(255, 255, 255, .5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hide the tagline when the sidebar is folded to icons (also while unfoldable and
+   not hovered), so only the toggle icon shows in the collapsed rail. */
+.sidebar-narrow .ols-cmd-foot,
+.sidebar-narrow-unfoldable:not(:hover) .ols-cmd-foot {
+  display: none;
 }
 
 // ---- Header right-side nav (env badge + theme + profile) --------------------
@@ -131,8 +145,8 @@
 .ols-envbadge {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 11px;
+  gap: 13px;
+  padding: 4px 13px 4px 11px;
   border-radius: 999px;
   font-size: 11.5px;
   font-weight: 800;
@@ -172,8 +186,8 @@
 }
 
 @keyframes ols-env-ripple {
-  0% { transform: scale(1); opacity: .8; }
-  100% { transform: scale(2.6); opacity: 0; }
+  0% { transform: scale(1); opacity: .7; }
+  100% { transform: scale(2.1); opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

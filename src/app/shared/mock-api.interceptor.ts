@@ -8,8 +8,8 @@ import {
   AgentCollectPayload,
   MOCK_ACTIVITY,
   MOCK_DASHBOARD_STATS,
+  MOCK_LOG_SERVERS,
   MOCK_MEMORY_TREND,
-  MOCK_SERVERS,
   mockAgentAction,
   mockAgentCollect,
   mockConfigTables,
@@ -19,7 +19,9 @@ import {
   mockInfraConfig,
   mockMemory,
   mockShareSpace,
-  mockTableContent
+  mockTableColumns,
+  mockTableData,
+  isLogPathAllowed
 } from './mock-data';
 
 /**
@@ -81,22 +83,39 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
 
   // --- Log Analytics --------------------------------------------------------
   if (path === '/api/log/servers') {
-    return respond(MOCK_SERVERS);
+    return respond(MOCK_LOG_SERVERS);
   }
   if (path === '/api/log/files') {
     return respond({ paths: mockFilePaths(q.get('server') ?? '') });
   }
   if (path === '/api/log/file') {
-    return respond({ content: mockFileContent(q.get('path') ?? '') });
+    const p = q.get('path') ?? '';
+    if (!isLogPathAllowed(q.get('server'), p)) {
+      return respondError(400, 'Path is outside the server base log directories');
+    }
+    return respond({ content: mockFileContent(p) });
   }
   if (path === '/api/log/file-properties') {
-    return respond(mockFileProperties(q.get('path') ?? ''));
+    const p = q.get('path') ?? '';
+    if (!isLogPathAllowed(q.get('server'), p)) {
+      return respondError(400, 'Path is outside the server base log directories');
+    }
+    return respond(mockFileProperties(p));
   }
 
   // --- Config Ops Console ---------------------------------------------------
   const tablesMatch = path.match(/^\/api\/config\/(cib|group|retail)\/tables$/);
   if (tablesMatch) {
     return respond(mockConfigTables(tablesMatch[1] as ConfigScope));
+  }
+  // Column metadata for one table (dba_tab_columns).
+  const columnsMatch = path.match(/^\/api\/config\/(cib|group|retail)\/columns$/);
+  if (columnsMatch && req.method === 'POST') {
+    const body = (req.body ?? {}) as { table_name?: string };
+    if (!body.table_name) {
+      return respondError(400, 'table_name is required');
+    }
+    return respond(mockTableColumns(body.table_name));
   }
   const rollMatch = path.match(/^\/api\/config\/(cib|group|retail)\/roll$/);
   if (rollMatch && req.method === 'POST') {
@@ -114,24 +133,20 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     });
   }
 
+  // Table content — { cols, rows }. Dates are optional (COB tables only).
   const retrieveMatch = path.match(/^\/api\/config\/(cib|group|retail)\/retrieve$/);
   if (retrieveMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { table_name?: string; start?: string; end?: string; range?: boolean };
-    const content = mockTableContent(body.table_name ?? '');
-    // Emulate filtering: a range returns more rows than two discrete dates.
-    const keep = body.range ? Math.ceil(content.rows.length * 0.6) : 2;
-    return respond({ columns: content.columns, rows: content.rows.slice(0, keep) });
+    if (!body.table_name) {
+      return respondError(400, 'table_name is required');
+    }
+    return respond(mockTableData(body.table_name, { start: body.start, end: body.end, range: body.range }));
   }
 
   const createMatch = path.match(/^\/api\/config\/(cib|group|retail)\/rows$/);
   if (createMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { table_name?: string; rows?: unknown[] };
     return respond({ success: true, inserted: body.rows?.length ?? 0, table_name: body.table_name });
-  }
-
-  const contentMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/(.+)$/);
-  if (contentMatch) {
-    return respond(mockTableContent(decodeURIComponent(contentMatch[2])));
   }
 
   // --- Infrastructure Pulse -------------------------------------------------

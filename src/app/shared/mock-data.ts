@@ -1,14 +1,13 @@
 import {
   ActivityItem,
-  ColumnMeta,
-  ConfigTableRow,
+  ColumnsResponse,
   DashboardStat,
   FileProperties,
+  LogServersResponse,
   MemoryStats,
-  ServerInfo,
-  TableContent
+  TabularData
 } from './models';
-import { AppEnv, ConfigScope } from './api-endpoints';
+import { APP_ENV, AppEnv, ConfigScope } from './api-endpoints';
 import {
   AgentActionResponse,
   AgentCollectResponse,
@@ -30,52 +29,89 @@ import {
 // Log Analytics
 // ---------------------------------------------------------------------------
 
-export const MOCK_SERVERS: ServerInfo[] = [
-  { id: 'srv-local', name: 'LOCAL-DEV', host: 'localhost', environment: 'local' },
-  { id: 'srv-prod-01', name: 'PROD-APP-01', host: '10.0.1.11', environment: 'production' },
-  { id: 'srv-prod-02', name: 'PROD-APP-02', host: '10.0.1.12', environment: 'production' },
-  { id: 'srv-uat-01', name: 'UAT-APP-01', host: '10.0.2.21', environment: 'uat' }
+/**
+ * Servers API response — a map keyed by `{db_source}_{server_type}_{server_name}`
+ * whose value is the matching row(s) of the log-server config table. Mirrors the
+ * real backend shape exactly. Swap this for the live endpoint (set USE_MOCK
+ * false); the UI flattens it via `toLogServers()`.
+ */
+export const MOCK_LOG_SERVERS: LogServersResponse = {
+  OLSGROUP_APP_1_eur12: [{ server_name: 'eur12', base_log_path: 'C:/apps/data', server_type: 'APP_1', db_source: 'OLSGROUP' }],
+  // A server with SEVERAL configured base paths — each becomes its own tree root.
+  OLSCIB_WEB_A_1_eur17: [
+    { server_name: 'eur17', base_log_path: 'C:/my/cib', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
+    { server_name: 'eur17', base_log_path: 'D:/game', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
+    { server_name: 'eur17', base_log_path: 'E:/my', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
+    { server_name: 'eur17', base_log_path: 'F:/cib', server_type: 'WEB_A_1', db_source: 'OLSCIB' }
+  ],
+  OLSRETAIL_APP_2_eur21: [{ server_name: 'eur21', base_log_path: 'D:/ols/retail', server_type: 'APP_2', db_source: 'OLSRETAIL' }],
+  OLSGROUP_WEB_B_1_eur34: [
+    { server_name: 'eur34', base_log_path: 'D:/Apps/ols_monitoring_tool/logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' },
+    { server_name: 'eur34', base_log_path: 'D:/Apps/OLS/Logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' }
+  ]
+};
+
+// Relative subpaths under a base_log_path — a realistic spread of folders and
+// file types so the tree and its type icons are exercised.
+const REL_LOG_PATHS: string[] = [
+  'olslogfileerr.log',
+  'olslogfileout.log',
+  'BatchLogs/ols_main.log',
+  'BatchLogs/2026-07-30/run.log',
+  'BatchLogs/2026-07-30/summary.log',
+  'BatchLogs/2026-07-29/run.log',
+  'BatchLogs/2026-07-28/run.log',
+  'app/application.log',
+  'app/error.log',
+  'app/gc/gc.log',
+  'config/application.yml',
+  'config/logback.xml',
+  'config/db_settings.json',
+  'audit/access.log',
+  'reports/activity.csv',
+  'reports/readme.txt',
+  'scripts/startup.bat',
+  'archive/logs-2026-07.zip'
 ];
 
-// Local-style paths so the tree looks like a real filesystem. Swap the mock for
-// a real backend that lists the actual paths on the selected server.
-const BASE_LOG_PATHS: string[] = [
-  'D:\\OLS\\logs\\app\\application.log',
-  'D:\\OLS\\logs\\app\\application-2026-07-21.log',
-  'D:\\OLS\\logs\\app\\error.log',
-  'D:\\OLS\\logs\\app\\gc\\gc.log',
-  'D:\\OLS\\logs\\app\\gc\\gc-2026-07-21.log',
-  'D:\\OLS\\logs\\batch\\eod\\eod-run.log',
-  'D:\\OLS\\logs\\batch\\eod\\eod-summary.log',
-  'D:\\OLS\\logs\\batch\\intraday\\intraday.log',
-  'D:\\OLS\\logs\\audit\\access.log',
-  'D:\\OLS\\logs\\audit\\security.log',
-  'D:\\OLS\\config\\application.yml',
-  'D:\\OLS\\config\\logback.xml',
-  'D:\\OLS\\config\\servers\\node-list.json',
-  'D:\\OLS\\config\\db_settings.json',
-  // A spread of file types so the tree's type icons are all exercised.
-  'D:\\OLS\\reports\\a.html',
-  'D:\\OLS\\reports\\activity-type-temp.csv',
-  'D:\\OLS\\reports\\Clarus_GMAT_All.xlsx',
-  'D:\\OLS\\reports\\readme.txt',
-  'D:\\OLS\\scripts\\startup.bat',
-  'D:\\OLS\\scripts\\cleanup.sh',
-  'D:\\OLS\\scripts\\extract-data.sql',
-  'D:\\OLS\\archive\\logs-2026-07.zip'
-];
+/**
+ * File paths for a server — **absolute paths across every configured
+ * `base_log_path`**. The UI groups them back under each base (one tree root per
+ * base). A little variety per base so each root looks distinct.
+ */
+export function mockFilePaths(serverKey: string): string[] {
+  const bases = (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path);
+  const out: string[] = [];
+  bases.forEach((base, i) => {
+    const b = base.replace(/[\\/]+$/, '');
+    // Rotate the list a little per base so the roots aren't identical.
+    const rel = [...REL_LOG_PATHS];
+    if (i % 2 === 1) {
+      rel.push('app/http/access.log', 'app/http/requests.log');
+    }
+    if (serverKey.includes('APP_2')) {
+      rel.push('batch/settlement/settle.log');
+    }
+    rel.forEach((r) => out.push(`${b}/${r}`));
+  });
+  return out;
+}
 
-/** Slightly different tree per server so switching is visible. */
-export function mockFilePaths(serverId: string): string[] {
-  const paths = [...BASE_LOG_PATHS];
-  if (serverId.includes('prod-02')) {
-    paths.push('D:\\OLS\\logs\\app\\replication\\replica.log', 'D:\\OLS\\logs\\app\\replication\\lag.log');
-  } else if (serverId.includes('uat')) {
-    paths.push('D:\\OLS\\logs\\test\\regression\\suite.log', 'D:\\OLS\\logs\\test\\regression\\failures.log');
-  } else if (serverId.includes('local')) {
-    paths.push('D:\\OLS\\logs\\dev\\debug.log', 'D:\\OLS\\logs\\dev\\trace.log');
+/**
+ * True if `absPath` is inside one of the server's configured base paths (and has
+ * no `..` traversal) — the jail check a real backend must enforce before reading
+ * a file. Used by the content / properties handlers.
+ */
+export function isLogPathAllowed(serverKey: string | null, absPath: string | null): boolean {
+  const p = (absPath ?? '').replace(/\\/g, '/');
+  if (!p || p.split('/').some((s) => s === '..')) {
+    return false;
   }
-  return paths;
+  const lower = p.toLowerCase();
+  const bases = (MOCK_LOG_SERVERS[serverKey ?? ''] ?? []).map((r) =>
+    r.base_log_path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  );
+  return bases.some((b) => b && (lower === b || lower.startsWith(b + '/')));
 }
 
 /** Deterministic line count per file so pagination behaviour is demonstrable. */
@@ -225,63 +261,79 @@ export function mockFileProperties(path: string): FileProperties {
 // Config Ops Console — table catalogue per scope
 // ---------------------------------------------------------------------------
 
-const CONFIG_TABLES: Record<ConfigScope, ConfigTableRow[]> = {
+/** Catalogue definitions per scope — name + COB/active flags (rendered as Y/N). */
+interface CatalogueDef {
+  name: string;
+  cob: boolean;
+  active: boolean;
+}
+
+const CONFIG_TABLE_DEFS: Record<ConfigScope, CatalogueDef[]> = {
   cib: [
-    { table_name: 'CIB_ACCOUNT_MASTER', active: true, is_cob: true, last_update: '2026-07-21T22:14:05Z' },
-    { table_name: 'CIB_LIMIT_CONFIG', active: true, is_cob: false, last_update: '2026-07-20T09:31:00Z' },
-    { table_name: 'CIB_FX_RATES', active: false, is_cob: true, last_update: '2026-07-19T18:02:44Z' },
-    { table_name: 'CIB_PAYMENT_ROUTES', active: true, is_cob: true, last_update: '2026-07-21T06:45:12Z' },
-    { table_name: 'CIB_SWIFT_MAPPING', active: true, is_cob: false, last_update: '2026-07-18T14:20:00Z' }
+    { name: 'CIB_ACCOUNT_MASTER', cob: true, active: true },
+    { name: 'CIB_LIMIT_CONFIG', cob: false, active: true },
+    { name: 'CIB_FX_RATES', cob: true, active: false },
+    { name: 'CIB_PAYMENT_ROUTES', cob: true, active: true },
+    { name: 'CIB_SWIFT_MAPPING', cob: false, active: true }
   ],
   group: [
-    { table_name: 'GRP_ENTITY_HIERARCHY', active: true, is_cob: true, last_update: '2026-07-21T20:10:00Z' },
-    { table_name: 'GRP_COST_CENTER', active: true, is_cob: false, last_update: '2026-07-20T11:05:33Z' },
-    { table_name: 'GRP_GL_MAPPING', active: false, is_cob: true, last_update: '2026-07-17T08:00:00Z' },
-    { table_name: 'GRP_RISK_WEIGHTS', active: true, is_cob: true, last_update: '2026-07-21T02:15:59Z' }
+    { name: 'GRP_ENTITY_HIERARCHY', cob: true, active: true },
+    { name: 'GRP_COST_CENTER', cob: false, active: true },
+    { name: 'GRP_GL_MAPPING', cob: true, active: false },
+    { name: 'GRP_RISK_WEIGHTS', cob: true, active: true }
   ],
   retail: [
-    { table_name: 'RTL_PRODUCT_CATALOG', active: true, is_cob: true, last_update: '2026-07-21T21:44:00Z' },
-    { table_name: 'RTL_BRANCH_CONFIG', active: true, is_cob: false, last_update: '2026-07-20T16:22:10Z' },
-    { table_name: 'RTL_FEE_SCHEDULE', active: true, is_cob: true, last_update: '2026-07-19T09:12:41Z' },
-    { table_name: 'RTL_CARD_BINS', active: false, is_cob: false, last_update: '2026-07-15T13:37:00Z' },
-    { table_name: 'RTL_LOYALTY_TIERS', active: true, is_cob: true, last_update: '2026-07-21T05:05:05Z' },
-    { table_name: 'RTL_ATM_NETWORK', active: true, is_cob: true, last_update: '2026-07-21T19:59:59Z' }
+    { name: 'RTL_PRODUCT_CATALOG', cob: true, active: true },
+    { name: 'RTL_BRANCH_CONFIG', cob: false, active: true },
+    { name: 'RTL_FEE_SCHEDULE', cob: true, active: true },
+    { name: 'RTL_CARD_BINS', cob: false, active: false },
+    { name: 'RTL_LOYALTY_TIERS', cob: true, active: true },
+    { name: 'RTL_ATM_NETWORK', cob: true, active: true }
   ]
 };
 
 /** Prefix used to synthesise extra catalogue rows so pagination is demonstrable. */
 const SCOPE_PREFIX: Record<ConfigScope, string> = { cib: 'CIB', group: 'GRP', retail: 'RTL' };
 
-export function mockConfigTables(scope: ConfigScope): ConfigTableRow[] {
-  const base = CONFIG_TABLES[scope] ?? [];
-  // Pad out to ~60 rows so the grid's pagination is exercised.
+/** Catalogue columns — the generic `{ cols, rows }` shape the real API returns. */
+const CATALOGUE_COLS = ['APP_ENV', 'TABLE_NAME', 'IS_COBDT', 'IS_ACTIVE'];
+
+const yn = (v: boolean): string => (v ? 'Y' : 'N');
+
+/**
+ * Config catalogue for a scope, as `TabularData` ({ cols, rows }). Columns are
+ * returned by the API — the UI renders whatever arrives, so adding a column here
+ * needs no UI change.
+ */
+export function mockConfigTables(scope: ConfigScope): TabularData {
+  const defs = CONFIG_TABLE_DEFS[scope] ?? [];
   const prefix = SCOPE_PREFIX[scope] ?? 'OLS';
-  const extra: ConfigTableRow[] = [];
-  for (let i = base.length + 1; i <= 60; i++) {
-    extra.push({
-      table_name: `${prefix}_REF_DATA_${String(i).padStart(3, '0')}`,
-      active: i % 4 !== 0,
-      is_cob: i % 3 === 0,
-      last_update: new Date(Date.UTC(2026, 6, 21, 23 - (i % 20), (i * 11) % 60, 0)).toISOString()
-    });
+  const rows: unknown[][] = defs.map((d) => [APP_ENV, d.name, yn(d.cob), yn(d.active)]);
+  // Pad out to ~60 rows so the grid's pagination is exercised.
+  for (let i = defs.length + 1; i <= 60; i++) {
+    rows.push([APP_ENV, `${prefix}_REF_DATA_${String(i).padStart(3, '0')}`, yn(i % 3 === 0), yn(i % 4 !== 0)]);
   }
-  return [...base, ...extra];
+  return { cols: CATALOGUE_COLS, rows };
 }
 
 // ---------------------------------------------------------------------------
 // Config Ops Console — content of a single table (mixed data types)
 // ---------------------------------------------------------------------------
 
-const CONTENT_COLUMNS: ColumnMeta[] = [
-  { field: 'id', header: 'ID', type: 'number' },
-  { field: 'code', header: 'Code', type: 'string' },
-  { field: 'description', header: 'Description', type: 'clob' },
-  { field: 'payload', header: 'Payload', type: 'json' },
-  { field: 'definition', header: 'Definition', type: 'xml' },
-  { field: 'attachment', header: 'Attachment', type: 'blob' },
-  { field: 'enabled', header: 'Enabled', type: 'boolean' },
-  { field: 'cob_dt', header: 'COB Date', type: 'date' },
-  { field: 'updated_at', header: 'Updated At', type: 'timestamp' }
+/**
+ * Table schema — the column names + DB data types the columns API (dba_tab_columns)
+ * returns. Content rows are generated in this exact order.
+ */
+const CONTENT_SCHEMA: { name: string; db: string }[] = [
+  { name: 'ID', db: 'NUMBER' },
+  { name: 'CODE', db: 'VARCHAR2' },
+  { name: 'DESCRIPTION', db: 'CLOB' },
+  { name: 'PAYLOAD', db: 'JSON' },
+  { name: 'DEFINITION', db: 'XMLTYPE' },
+  { name: 'ATTACHMENT', db: 'BLOB' },
+  { name: 'ENABLED', db: 'CHAR' },
+  { name: 'COB_DT', db: 'DATE' },
+  { name: 'UPDATED_AT', db: 'TIMESTAMP' }
 ];
 
 function longText(tableName: string, i: number): string {
@@ -333,24 +385,46 @@ function blobData(i: number): string {
   return `data:application/octet-stream;base64,${chunk}${seed}QAAAABJRU5ErkJggg==`;
 }
 
-export function mockTableContent(tableName: string): TableContent {
+/**
+ * Column metadata for a table, as the columns API (dba_tab_columns) returns it:
+ * column name + DB data type. In this demo every table shares the same schema.
+ */
+export function mockTableColumns(_tableName: string): ColumnsResponse {
+  return { columns: CONTENT_SCHEMA.map((c) => ({ name: c.name, type: c.db })) };
+}
+
+/**
+ * Table content as `TabularData` ({ cols, rows }). When date filters are passed
+ * (COB tables) the result is sliced to emulate a date/range query; without them
+ * (non-COB tables) the full set is returned.
+ */
+export function mockTableData(
+  tableName: string,
+  opts?: { start?: string; end?: string; range?: boolean }
+): TabularData {
   // Enough rows to exercise the modal grid's pagination and vertical scrolling.
   const rowCount = 120 + (tableName.length % 40);
-  const rows: Record<string, unknown>[] = [];
+  const cols = CONTENT_SCHEMA.map((c) => c.name);
+  let rows: unknown[][] = [];
   for (let i = 1; i <= rowCount; i++) {
-    rows.push({
-      id: i,
-      code: `${tableName.split('_')[0]}-${String(i).padStart(4, '0')}`,
-      description: longText(tableName, i),
-      payload: jsonPayload(tableName, i),
-      definition: xmlDefinition(tableName, i),
-      attachment: blobData(i),
-      enabled: i % 3 !== 0,
-      cob_dt: new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
-      updated_at: new Date(Date.UTC(2026, 6, 21, 22 - (i % 12), (i * 7) % 60, 0)).toISOString()
-    });
+    rows.push([
+      i,
+      `${tableName.split('_')[0]}-${String(i).padStart(4, '0')}`,
+      longText(tableName, i),
+      jsonPayload(tableName, i),
+      xmlDefinition(tableName, i),
+      blobData(i),
+      i % 3 !== 0 ? 'Y' : 'N',
+      new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
+      new Date(Date.UTC(2026, 6, 21, 22 - (i % 12), (i * 7) % 60, 0)).toISOString()
+    ]);
   }
-  return { columns: CONTENT_COLUMNS, rows };
+  // Emulate a date filter: a discrete date returns a small slice; a range more.
+  if (opts?.start) {
+    const keep = opts.range ? Math.ceil(rows.length * 0.6) : Math.min(rows.length, 20);
+    rows = rows.slice(0, keep);
+  }
+  return { cols, rows };
 }
 
 // ---------------------------------------------------------------------------

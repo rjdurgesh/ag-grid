@@ -16,9 +16,9 @@ import {
   ModalTitleDirective
 } from '@coreui/angular';
 
-import { FiletreeComponent } from '../../components/filetree/filetree.component';
+import { FiletreeComponent, TreeRoot } from '../../components/filetree/filetree.component';
 import { LoaderComponent } from '../../components/loader/loader.component';
-import { FileProperties, ServerInfo } from '../../shared/models';
+import { FileProperties, LogServer } from '../../shared/models';
 import { formatDateTime } from '../../shared/date-utils';
 import { LogAnalyticsService } from './log_analytics.service';
 
@@ -54,9 +54,11 @@ export class LogAnalyticsComponent implements OnInit {
   private readonly svc = inject(LogAnalyticsService);
   private readonly destroyRef = inject(DestroyRef);
 
-  readonly servers = signal<ServerInfo[]>([]);
+  readonly servers = signal<LogServer[]>([]);
+  /** The composite key of the selected server (map key from the API). */
   readonly selectedServer = signal<string>('');
-  readonly paths = signal<string[]>([]);
+  /** One tree root per configured base path, each with its files. */
+  readonly fileRoots = signal<TreeRoot[]>([]);
   readonly loadingFiles = signal(false);
 
   readonly selectedFile = signal<string | null>(null);
@@ -70,19 +72,17 @@ export class LogAnalyticsComponent implements OnInit {
   readonly pageSize = signal(1000);
   readonly currentPage = signal(0);
 
-  /** Content sort: natural file order, or lines sorted A→Z / Z→A. */
-  readonly sortDir = signal<'none' | 'asc' | 'desc'>('none');
+  /**
+   * Line order: `desc` = newest / last line first (default — logs read best
+   * newest-first), `asc` = oldest / first line first (natural file order).
+   */
+  readonly order = signal<'asc' | 'desc'>('desc');
 
   readonly lines = computed(() => (this.fileContent() ? this.fileContent().split('\n') : []));
 
   private readonly sortedLines = computed(() => {
-    const dir = this.sortDir();
-    const all = this.lines();
-    if (dir === 'none') {
-      return all;
-    }
-    const sorted = [...all].sort((a, b) => a.localeCompare(b));
-    return dir === 'asc' ? sorted : sorted.reverse();
+    const lines = this.lines();
+    return this.order() === 'desc' ? [...lines].reverse() : lines;
   });
 
   readonly totalLines = computed(() => this.lines().length);
@@ -93,11 +93,14 @@ export class LogAnalyticsComponent implements OnInit {
     this.sortedLines().slice(this.pageStart(), this.pageEnd()).join('\n')
   );
 
-  /** Label for the currently selected server, shown in the footer. */
-  readonly selectedServerLabel = computed(() => {
-    const id = this.selectedServer();
-    return this.servers().find((s) => s.id === id)?.name ?? id;
+  /** The full record for the currently selected server. */
+  readonly selectedServerInfo = computed(() => {
+    const key = this.selectedServer();
+    return this.servers().find((s) => s.key === key) ?? null;
   });
+
+  /** Label for the currently selected server, shown in the footer. */
+  readonly selectedServerLabel = computed(() => this.selectedServerInfo()?.serverName ?? this.selectedServer());
 
   // --- properties dialog ----------------------------------------------------
   readonly propertiesVisible = signal(false);
@@ -111,7 +114,7 @@ export class LogAnalyticsComponent implements OnInit {
       .subscribe((servers) => {
         this.servers.set(servers);
         if (servers.length) {
-          this.selectServer(servers[0].id);
+          this.selectServer(servers[0].key);
         }
       });
   }
@@ -120,32 +123,36 @@ export class LogAnalyticsComponent implements OnInit {
     this.selectServer((event.target as HTMLSelectElement).value);
   }
 
-  private selectServer(id: string): void {
-    this.selectedServer.set(id);
+  private selectServer(key: string): void {
+    this.selectedServer.set(key);
     this.selectedFile.set(null);
     this.fileContent.set('');
-    this.loadFiles(id);
+    this.loadFiles();
   }
 
   /** Re-hit the files API for the current server and rebuild the tree. */
   refreshFiles(): void {
-    if (this.selectedServer()) {
-      this.loadFiles(this.selectedServer());
+    if (this.selectedServerInfo()) {
+      this.loadFiles();
     }
   }
 
-  private loadFiles(id: string): void {
+  private loadFiles(): void {
+    const server = this.selectedServerInfo();
+    if (!server) {
+      return;
+    }
     this.loadingFiles.set(true);
     this.svc
-      .getFiles(id)
+      .getFileRoots(server)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (paths) => {
-          this.paths.set(paths);
+        next: (roots) => {
+          this.fileRoots.set(roots);
           this.loadingFiles.set(false);
         },
         error: () => {
-          this.paths.set([]);
+          this.fileRoots.set([]);
           this.loadingFiles.set(false);
         }
       });
@@ -181,9 +188,9 @@ export class LogAnalyticsComponent implements OnInit {
     }
   }
 
-  /** Cycle content sort: none → ascending → descending → none. */
-  toggleSort(): void {
-    this.sortDir.update((d) => (d === 'none' ? 'asc' : d === 'asc' ? 'desc' : 'none'));
+  /** Flip line order: descending (newest first) ⇄ ascending (oldest first). */
+  toggleOrder(): void {
+    this.order.update((o) => (o === 'desc' ? 'asc' : 'desc'));
     this.currentPage.set(0);
   }
 

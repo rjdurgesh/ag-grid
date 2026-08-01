@@ -96,6 +96,42 @@ Key files: `auth/auth.service.ts` (facade), `auth/sso-auth.service.ts` (OIDC eng
 
 ---
 
+## 3b. RBAC — roles & permissions
+
+Access is driven by the user's role flags from your user table, fetched once after
+login: `GET /api/auth/roles` → `{ is_admin, is_read, is_salt }` (any combination).
+
+**Local testing** (while `USE_MOCK = true`): flip `DEV_ROLES` in
+[`api-endpoints.ts`](src/app/shared/api-endpoints.ts) to preview each level — the
+mock returns it. Ignored once the real endpoint answers.
+
+**Rules:**
+| Flag | Sees | Can act |
+|---|---|---|
+| `is_admin` | every screen | everywhere |
+| `is_read` | every screen | nothing (all action buttons hidden) |
+| `is_salt` | only `SALT_SCREENS` (Home + Config Ops) | on those screens (salt wins over read there) |
+| none | — | → redirected to the **No-Access** page |
+
+**Generic core** — [`src/app/auth/rbac.config.ts`](src/app/auth/rbac.config.ts) is the
+one place that lists screens. To gate a new screen: add its `ScreenKey` (+ to
+`ALL_SCREENS`, and `SALT_SCREENS` if salt should see it), a `SCREEN_ROUTES` entry, a
+`screenForNavUrl()` mapping, then on the route add `data: { screen: '<key>' }` +
+`canActivate: [rbacGuard]`. That's it — guard, nav filter and directives all read
+from here.
+
+**Enforcement pieces:**
+- [`rbac.service.ts`](src/app/auth/rbac.service.ts) — `canView(screen)` / `canWrite(screen)` / `hasAnyAccess()`.
+- [`rbac.guard.ts`](src/app/auth/rbac.guard.ts) — blocks routes; redirects to the first allowed screen or `/no-access`.
+- Sidebar nav is filtered by `canView` in [`default-layout.component.ts`](src/app/layout/default-layout/default-layout.component.ts).
+- [`*olsCanWrite="'<screen>'"`](src/app/auth/can-write.directive.ts) — hides action controls (used on Service Console Start/Stop).
+- `<app-grid-data [readOnly]="…">` — hides Config Ops mutating controls (Add/Save/Delete/Edit/Duplicate/Roll/Upload); bound from `canWrite('config_ops_console')`.
+
+To go live: point `API.auth.roles` at your backend so it returns the flags from the
+user table (`USE_MOCK = false`). Nothing else changes.
+
+---
+
 ## 4. API catalog
 
 All paths are relative to `API_BASE_URL`. Shapes are defined in
@@ -112,21 +148,42 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 | `GET /api/dashboard/memory-trend` | – | `number[]` (last 12 % samples) | Home trend chart |
 
 ### Log Analytics
+The `server` param is the composite key from the servers map (see below), e.g. `OLSCIB_WEB_A_1_eur17`.
+A server's value is an **array** — one row per configured `base_log_path` — so a
+server can have **several base paths**. The file tree shows **one root per base
+path** (full path label) with that base's files underneath. Files come back as
+**absolute paths**; the UI groups them under the matching base and **drops any
+path outside every configured base** (jail). `file` / `file-properties` take the
+absolute path; the backend must confirm it sits inside one of the server's base
+paths (and reject `..`) before reading.
+
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/log/servers` | – | `ServerInfo[]` |
-| `GET /api/log/files?server=<id>` | – | `{ paths: string[] }` |
-| `GET /api/log/file?server=<id>&path=<p>` | – | `{ content: string }` |
-| `GET /api/log/file-properties?server=<id>&path=<p>` | – | `FileProperties` |
+| `GET /api/log/servers` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`) |
+| `GET /api/log/files?server=<key>` | – | `{ paths: string[] }` — **absolute** paths across all the server's base paths |
+| `GET /api/log/file?server=<key>&path=<abs>` | – | `{ content: string }` (jailed to the server's bases) |
+| `GET /api/log/file-properties?server=<key>&path=<abs>` | – | `FileProperties` (jailed to the server's bases) |
 
 ### Config Ops Console (`scope` = `cib` \| `group` \| `retail`)
+The catalogue and content are **fully dynamic** — the grid renders whatever columns
+the API returns, so adding a column to the backing table needs no UI change. Only the
+*semantic* catalogue columns are looked up by name (case-insensitive): **TABLE_NAME**
+(row key + modal title), **IS_ACTIVE** (Y ⇒ openable), **IS_COBDT** (Y ⇒ date-partitioned).
+
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/config/{scope}/tables` | – | `ConfigTableRow[]` |
-| `GET /api/config/{scope}/table/{table_name}` | – | `TableContent` `{ columns, rows }` |
+| `GET /api/config/{scope}/tables` | – | `TabularData` `{ cols, rows }` — the catalogue |
+| `POST /api/config/{scope}/columns` | `{ table_name }` | `ColumnsResponse` `{ columns: [{ name, type }] }` — from `dba_tab_columns` |
+| `POST /api/config/{scope}/retrieve` | `{ table_name, start?, end?, range? }` | `TabularData` `{ cols, rows }` — dates OPTIONAL (COB only) |
 | `POST /api/config/{scope}/roll` | `{ table_name, from, to }` | `{ message, rolledRows }` |
-| `POST /api/config/{scope}/retrieve` | `{ table_name, start, end, range }` | `TableContent` |
 | `POST /api/config/{scope}/rows` | `{ table_name, rows }` | `{ success, inserted }` |
+
+**Eye (view content) flow, per row:** the UI fetches the table's columns
+(`/columns`, backed by `dba_tab_columns`) **and** its rows (`/retrieve`) in parallel,
+then merges them. Dates are sent to `/retrieve` **only when IS_COBDT = Y** (defaulting
+to T-1); non-COB tables (e.g. no COB date) pass just `{ table_name }` and get the full
+set with no date bar. The columns' DB `type` (VARCHAR2/NUMBER/DATE/CLOB/JSON/XMLTYPE/BLOB…)
+drives typed rendering (CLOB/JSON/XML/BLOB previews, date pickers, etc.).
 
 ### Infrastructure Pulse — see section 5 for the full flow
 | Method & path | Request | Response |
@@ -135,6 +192,131 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 | `POST /api/infra/agent/collect` | `{ hostname, host_platform, host_address, agent_listen_port, monitor_config }` | `AgentCollectResponse` |
 | `POST /api/infra/agent/action` | `{ hostname, host_address, agent_listen_port, service, script, action }` | `AgentActionResponse` |
 | `GET /api/infra/share?app=<app>&name=<share>` | – | `ShareSpaceResponse` `{ used, total, unit }` |
+
+### 4a. Concrete JSON — what each endpoint expects & returns
+
+Every request/response body below is exactly what the mock returns today, so your
+real backend can match it field-for-field. (Infra bodies are in section 5.)
+
+**Auth**
+```jsonc
+// POST /api/auth/login
+// → request
+{ "username": "OPS-10432", "password": "••••••" }
+// ← response
+{ "token": "<jwt>",
+  "user": { "username": "OPS-10432", "displayName": "Alex Morgan",
+            "email": "alex.morgan@ols.local", "role": "Ops Admin" } }
+
+// GET /api/auth/roles   (RBAC — see section 3b)   ← response
+{ "is_admin": true, "is_read": false, "is_salt": false }
+
+// POST /api/auth/logout   ← response
+{ "success": true }
+```
+
+**System & Home**
+```jsonc
+// GET /api/system/memory     ← { free, used, total, unit, percent }
+{ "free": 18.4, "used": 45.6, "total": 64, "unit": "GB", "percent": 71 }
+
+// GET /api/system/database   ← { name }
+{ "name": "OLSDB_DEV01" }
+
+// GET /api/dashboard/stats   ← DashboardStat[]
+[ { "key": "servers", "label": "Servers", "value": "24",
+    "delta": 2, "icon": "cilStorage", "color": "primary" } ]
+
+// GET /api/dashboard/activity  ← ActivityItem[]  (level: info|success|warning|danger)
+[ { "time": "2026-07-21T20:10:00Z", "title": "Replication lag",
+    "detail": "GRP entity hierarchy synced within SLA", "level": "info" } ]
+
+// GET /api/dashboard/memory-trend  ← number[]  (last 12 percent samples)
+[ 62, 64, 61, 68, 70, 66, 71, 69, 72, 70, 68, 71 ]
+```
+
+**Log Analytics**
+
+Servers come from a config table (`Server_name, base_log_path, is_base_server,
+is_active, server_type, db_source, app_env`). The API returns the active rows for
+the current environment as a **map** keyed by `{db_source}_{server_type}_{server_name}`.
+A key's value is an **array** — one row per configured `base_log_path`, so one
+server can have several. `toLogServers()` (in `log_analytics.service.ts`) flattens
+each key to a dropdown option carrying all its `basePaths`, and the file tree shows
+**one root per base path** (full path label) with that base's files under it.
+
+```jsonc
+// GET /api/log/servers   ← LogServersResponse (map key → array of rows, one per base path)
+{
+  "OLSGROUP_APP_1_eur12": [
+    { "server_name": "eur12", "base_log_path": "C:/apps/data", "server_type": "APP_1", "db_source": "OLSGROUP" }
+  ],
+  "OLSCIB_WEB_A_1_eur17": [
+    { "server_name": "eur17", "base_log_path": "C:/my/cib", "server_type": "WEB_A_1", "db_source": "OLSCIB" },
+    { "server_name": "eur17", "base_log_path": "D:/game",   "server_type": "WEB_A_1", "db_source": "OLSCIB" },
+    { "server_name": "eur17", "base_log_path": "E:/my",     "server_type": "WEB_A_1", "db_source": "OLSCIB" },
+    { "server_name": "eur17", "base_log_path": "F:/cib",    "server_type": "WEB_A_1", "db_source": "OLSCIB" }
+  ]
+}
+
+// GET /api/log/files?server=OLSCIB_WEB_A_1_eur17   ← { paths: string[] }
+// ABSOLUTE paths across every base; the UI groups them into one root per base and
+// drops anything outside all bases. Here: two roots (C:/my/cib and D:/game).
+{ "paths": [
+  "C:/my/cib/app/application.log", "C:/my/cib/BatchLogs/ols_main.log",
+  "D:/game/app/application.log",   "D:/game/config/logback.xml"
+] }
+
+// GET /api/log/file?server=<key>&path=C:/my/cib/app/application.log   ← { content: string }
+// Backend must confirm the path sits inside one of the server's base paths
+// (and reject `..`) before reading — the jail check.
+{ "content": "2026-07-21 20:10:00 INFO  Loader started\n..." }
+
+// GET /api/log/file-properties?server=<key>&path=C:/my/cib/app/application.log   ← FileProperties
+{ "name": "application.log", "type": "Log File", "location": "C:/my/cib/app",
+  "size": 20480, "created": "2026-07-01T09:00:00Z", "modified": "2026-07-21T20:10:00Z",
+  "accessed": "2026-07-21T20:11:00Z", "lines": 512, "attributes": "Read-only" }
+```
+
+**Config Ops Console** (`{scope}` = `cib` | `group` | `retail`)
+```jsonc
+// GET /api/config/{scope}/tables           ← TabularData { cols, rows }
+// Columns come straight from the API — the grid renders whatever arrives.
+{ "cols": ["APP_ENV", "TABLE_NAME", "IS_COBDT", "IS_ACTIVE"],
+  "rows": [
+    ["DEV", "EMPLOYEE", "N", "Y"],
+    ["DEV", "ORDER",    "Y", "Y"],
+    ["DEV", "BILL",     "N", "N"]
+  ] }
+
+// POST /api/config/{scope}/columns     → { table_name }
+//   ← ColumnsResponse — column metadata from dba_tab_columns
+{ "columns": [
+    { "name": "ID", "type": "NUMBER" },
+    { "name": "DESCRIPTION", "type": "CLOB" },
+    { "name": "PAYLOAD", "type": "JSON" },
+    { "name": "COB_DT", "type": "DATE" }
+  ] }
+// DB type → cell type: VARCHAR2/CHAR→string, NUMBER→number, DATE→date,
+// TIMESTAMP→timestamp, CLOB→clob, BLOB→blob, JSON→json, XMLTYPE→xml.
+
+// POST /api/config/{scope}/retrieve    → { table_name, start?, end?, range? }
+//   Dates are OPTIONAL — sent only when IS_COBDT = Y (range:false = the two
+//   dates only). A non-COB table (e.g. BILL, IS_COBDT = N) passes just
+//   { table_name }.
+//   ← TabularData { cols, rows }
+{ "cols": ["ID", "DESCRIPTION", "PAYLOAD", "COB_DT"],
+  "rows": [ [1, "…", "{\"ccy\":\"USD\"}", "2026-07-31"] ] }
+
+// POST /api/config/{scope}/roll        → { table_name, from, to }
+//                                       ← { success, table_name, from, to, rolledRows, message }
+// POST /api/config/{scope}/rows        → { table_name, rows: [ {…} ] }
+//                                       ← { success, inserted, table_name }
+```
+
+**Infrastructure Pulse** — request/response bodies (`HealthServerConfigRow`,
+`monitor_config` CLOB, `AgentCollectResponse`, `AgentActionResponse`,
+`ShareSpaceResponse`) are documented with JSON in **section 5** below.
 
 ---
 

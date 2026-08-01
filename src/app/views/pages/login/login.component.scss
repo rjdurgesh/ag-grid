@@ -354,11 +354,38 @@
 @keyframes ai-float-2 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-36px, 40px); } }
 @keyframes ai-float-3 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(30px, -34px); } }
 
+/* ----------------------------------------------------------------------------
+   Reduced-motion / no-animation fallback.
+
+   Many corporate/office machines (and VDI/Citrix sessions) ship with the OS
+   "reduce motion" setting ON — Windows: Settings › Accessibility › Visual
+   effects › "Animation effects" = Off, or the "Adjust for best performance"
+   system option. Edge/Chrome then report `prefers-reduced-motion: reduce` and
+   suppress every CSS animation. Because the AI-core rings are drawn as partial
+   arcs (only one border edge is coloured) they look "half-broken" once frozen.
+
+   So we don't just stop the animations here — we also give the core an
+   intentional STATIC state: full-circle rings, no lone orbiting satellite, a
+   solid centre dot. It reads as a clean emblem even with motion disabled.
+   -------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   .ai-orb, .ai-grid, .ai-beam, .ai-net__lines line, .ai-net__nodes circle,
   .ai-card__sheen, .ai-core__ring, .ai-core__orbit, .ai-core__dot,
   .ai-brand3d, .ai-brand__logo, .ai-sso__glow, .ai-foot__pulse, .ai-foot__pulse::after,
   .ai-card, .ai-login__stage {
-    animation: none;
+    animation: none !important;
   }
+
+  /* Complete, evenly-coloured rings instead of frozen partial arcs. */
+  .ai-core__ring { border-color: rgba(107, 120, 255, 0.5); }
+  .ai-core__ring--2 { border-color: rgba(35, 211, 163, 0.5); }
+  .ai-core__ring--3 { border-color: rgba(168, 85, 247, 0.5); }
+
+  /* The orbit only makes sense while spinning; hide the stranded satellite. */
+  .ai-core__orbit { display: none; }
+  .ai-card__sheen { display: none; }
+
+  /* Ensure the entered/settled state is visible (no fade-in to rely on). */
+  .ai-core__dot { opacity: 1; }
+  .ai-card { opacity: 1; }
 }

@@ -140,8 +140,10 @@ export const dateRenderer = (params: ICellRendererParams): string => {
 export class DateCellEditor {
   private input!: HTMLInputElement;
   private withTime = false;
+  private params!: ICellEditorParams;
 
   init(params: ICellEditorParams & { dataType?: CellDataType }): void {
+    this.params = params;
     this.withTime = params.dataType === 'timestamp';
     this.input = document.createElement('input');
     this.input.type = this.withTime ? 'datetime-local' : 'date';
@@ -156,6 +158,10 @@ export class DateCellEditor {
         this.input.value = this.withTime ? `${date}T${pad(d.getHours())}:${pad(d.getMinutes())}` : date;
       }
     }
+
+    // Commit the moment a date is chosen from the calendar — one click selects
+    // it and closes the editor, instead of leaving the cell in edit mode.
+    this.input.addEventListener('change', () => this.params.stopEditing());
   }
 
   getGui(): HTMLElement {

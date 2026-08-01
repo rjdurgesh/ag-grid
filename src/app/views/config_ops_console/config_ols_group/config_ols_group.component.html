@@ -11,7 +11,7 @@
   @if (activeTab() === 'config') {
     <app-grid-data
       #grid
-      [columns]="columns"
+      [columns]="columns()"
       [rows]="rows()"
       [loading]="loading()"
       [expandable]="true"
@@ -20,7 +20,8 @@
       [isRowActive]="isRowActive"
       [isRowCob]="isRowCob"
       [readOnly]="readOnly()"
-      idField="table_name"
+      [idField]="tableNameField()"
+      [titleField]="tableNameField()"
       gridHeight="calc(100vh - 268px)"
       (action)="onAction($event)"
       (refreshRequested)="reload()"

@@ -1,6 +1,6 @@
 import { ColDef, ICellRendererParams, ValueFormatterParams } from 'ag-grid-community';
 
-import { formatDateTime } from '../../shared/date-utils';
+import { formatDate, formatDateTime } from '../../shared/date-utils';
 import { DateCellEditor, dateRenderer, specialRenderer, withPlaceholder } from './grid-cell-renderers';
 import { GridColumn, GridContext, NEW_FLAG, prettifyHeader } from './grid-data.model';
 
@@ -62,7 +62,9 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
         break;
       case 'date':
       case 'timestamp':
-        def.valueFormatter = (p: ValueFormatterParams) => formatDateTime(p.value as string);
+        // Date columns show the date only; timestamps keep the time component.
+        def.valueFormatter = (p: ValueFormatterParams) =>
+          col.type === 'date' ? formatDate(p.value as string) : formatDateTime(p.value as string);
         def.minWidth = 185;
         // Value + corner triangle affordance; picked from a calendar, never typed.
         // The reduced right padding lets the marker sit in the true cell corner.
@@ -111,10 +113,17 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
  * class to instantiate. Blank on empty (new draft rows).
  */
 const booleanRenderer = (params: ICellRendererParams): string => {
-  if (params.value === null || params.value === undefined || params.value === '') {
+  const raw = params.value;
+  if (raw === null || raw === undefined || raw === '') {
     return '';
   }
-  const value = params.value === true || String(params.value).toUpperCase() === 'TRUE';
-  const cls = value ? 'text-bg-success' : 'text-bg-secondary';
-  return `<span class="badge ${cls} ols-bool-badge">${value ? 'Yes' : 'No'}</span>`;
+  const s = String(raw).trim().toUpperCase();
+  const truthy = raw === true || s === 'TRUE' || s === 'Y' || s === 'YES' || s === '1';
+  const falsy = raw === false || s === 'FALSE' || s === 'N' || s === 'NO' || s === '0';
+  // Unknown value → show it verbatim rather than mislabelling it.
+  if (!truthy && !falsy) {
+    return `<span class="badge text-bg-light ols-bool-badge">${s}</span>`;
+  }
+  const cls = truthy ? 'text-bg-success' : 'text-bg-secondary';
+  return `<span class="badge ${cls} ols-bool-badge">${truthy ? 'Yes' : 'No'}</span>`;
 };

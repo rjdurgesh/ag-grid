@@ -140,6 +140,13 @@
   gap: 10px;
 }
 
+/* The live "x ago" part, shown after the absolute timestamp. */
+.cc-hero__syncrel {
+  margin-left: 6px;
+  font-weight: 700;
+  color: #7ee8b6;
+}
+
 .cc-refresh {
   display: inline-flex;
   align-items: center;
@@ -492,65 +499,166 @@
 
 .cc-apps { margin-bottom: 14px; }
 
-/* ---- Attention lists ---------------------------------------------------- */
-.cc-attn__list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  max-height: 240px;
-  overflow: auto;
-}
+/* ---- Attention lists (styled like the Application Status Matrix rows) ----
+   NOTE: children are nested under `.cc-attn` (the card base) so `&__row`,
+   `&__cluster`, … compile to `.cc-attn__row`, `.cc-attn__cluster` — matching the
+   template. (Nesting them under `.cc-attn__row` would wrongly yield
+   `.cc-attn__row__cluster`.) */
+.cc-attn {
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    /* ~5 rows visible, then scroll. */
+    max-height: 312px;
+    overflow-y: auto;
+    padding-right: 5px;
 
-.cc-attn__row {
-  display: grid;
-  grid-template-columns: 6px 1.4fr 1fr auto;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--cui-body-color) 3%, transparent);
-  transition: transform 0.14s ease, background 0.14s ease;
-
-  &:hover {
-    transform: translateX(3px);
-    background: color-mix(in srgb, var(--cui-primary) 7%, transparent);
+    /* Thin, theme-aware scrollbar for the alert overflow. */
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--cui-body-color) 22%, transparent) transparent;
+    &::-webkit-scrollbar { width: 8px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--cui-body-color) 20%, transparent);
+      border-radius: 8px;
+    }
+    &::-webkit-scrollbar-thumb:hover {
+      background: color-mix(in srgb, var(--cui-body-color) 32%, transparent);
+    }
   }
 
-  &--warn { box-shadow: inset 3px 0 0 var(--cc-warn); }
-  &--crit { box-shadow: inset 3px 0 0 var(--cc-crit); background: color-mix(in srgb, var(--cc-crit) 6%, transparent); }
+  &__row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: nowrap;
+    /* Don't let the column flex-container squash rows — keep full height so the
+       list actually scrolls once alerts exceed the visible area. */
+    flex: 0 0 auto;
+    padding: 11px 14px 11px 18px;
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--cui-body-color) 3%, transparent);
+    border: 1px solid var(--cui-border-color);
+    overflow: hidden;
+    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 
-  &__sev {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
+    &:hover {
+      transform: translateX(4px);
+      background: color-mix(in srgb, var(--cui-primary) 6%, transparent);
+      border-color: color-mix(in srgb, var(--cui-primary) 35%, var(--cui-border-color));
+      box-shadow: -4px 6px 18px rgba(20, 30, 80, 0.1);
+    }
+  }
+
+  /* Severity rail (matches the matrix rows). */
+  &__rail {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
     background: var(--cc-warn);
   }
-  &--crit &__sev { background: var(--cc-crit); }
+  &__row--crit &__rail { background: var(--cc-crit); }
 
+  /* Leading resource icon chip. */
+  &__ico {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--cc-warn), color-mix(in srgb, var(--cc-warn) 62%, #000));
+  }
+  &__row--crit &__ico {
+    background: linear-gradient(135deg, var(--cc-crit), color-mix(in srgb, var(--cc-crit) 62%, #000));
+  }
+
+  /* Identity: name over context. Flexes to fill the row so the value cluster +
+     badge stay anchored on the right and align into a clean column across rows;
+     a long name truncates rather than shoving the status over. */
+  &__id {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    min-width: 0;
+  }
   &__name {
     font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-    font-size: 12.5px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--cui-body-color);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  &__app {
-    font-size: 11.5px;
+  &__meta {
+    font-size: 11px;
     color: var(--cui-secondary-color);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  &__detail {
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--cc-warn);
-    white-space: nowrap;
 
-    &--state { color: var(--cc-crit); }
+  /* Bordered value cluster — the same chip treatment as the matrix. Fixed width
+     so the status/metric (Stopped, Faulted, C:\ 83%, RAM 91%…) always begins at
+     the same x and reads as an aligned column down the card. */
+  &__cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    width: 152px;
+    padding: 4px 11px;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--cui-body-color) 4%, transparent);
+    border: 1px solid var(--cui-border-color);
   }
-  &--crit &__detail { color: var(--cc-crit); }
+  &__vdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--cc-warn);
+    box-shadow: 0 0 6px var(--cc-warn);
+  }
+  &__row--crit &__vdot { background: var(--cc-crit); box-shadow: 0 0 6px var(--cc-crit); }
+  &__val {
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 12px;
+    font-weight: 800;
+    color: #b9770c;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  &__row--crit &__val { color: #d63d3d; }
+
+  /* Right status badge (OK/WATCH/ALERT language of the matrix). */
+  &__badge {
+    /* Fixed width (not min-width) so ALERT / WATCH badges are identical and the
+       value column to their left aligns exactly across rows. */
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    width: 62px;
+    text-align: center;
+
+    &--warn { background: color-mix(in srgb, var(--cc-warn) 20%, transparent); color: #b9770c; }
+    &--crit {
+      background: color-mix(in srgb, var(--cc-crit) 18%, transparent);
+      color: #d63d3d;
+      animation: cc-blink 1.4s ease-in-out infinite;
+    }
+  }
 }
 
 @keyframes cc-pulse {
@@ -565,7 +673,8 @@
 @media (prefers-reduced-motion: reduce) {
   .cc-live__dot,
   .cc-posture__pulse,
-  .cc-app__badge--critical {
+  .cc-app__badge--critical,
+  .cc-attn__badge--crit {
     animation: none;
     transition: none;
   }
@@ -580,13 +689,14 @@
   }
   .cc-chip--warn,
   .cc-app__badge--degraded,
-  .cc-attn__row--warn .cc-attn__detail {
+  .cc-attn__row--warn .cc-attn__val,
+  .cc-attn__badge--warn {
     color: #fbbf24;
   }
   .cc-chip--crit,
   .cc-app__badge--critical,
-  .cc-attn__row--crit .cc-attn__detail,
-  .cc-attn__detail--state {
+  .cc-attn__row--crit .cc-attn__val,
+  .cc-attn__badge--crit {
     color: #f87171;
   }
 }

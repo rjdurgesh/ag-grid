@@ -45,6 +45,37 @@ export function previousWeekdayIso(from: Date = new Date()): string {
   return formatDate(previousWeekday(from));
 }
 
+/**
+ * Compact "time since" label for the Home last-synced line, e.g.
+ * `just now`, `10 sec ago`, `5 min ago`, `4 hour ago`, `6 hour 30 min ago`,
+ * `2 days ago`. Pass a live `now` (ms) so callers can tick it and have the
+ * label re-compute.
+ */
+export function syncAgo(value: Date | number, now: number = Date.now()): string {
+  const then = value instanceof Date ? value.getTime() : value;
+  let s = Math.floor((now - then) / 1000);
+  if (s < 0) {
+    s = 0;
+  }
+  if (s < 10) {
+    return 'just now';
+  }
+  if (s < 60) {
+    return `${s} sec ago`;
+  }
+  const m = Math.floor(s / 60);
+  if (m < 60) {
+    return `${m} min ago`;
+  }
+  const h = Math.floor(m / 60);
+  if (h < 24) {
+    const rem = m % 60;
+    return rem ? `${h} hour ${rem} min ago` : `${h} hour ago`;
+  }
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+
 /** Human-friendly "x minutes ago" style relative time. */
 export function timeAgo(value: string | number | Date): string {
   const d = value instanceof Date ? value : new Date(value);

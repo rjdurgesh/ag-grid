@@ -97,15 +97,19 @@ export const API = {
       `${API_BASE_URL}/api/log/file-properties?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`
   },
   config: {
-    /** Table catalogue for a scope (cib | group | retail). */
+    /** Table catalogue for a scope — returns `TabularData` ({ cols, rows }). */
     tables: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/tables`,
-    /** Row content of a single table within a scope. */
-    tableContent: (scope: ConfigScope, tableName: string) =>
-      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(tableName)}`,
+    /**
+     * Column metadata for one table (from `dba_tab_columns`). POST { table_name }
+     * → `ColumnsResponse`. Drives the modal grid's column headers + typed rendering.
+     */
+    columns: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/columns`,
     /** Roll (COB) data for a table over a date range. POST { table_name, from, to }. */
     rollData: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/roll`,
     /**
-     * Retrieve rows for specific dates. POST { table_name, start, end, range }.
+     * Table content. POST { table_name, start?, end?, range? } → `TabularData`.
+     * Dates are OPTIONAL — sent only for COB tables (IS_COBDT = Y); non-COB
+     * tables (e.g. no COB date) pass just { table_name }.
      * `range: false` = the two dates only; `true` = everything between them.
      */
     retrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/retrieve`,
