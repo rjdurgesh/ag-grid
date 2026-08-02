@@ -55,11 +55,9 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
         def.cellRenderer = booleanRenderer;
         def.maxWidth = 140;
         def.cellClass = 'ols-cell-center';
-        if (options.editableDrafts) {
-          def.cellEditor = 'agSelectCellEditor';
-          // Y/N flags round-trip to Oracle CHAR(1) columns.
-          def.cellEditorParams = { values: ['Y', 'N'] };
-        }
+        // Edited as FREE TEXT (default editor) — not a Y/N dropdown. The user may
+        // need to enter a null/blank or a value other than Y/N; the badge renderer
+        // still colours whatever comes back. No cellEditor override here.
         break;
       case 'date':
       case 'timestamp':

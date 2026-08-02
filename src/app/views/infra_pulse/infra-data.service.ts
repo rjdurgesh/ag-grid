@@ -3,7 +3,8 @@ import { forkJoin, Observable, of, throwError } from 'rxjs';
 import { map, shareReplay, switchMap } from 'rxjs/operators';
 
 import { ApiDataService } from '../../shared/api-data.service';
-import { API, APP_ENV, INFRA_APP_LABELS, InfraApp } from '../../shared/api-endpoints';
+import { API, INFRA_APP_LABELS, InfraApp } from '../../shared/api-endpoints';
+import { environment } from '../../../environments/environment';
 import {
   AgentCollectResponse,
   AppHealth,
@@ -56,7 +57,7 @@ export class InfraDataService {
   serverConfigs(): Observable<HealthServerConfigRow[]> {
     if (!this.config$) {
       this.config$ = this.api
-        .get<HealthServerConfigRow[]>(API.infra.config(APP_ENV))
+        .get<HealthServerConfigRow[]>(API.infra.config(environment.appEnv))
         .pipe(shareReplay(1));
     }
     return this.config$;

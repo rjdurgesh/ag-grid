@@ -2,7 +2,8 @@ import { inject, Injectable, signal } from '@angular/core';
 import { Observable, tap } from 'rxjs';
 
 import { ApiDataService } from '../shared/api-data.service';
-import { API, IS_SSO_ENABLED } from '../shared/api-endpoints';
+import { API } from '../shared/api-endpoints';
+import { environment } from '../../environments/environment';
 import { AuthUser, LoginResponse } from '../shared/models';
 import { RbacService } from './rbac.service';
 import { SsoAuthService, TOKEN_KEY, USER_KEY } from './sso-auth.service';
@@ -24,7 +25,7 @@ export class AuthService {
   private readonly rbac = inject(RbacService);
 
   /** True when the app is running in OpenID/SSO mode. */
-  readonly ssoEnabled = IS_SSO_ENABLED;
+  readonly ssoEnabled = environment.isSsoEnabled;
 
   /** Current user, kept in sync for the header greeting. */
   readonly user = signal<AuthUser | null>(this.readStoredUser());
@@ -53,13 +54,13 @@ export class AuthService {
    *    so the caller can navigate onward.
    */
   async signIn(returnUrl = '/home'): Promise<boolean> {
-    if (IS_SSO_ENABLED) {
+    if (environment.isSsoEnabled) {
       await this.sso.startLogin(returnUrl);
       return false;
     }
     const user: AuthUser = {
-      username: 'OPS-10432',
-      displayName: 'Alex Morgan',
+      username: environment.username,
+      displayName: environment.name,
       email: 'alex.morgan@ols.local',
       role: 'Ops Admin'
     };
@@ -93,16 +94,16 @@ export class AuthService {
 
   // --- Shared ---------------------------------------------------------------
   isAuthenticated(): boolean {
-    return IS_SSO_ENABLED ? this.sso.isAuthenticated() : !!localStorage.getItem(TOKEN_KEY);
+    return environment.isSsoEnabled ? this.sso.isAuthenticated() : !!localStorage.getItem(TOKEN_KEY);
   }
 
   get token(): string | null {
-    return IS_SSO_ENABLED ? this.sso.accessToken : localStorage.getItem(TOKEN_KEY);
+    return environment.isSsoEnabled ? this.sso.accessToken : localStorage.getItem(TOKEN_KEY);
   }
 
   logout(): void {
     this.rbac.reset();
-    if (IS_SSO_ENABLED) {
+    if (environment.isSsoEnabled) {
       // Clears the session and redirects to the provider end-session → /login,
       // so the next sign-in re-authenticates.
       this.user.set(null);

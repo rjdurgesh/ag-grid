@@ -1,65 +1,29 @@
 /**
  * Central place for every backend URL used by the OLS Dashboard.
  *
- * Nothing else in the app should hardcode a URL — import from here so that
- * pointing the app at a real backend is a one-line change.
- *
- *  - `API_BASE_URL`  : root of the real backend. Swap this for your server.
- *  - `USE_MOCK`      : while `true`, `mockApiInterceptor` answers these routes
- *                      with the canned data in `mock-data.ts`. Set to `false`
- *                      (or remove the interceptor in app.config.ts) once the
- *                      real backend is available.
+ * URLs only. All app/runtime config — base URL, environment, mock toggle,
+ * support email, SSO flag, dev roles, demo user — lives in
+ * `src/environments/environment.ts`. This file reads `apiBaseUrl` from there and
+ * builds the endpoints; nothing else should hardcode a URL — import `API` here.
  */
 
-/** Root URL of the backend. Replace with your real host when ready. */
-export const API_BASE_URL = 'https://ols-api.local';
+import { environment } from '../../environments/environment';
 
-/** When true, requests to the endpoints below are answered by the mock interceptor. */
-export const USE_MOCK = true;
+/** Env types live with the config; re-exported so existing imports keep working. */
+export type { AppEnv, ApiEnv } from '../../environments/environment';
+import type { AppEnv, ApiEnv } from '../../environments/environment';
 
-/** Environment this tool instance is running in — as configured & displayed. */
-export type AppEnv = 'DEV' | 'STG' | 'LIVE';
-
-/** Environment label as the BACKEND knows it — the UI's `LIVE` is the API's `PROD`. */
-export type ApiEnv = 'DEV' | 'STG' | 'PROD';
-
-/**
- * The environment this deployment is running in. **Change this per deployment**
- * (DEV / STG / LIVE) — it is the single source of truth for the running
- * environment, used for display and (via {@link apiEnv}) in API calls.
- */
-export const APP_ENV: AppEnv = 'DEV';
+/** Root URL of the backend (from the global environment config). */
+const API_BASE_URL = environment.apiBaseUrl;
 
 /**
  * The environment label sent to the BACKEND. The UI stores/shows `LIVE`, but the
  * APIs expect `PROD`, so `LIVE` is mapped to `PROD` here (DEV/STG pass through).
- * Use this — never the raw {@link APP_ENV} — for any env value put on the wire.
+ * Use this — never the raw `environment.appEnv` — for any env value on the wire.
  */
-export function apiEnv(env: AppEnv = APP_ENV): ApiEnv {
+export function apiEnv(env: AppEnv = environment.appEnv): ApiEnv {
   return env === 'LIVE' ? 'PROD' : env;
 }
-
-/**
- * Master switch for OpenID Connect / SSO.
- *  - `true`  → users authenticate against the configured OIDC provider
- *              (see `src/app/auth/sso.config.ts`); tokens auto-renew and expiry
- *              forces re-authentication.
- *  - `false` → SSO is bypassed and the app uses the simple direct login form.
- * Keep it `false` until `SSO_CONFIG` is filled in with your provider details.
- */
-export const IS_SSO_ENABLED = false;
-
-/**
- * Local role flags used while the real `GET /api/auth/roles` is not wired
- * (`USE_MOCK = true`). Flip these to preview each access level — admin (all),
- * read (view-only), salt (Home + Config Ops, can act there). Any combination is
- * allowed. Ignored once the real backend returns the user's roles.
- */
-export const DEV_ROLES = {
-  is_admin: true,
-  is_read: false,
-  is_salt: false
-} as const;
 
 /** Scopes handled by the Config Ops Console. */
 export type ConfigScope = 'cib' | 'group' | 'retail';

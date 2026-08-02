@@ -4,7 +4,8 @@ import { RouterLink } from '@angular/router';
 import { forkJoin, interval } from 'rxjs';
 
 import { AuthService } from '../../auth/auth.service';
-import { APP_ENV, INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoints';
+import { INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoints';
+import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
 import { AppHealth, AppServices, HealthStatus, serviceCategory } from '../../shared/infra-models';
 import { InfraDataService } from '../infra_pulse/infra-data.service';
@@ -61,7 +62,7 @@ export class DashboardComponent implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly destroyRef = inject(DestroyRef);
 
-  readonly env = APP_ENV;
+  readonly env = environment.appEnv;
   readonly loading = signal(true);
   /** Absolute timestamp of the last successful sync (shown as a hover tooltip). */
   readonly lastSync = signal<string>('');

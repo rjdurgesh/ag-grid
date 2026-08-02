@@ -712,9 +712,11 @@ export class GridDataComponent {
 
   // --- Add / duplicate / save / cancel rows ---------------------------------
   /**
-   * Insert a blank editable row at the end of the page the user is currently
-   * on, so the new line appears where they are working rather than on the last
-   * page. Order is irrelevant to the backend — it is an INSERT either way.
+   * Insert a blank editable row at the **top of the first page**. Adding at the
+   * bottom pushed each new draft onto a later page once the first page filled,
+   * making multi-row entry painful; keeping them at the top clusters every new
+   * draft together where the user is working. Order is irrelevant to the backend
+   * — it is an INSERT either way.
    */
   addRow(): void {
     const content = this.modalContent();
@@ -735,7 +737,7 @@ export class GridDataComponent {
     for (const col of content.columns) {
       draft[col.field] = col.type === 'date' || col.type === 'timestamp' ? today : '';
     }
-    this.insertDraft(draft, this.currentPageEndIndex());
+    this.insertDraft(draft, 0);
   }
 
   /** Clone a saved row into an editable draft placed directly beneath it. */
@@ -758,32 +760,15 @@ export class GridDataComponent {
       return next;
     });
     // The grid picks up the new rowData on the next change-detection pass, so
-    // once the node exists: auto-SELECT the new draft (Save persists only ticked
-    // drafts) and scroll it into view.
+    // once the node exists: jump to the page the draft landed on (page 0 for
+    // Add), auto-SELECT it (Save persists only ticked drafts) and reveal it.
     const draftId = String(draft[ROW_ID]);
     setTimeout(() => {
+      const size = this.modalApi?.paginationGetPageSize() ?? placed + 1;
+      this.modalApi?.paginationGoToPage(Math.floor(placed / size));
       this.modalApi?.getRowNode(draftId)?.setSelected(true);
-      this.modalApi?.ensureIndexVisible(placed, 'bottom');
+      this.modalApi?.ensureIndexVisible(placed, 'top');
     }, 0);
-  }
-
-  /**
-   * Index at which to place a new row so it lands at the bottom of the page the
-   * user is currently viewing. On a partially filled page the draft is appended
-   * after the last row; on a full page it takes the last visible slot (the row
-   * that was last spills to the next page), so the user always sees it.
-   */
-  private currentPageEndIndex(): number {
-    const api = this.modalApi;
-    const total = this.modalRows().length;
-    if (!api) {
-      return total;
-    }
-    const size = api.paginationGetPageSize();
-    const pageStart = api.paginationGetCurrentPage() * size;
-    const pageEndExclusive = Math.min(pageStart + size, total);
-    const rowsOnPage = pageEndExclusive - pageStart;
-    return rowsOnPage < size ? pageEndExclusive : pageStart + size - 1;
   }
 
   // --- Inline edit of a saved row -------------------------------------------

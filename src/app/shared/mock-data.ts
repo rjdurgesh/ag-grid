@@ -9,7 +9,8 @@ import {
   TableContentResponse,
   TabularData
 } from './models';
-import { APP_ENV, ApiEnv, ConfigScope } from './api-endpoints';
+import { ApiEnv, ConfigScope } from './api-endpoints';
+import { environment } from '../../environments/environment';
 import {
   AgentActionResponse,
   AgentCollectResponse,
@@ -359,10 +360,10 @@ const yn = (v: boolean): string => (v ? 'Y' : 'N');
 export function mockConfigTables(scope: ConfigScope): TabularData {
   const defs = CONFIG_TABLE_DEFS[scope] ?? [];
   const prefix = SCOPE_PREFIX[scope] ?? 'OLS';
-  const rows: unknown[][] = defs.map((d) => [APP_ENV, d.name, yn(d.cob), yn(d.active)]);
+  const rows: unknown[][] = defs.map((d) => [environment.appEnv,d.name, yn(d.cob), yn(d.active)]);
   // Pad out to ~60 rows so the grid's pagination is exercised.
   for (let i = defs.length + 1; i <= 60; i++) {
-    rows.push([APP_ENV, `${prefix}_REF_DATA_${String(i).padStart(3, '0')}`, yn(i % 3 === 0), yn(i % 4 !== 0)]);
+    rows.push([environment.appEnv,`${prefix}_REF_DATA_${String(i).padStart(3, '0')}`, yn(i % 3 === 0), yn(i % 4 !== 0)]);
   }
   return { cols: CATALOGUE_COLS, rows };
 }
@@ -376,9 +377,9 @@ export function mockColumnRetrieve(tableName: string): TabularData {
   const cols = ['APP_ENV', 'TABLE_NAME', 'IS_COBDT', 'IS_ACTIVE'];
   const seed = [...tableName].reduce((a, c) => a + c.charCodeAt(0), 0);
   const rows: unknown[][] = [
-    [APP_ENV, tableName, yn(seed % 2 === 0), 'Y'],
-    [APP_ENV, `${tableName}_HIST`, yn(seed % 3 === 0), yn(seed % 2 === 1)],
-    [APP_ENV, `${tableName}_STG`, 'N', 'Y']
+    [environment.appEnv,tableName, yn(seed % 2 === 0), 'Y'],
+    [environment.appEnv,`${tableName}_HIST`, yn(seed % 3 === 0), yn(seed % 2 === 1)],
+    [environment.appEnv,`${tableName}_STG`, 'N', 'Y']
   ];
   return { cols, rows };
 }
