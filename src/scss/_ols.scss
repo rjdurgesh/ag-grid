@@ -342,6 +342,21 @@
 
   &:hover .ols-special__type,
   &:hover .ols-special__dots { text-decoration: underline; }
+
+  /* Editable variant: a pencil affordance sits after the token / hint so it is
+     obviously clickable to open the value editor, even when the cell is empty. */
+  &--edit {
+    gap: 5px;
+
+    .ols-special__pencil {
+      display: inline-flex;
+      align-items: center;
+      color: var(--cui-primary, #4d5dfb);
+      opacity: 0.7;
+    }
+
+    &:hover .ols-special__pencil { opacity: 1; }
+  }
 }
 
 /* Inactive (ACTIVE = N) rows are muted and their view control is disabled */

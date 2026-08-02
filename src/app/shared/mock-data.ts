@@ -1,10 +1,12 @@
 import {
   ActivityItem,
-  ColumnsResponse,
   DashboardStat,
   FileProperties,
+  LogDirEntry,
+  LogFilesResponse,
   LogServersResponse,
   MemoryStats,
+  TableContentResponse,
   TabularData
 } from './models';
 import { APP_ENV, AppEnv, ConfigScope } from './api-endpoints';
@@ -48,8 +50,18 @@ export const MOCK_LOG_SERVERS: LogServersResponse = {
   OLSGROUP_WEB_B_1_eur34: [
     { server_name: 'eur34', base_log_path: 'D:/Apps/ols_monitoring_tool/logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' },
     { server_name: 'eur34', base_log_path: 'D:/Apps/OLS/Logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' }
-  ]
+  ],
+  // DEMO: a server whose tree is served LAZILY (mode:'lazy') to exercise the
+  // load-on-expand path. A real backend picks the mode from tree size. Remove
+  // this entry (and it drops from LAZY_LOG_SERVERS) if you don't want it.
+  OLSGROUP_APP_9_eur99: [{ server_name: 'eur99 · lazy demo', base_log_path: 'C:/bigdata/logs', server_type: 'APP_9', db_source: 'OLSGROUP' }]
 };
+
+/**
+ * Server keys the mock serves in `lazy` mode. A real backend decides this itself
+ * (per tree size) — this set just lets the demo exercise the load-on-expand UI.
+ */
+export const LAZY_LOG_SERVERS = new Set<string>(['OLSGROUP_APP_9_eur99']);
 
 // Relative subpaths under a base_log_path — a realistic spread of folders and
 // file types so the tree and its type icons are exercised.
@@ -95,6 +107,45 @@ export function mockFilePaths(serverKey: string): string[] {
     rel.forEach((r) => out.push(`${b}/${r}`));
   });
   return out;
+}
+
+/**
+ * The `GET /api/log/files` envelope. Full mode (default) returns every path up
+ * front; the lazy demo server returns only its root folders and lets the UI
+ * fetch children on expand via {@link mockDirEntries}.
+ */
+export function mockLogFiles(serverKey: string): LogFilesResponse {
+  if (LAZY_LOG_SERVERS.has(serverKey)) {
+    return { mode: 'lazy', roots: (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path) };
+  }
+  return { mode: 'full', paths: mockFilePaths(serverKey) };
+}
+
+/**
+ * Immediate children of one folder (lazy mode) — a deterministic, depth-capped
+ * synthetic tree so load-on-expand is demonstrable without a real filesystem.
+ * A real backend lists the actual directory. Returns [] for a path outside the
+ * server's bases (belt-and-braces; the interceptor also jails it).
+ */
+export function mockDirEntries(serverKey: string, folderPath: string): LogDirEntry[] {
+  const p = (folderPath ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const bases = (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path.replace(/[\\/]+$/, ''));
+  const base = bases.find((b) => p.toLowerCase() === b.toLowerCase() || p.toLowerCase().startsWith(b.toLowerCase() + '/'));
+  if (!base) {
+    return [];
+  }
+  const rel = p.slice(base.length).replace(/^\/+/, '');
+  const depth = rel ? rel.split('/').length : 0;
+  const entries: LogDirEntry[] = [];
+  // Sub-folders, capped so the demo tree is deep but finite.
+  if (depth < 4) {
+    ['batch', 'app', 'archive'].forEach((name) => entries.push({ name, type: 'folder', path: `${p}/${name}` }));
+  }
+  // A few files at every level (varied extensions to exercise the icons).
+  ['run.log', 'error.log', 'summary.log', 'settings.json'].forEach((name) =>
+    entries.push({ name, type: 'file', path: `${p}/${name}` })
+  );
+  return entries;
 }
 
 /**
@@ -324,16 +375,16 @@ export function mockConfigTables(scope: ConfigScope): TabularData {
  * Table schema — the column names + DB data types the columns API (dba_tab_columns)
  * returns. Content rows are generated in this exact order.
  */
-const CONTENT_SCHEMA: { name: string; db: string }[] = [
-  { name: 'ID', db: 'NUMBER' },
-  { name: 'CODE', db: 'VARCHAR2' },
-  { name: 'DESCRIPTION', db: 'CLOB' },
-  { name: 'PAYLOAD', db: 'JSON' },
-  { name: 'DEFINITION', db: 'XMLTYPE' },
-  { name: 'ATTACHMENT', db: 'BLOB' },
-  { name: 'ENABLED', db: 'CHAR' },
-  { name: 'COB_DT', db: 'DATE' },
-  { name: 'UPDATED_AT', db: 'TIMESTAMP' }
+const CONTENT_SCHEMA: { name: string; cx: string }[] = [
+  { name: 'ID', cx: '<cx_Oracle.DbType DB_TYPE_NUMBER>' },
+  { name: 'CODE', cx: '<cx_Oracle.DbType DB_TYPE_VARCHAR>' },
+  { name: 'DESCRIPTION', cx: '<cx_Oracle.DbType DB_TYPE_CLOB>' },
+  { name: 'PAYLOAD', cx: '<cx_Oracle.DbType DB_TYPE_JSON>' },
+  { name: 'DEFINITION', cx: '<cx_Oracle.DbType DB_TYPE_XMLTYPE>' },
+  { name: 'ATTACHMENT', cx: '<cx_Oracle.DbType DB_TYPE_BLOB>' },
+  { name: 'ENABLED', cx: '<cx_Oracle.DbType DB_TYPE_CHAR>' },
+  { name: 'COB_DT', cx: '<cx_Oracle.DbType DB_TYPE_DATE>' },
+  { name: 'UPDATED_AT', cx: '<cx_Oracle.DbType DB_TYPE_TIMESTAMP>' }
 ];
 
 function longText(tableName: string, i: number): string {
@@ -386,45 +437,44 @@ function blobData(i: number): string {
 }
 
 /**
- * Column metadata for a table, as the columns API (dba_tab_columns) returns it:
- * column name + DB data type. In this demo every table shares the same schema.
- */
-export function mockTableColumns(_tableName: string): ColumnsResponse {
-  return { columns: CONTENT_SCHEMA.map((c) => ({ name: c.name, type: c.db })) };
-}
-
-/**
- * Table content as `TabularData` ({ cols, rows }). When date filters are passed
- * (COB tables) the result is sliced to emulate a date/range query; without them
- * (non-COB tables) the full set is returned.
+ * Table content (eye-click) as `TableContentResponse` — self-describing:
+ *  - `cols` / `cols_data_types`: display columns + their cx_Oracle types.
+ *  - `Table_data`: row objects keyed by column name, each ALSO carrying `rowid`
+ *    (the DB row id used for update/delete). `rowid` is NOT in `cols`, so the grid
+ *    never shows it.
+ * When date filters are passed (COB tables) the result is sliced to emulate a
+ * date/range query; without them (non-COB tables) the full set is returned.
  */
 export function mockTableData(
   tableName: string,
   opts?: { start?: string; end?: string; range?: boolean }
-): TabularData {
+): TableContentResponse {
   // Enough rows to exercise the modal grid's pagination and vertical scrolling.
   const rowCount = 120 + (tableName.length % 40);
   const cols = CONTENT_SCHEMA.map((c) => c.name);
-  let rows: unknown[][] = [];
+  const cols_data_types = CONTENT_SCHEMA.map((c) => c.cx);
+  let Table_data: Record<string, unknown>[] = [];
   for (let i = 1; i <= rowCount; i++) {
-    rows.push([
-      i,
-      `${tableName.split('_')[0]}-${String(i).padStart(4, '0')}`,
-      longText(tableName, i),
-      jsonPayload(tableName, i),
-      xmlDefinition(tableName, i),
-      blobData(i),
-      i % 3 !== 0 ? 'Y' : 'N',
-      new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
-      new Date(Date.UTC(2026, 6, 21, 22 - (i % 12), (i * 7) % 60, 0)).toISOString()
-    ]);
+    Table_data.push({
+      ID: i,
+      CODE: `${tableName.split('_')[0]}-${String(i).padStart(4, '0')}`,
+      DESCRIPTION: longText(tableName, i),
+      PAYLOAD: jsonPayload(tableName, i),
+      DEFINITION: xmlDefinition(tableName, i),
+      ATTACHMENT: blobData(i),
+      ENABLED: i % 3 !== 0 ? 'Y' : 'N',
+      COB_DT: new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
+      UPDATED_AT: new Date(Date.UTC(2026, 6, 21, 22 - (i % 12), (i * 7) % 60, 0)).toISOString(),
+      // DB row id — rides along in the data, hidden from the grid (not in `cols`).
+      rowid: `AAAR${tableName.length}${String(i).padStart(6, '0')}`
+    });
   }
   // Emulate a date filter: a discrete date returns a small slice; a range more.
   if (opts?.start) {
-    const keep = opts.range ? Math.ceil(rows.length * 0.6) : Math.min(rows.length, 20);
-    rows = rows.slice(0, keep);
+    const keep = opts.range ? Math.ceil(Table_data.length * 0.6) : Math.min(Table_data.length, 20);
+    Table_data = Table_data.slice(0, keep);
   }
-  return { cols, rows };
+  return { cols, cols_data_types, Table_data };
 }
 
 // ---------------------------------------------------------------------------

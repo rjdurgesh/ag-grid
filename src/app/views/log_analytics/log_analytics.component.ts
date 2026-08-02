@@ -1,5 +1,5 @@
 import { DecimalPipe } from '@angular/common';
-import { Component, computed, DestroyRef, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, DestroyRef, inject, OnInit, signal, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 import {
@@ -16,7 +16,7 @@ import {
   ModalTitleDirective
 } from '@coreui/angular';
 
-import { FiletreeComponent, TreeRoot } from '../../components/filetree/filetree.component';
+import { FiletreeComponent, LazyRoot, TreeRoot } from '../../components/filetree/filetree.component';
 import { LoaderComponent } from '../../components/loader/loader.component';
 import { FileProperties, LogServer } from '../../shared/models';
 import { formatDateTime } from '../../shared/date-utils';
@@ -53,12 +53,16 @@ const PAGE_SIZE_OPTIONS = [100, 1000, 5000, 10000];
 export class LogAnalyticsComponent implements OnInit {
   private readonly svc = inject(LogAnalyticsService);
   private readonly destroyRef = inject(DestroyRef);
+  /** Reference to the tree so we can hand lazily-loaded folder children back. */
+  private readonly filetree = viewChild(FiletreeComponent);
 
   readonly servers = signal<LogServer[]>([]);
   /** The composite key of the selected server (map key from the API). */
   readonly selectedServer = signal<string>('');
-  /** One tree root per configured base path, each with its files. */
+  /** Full mode: one tree root per configured base path, each with its files. */
   readonly fileRoots = signal<TreeRoot[]>([]);
+  /** Lazy mode: root folders only; children fetched on expand. */
+  readonly lazyRoots = signal<LazyRoot[]>([]);
   readonly loadingFiles = signal(false);
 
   readonly selectedFile = signal<string | null>(null);
@@ -127,6 +131,8 @@ export class LogAnalyticsComponent implements OnInit {
     this.selectedServer.set(key);
     this.selectedFile.set(null);
     this.fileContent.set('');
+    this.fileRoots.set([]);
+    this.lazyRoots.set([]);
     this.loadFiles();
   }
 
@@ -144,17 +150,39 @@ export class LogAnalyticsComponent implements OnInit {
     }
     this.loadingFiles.set(true);
     this.svc
-      .getFileRoots(server)
+      .getFileTree(server)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (roots) => {
-          this.fileRoots.set(roots);
+        next: (data) => {
+          // The backend chose the mode; the UI just applies whichever it got.
+          if (data.mode === 'lazy') {
+            this.fileRoots.set([]);
+            this.lazyRoots.set(data.lazyRoots);
+          } else {
+            this.lazyRoots.set([]);
+            this.fileRoots.set(data.roots);
+          }
           this.loadingFiles.set(false);
         },
         error: () => {
           this.fileRoots.set([]);
+          this.lazyRoots.set([]);
           this.loadingFiles.set(false);
         }
+      });
+  }
+
+  /**
+   * Lazy mode: a folder was expanded for the first time — fetch its immediate
+   * children and hand them back to the tree. Errors mark the folder as retryable.
+   */
+  onFolderLoad(event: { path: string }): void {
+    this.svc
+      .getDirChildren(this.selectedServer(), event.path)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (entries) => this.filetree()?.applyChildren(event.path, entries),
+        error: () => this.filetree()?.markFolderError(event.path)
       });
   }
 

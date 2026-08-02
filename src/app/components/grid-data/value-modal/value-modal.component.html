@@ -1,29 +1,42 @@
-<!-- Mounted only while open — a closed CoreUI modal lingers as a full-screen
-     transparent overlay that intercepts clicks across the whole app. -->
-@if (payload()) {
-<c-modal
-  size="lg"
-  scrollable
-  [visible]="true"
-  (visibleChange)="onVisibleChange($event)"
-  aria-labelledby="valueModalTitle"
->
-  <c-modal-header>
-    <h5 cModalTitle id="valueModalTitle" class="ols-value-modal__title">
-      <span class="ols-value-modal__badge">{{ payload()?.type }}</span>
-      {{ payload()?.field }}
-    </h5>
-    <button cButtonClose (click)="close()" aria-label="Close"></button>
-  </c-modal-header>
-  <c-modal-body>
-    @if (payload()?.type === 'blob') {
-      <p class="text-body-secondary small mb-2">Binary content (base64 preview):</p>
-    }
-    <pre class="ols-value-modal__content"><code>{{ formatted() }}</code></pre>
-  </c-modal-body>
-  <c-modal-footer>
-    <button cButton color="secondary" variant="outline" size="sm" (click)="copy()">Copy</button>
-    <button cButton color="primary" size="sm" (click)="close()">Close</button>
-  </c-modal-footer>
-</c-modal>
+<!-- Standalone fixed overlay (NOT a CoreUI modal) so it can layer above the data
+     grid's own modal without CoreUI's shared backdrop closing the one beneath. -->
+@if (payload(); as p) {
+  <div class="ols-value-modal-backdrop" (click)="close()"></div>
+  <div class="ols-value-modal-box" role="dialog" aria-modal="true" aria-labelledby="valueModalTitle">
+    <div class="ols-value-modal-box__head">
+      <h5 id="valueModalTitle" class="ols-value-modal__title">
+        <span class="ols-value-modal__badge">{{ p.type }}</span>
+        {{ p.field }}
+        @if (editable()) { <span class="ols-value-modal__mode">editing</span> }
+      </h5>
+      <button type="button" class="ols-value-modal__x" (click)="close()" aria-label="Close">×</button>
+    </div>
+
+    <div class="ols-value-modal-box__body">
+      @if (p.type === 'blob') {
+        <p class="text-body-secondary small mb-2">Binary content (base64):</p>
+      }
+      @if (editable()) {
+        <textarea
+          class="ols-value-modal__editor"
+          spellcheck="false"
+          [value]="draft()"
+          (input)="onDraftInput($event)"
+          [attr.placeholder]="'Enter ' + p.type + ' value…'"
+        ></textarea>
+      } @else {
+        <pre class="ols-value-modal__content"><code>{{ formatted() }}</code></pre>
+      }
+    </div>
+
+    <div class="ols-value-modal-box__actions">
+      <button cButton color="secondary" variant="outline" size="sm" (click)="copy()">Copy</button>
+      @if (editable()) {
+        <button cButton color="secondary" variant="outline" size="sm" (click)="close()">Cancel</button>
+        <button cButton color="primary" size="sm" (click)="save()">OK</button>
+      } @else {
+        <button cButton color="primary" size="sm" (click)="close()">Close</button>
+      }
+    </div>
+  </div>
 }

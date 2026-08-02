@@ -1,7 +1,9 @@
 import { computed, Directive, inject, OnInit, signal } from '@angular/core';
-import { forkJoin, map, Observable } from 'rxjs';
+import { map, Observable } from 'rxjs';
 
+import { AuthService } from '../../auth/auth.service';
 import { RbacService } from '../../auth/rbac.service';
+import { ConfirmService } from '../../components/confirm/confirm.service';
 import { GridDataComponent } from '../../components/grid-data/grid-data.component';
 import {
   GridActionEvent,
@@ -9,12 +11,14 @@ import {
   GridCreateEvent,
   prettifyHeader,
   RetrieveEvent,
-  RollDataEvent
+  RollDataEvent,
+  RowsDeletedEvent,
+  RowsUpdatedEvent
 } from '../../components/grid-data/grid-data.model';
 import { ApiDataService } from '../../shared/api-data.service';
 import { API, ConfigScope } from '../../shared/api-endpoints';
 import { previousWeekdayIso } from '../../shared/date-utils';
-import { CellDataType, ColumnsResponse, ColumnMeta, TableContent, TabularData } from '../../shared/models';
+import { CellDataType, ColumnMeta, TableContent, TableContentResponse, TabularData } from '../../shared/models';
 
 /** Treat true / 'Y' / 'YES' / '1' as set, so booleans and Y/N flags both work. */
 function isFlagSet(value: unknown): boolean {
@@ -47,48 +51,58 @@ function catalogueType(field: string): CellDataType {
   return /^is[_a-z0-9]*$/i.test(field) ? 'boolean' : 'string';
 }
 
-/** Map an Oracle-ish DB data type (from dba_tab_columns) to a logical cell type. */
-function dbTypeToCellType(dbType: string): CellDataType {
-  const t = (dbType ?? '').toUpperCase();
-  if (t.includes('TIMESTAMP')) {
+/**
+ * Map a cx_Oracle DB type string to a logical cell type. Accepts the raw form
+ * returned by the API, e.g. "<cx_Oracle.DbType DB_TYPE_DATE>", and drives typed
+ * rendering: date → date-only calendar, timestamp → date+time calendar,
+ * clob/blob/json/xml → the "…" value token.
+ */
+function cxOracleTypeToCellType(raw: string): CellDataType {
+  const m = /DB_TYPE_([A-Z0-9_]+)/.exec(raw ?? '');
+  const t = m ? m[1] : (raw ?? '').toUpperCase();
+  if (t.startsWith('TIMESTAMP')) {
     return 'timestamp';
   }
   if (t === 'DATE') {
     return 'date';
   }
-  if (t === 'NUMBER' || t === 'INTEGER' || t === 'INT' || t === 'FLOAT' || t === 'DECIMAL' || t === 'NUMERIC') {
+  if (t === 'NUMBER' || t === 'BINARY_FLOAT' || t === 'BINARY_DOUBLE' || t === 'INTEGER' || t === 'BINARY_INTEGER') {
     return 'number';
   }
   if (t === 'CLOB' || t === 'NCLOB' || t === 'LONG') {
     return 'clob';
   }
-  if (t === 'BLOB' || t === 'RAW' || t === 'BFILE') {
+  if (t === 'BLOB' || t === 'RAW' || t === 'LONG_RAW' || t === 'BFILE') {
     return 'blob';
   }
   if (t === 'JSON') {
     return 'json';
   }
-  if (t === 'XMLTYPE' || t === 'XML') {
+  if (t === 'XMLTYPE' || t === 'OBJECT') {
     return 'xml';
   }
+  // CHAR(1) columns are Y/N flags in this schema → render as Yes/No badges.
+  if (t === 'CHAR' || t === 'NCHAR') {
+    return 'boolean';
+  }
+  // VARCHAR, VARCHAR2, NVARCHAR, … → text.
   return 'string';
 }
 
-/** Merge the columns API (types) with the content API (rows) into grid content. */
-function mergeContent(colsResp: ColumnsResponse | null, content: TabularData | null): TableContent {
-  const detailCols: ColumnMeta[] = (colsResp?.columns ?? []).map((c) => ({
-    field: c.name,
-    header: prettifyHeader(c.name),
-    type: dbTypeToCellType(c.type)
+/**
+ * Build grid content from the eye-click response. Columns + their types come from
+ * `cols` / `cols_data_types`; rows are `Table_data` as-is (each still carries its
+ * hidden `rowid`, which never becomes a column because it isn't listed in `cols`).
+ */
+function buildContent(res: TableContentResponse | null): TableContent {
+  const cols = res?.cols ?? [];
+  const types = res?.cols_data_types ?? [];
+  const columns: ColumnMeta[] = cols.map((name, i) => ({
+    field: name,
+    header: prettifyHeader(name),
+    type: cxOracleTypeToCellType(types[i])
   }));
-  const contentCols = content?.cols ?? detailCols.map((c) => c.field);
-  const columns = detailCols.length
-    ? detailCols
-    : contentCols.map((c) => ({ field: c, header: prettifyHeader(c), type: 'string' as CellDataType }));
-  const rows = (content?.rows ?? []).map((arr) =>
-    Object.fromEntries(contentCols.map((c, i) => [c, arr[i]]))
-  );
-  return { columns, rows };
+  return { columns, rows: res?.Table_data ?? [] };
 }
 
 /**
@@ -106,6 +120,13 @@ export abstract class ConfigScopeBase implements OnInit {
 
   private readonly api = inject(ApiDataService);
   private readonly rbac = inject(RbacService);
+  private readonly auth = inject(AuthService);
+  private readonly confirm = inject(ConfirmService);
+
+  /** Current user id stamped onto inserted_by / updated_by / deleted_by. */
+  private get actor(): string {
+    return this.auth.user()?.username ?? 'unknown';
+  }
 
   /** Grid columns built from the catalogue API's `cols` (dynamic). */
   readonly columns = signal<GridColumn[]>([]);
@@ -171,7 +192,11 @@ export abstract class ConfigScopeBase implements OnInit {
     return this.loadContent(tableName, isCob ? defaultDates() : undefined);
   };
 
-  /** Fetch column metadata + row content, merged into grid content. */
+  /**
+   * Fetch the table content (columns + types + rows) in one call. The response is
+   * self-describing (`cols` + `cols_data_types` + `Table_data`), so no separate
+   * column-metadata call is needed. Dates are sent only for COB tables.
+   */
   private loadContent(
     tableName: string,
     dates?: { start: string; end: string; range: boolean }
@@ -182,10 +207,7 @@ export abstract class ConfigScopeBase implements OnInit {
       body['end'] = dates.end;
       body['range'] = dates.range;
     }
-    return forkJoin({
-      columns: this.api.post<ColumnsResponse>(API.config.columns(this.scope), { table_name: tableName }),
-      content: this.api.post<TabularData>(API.config.retrieve(this.scope), body)
-    }).pipe(map(({ columns, content }) => mergeContent(columns, content)));
+    return this.api.post<TableContentResponse>(API.config.retrieve(this.scope), body).pipe(map(buildContent));
   }
 
   /** ACTIVE flag — accepts booleans or Y/N strings from the backend. */
@@ -217,14 +239,60 @@ export abstract class ConfigScopeBase implements OnInit {
     });
   }
 
-  /** Draft rows saved in the modal — persist them. */
+  /** INSERT — new rows (values in column order) + inserted_by. Popups the count. */
   onRowsCreated(event: GridCreateEvent): void {
     this.api
-      .post(API.config.createRows(this.scope), { table_name: event.tableName, rows: event.rows })
+      .post<{ inserted?: number }>(API.config.createRows(this.scope, event.tableName), {
+        inserted_by: this.actor,
+        columns: event.columns,
+        rows: event.rows
+      })
       .subscribe({
-        // eslint-disable-next-line no-console
-        error: () => console.warn(`[config:${this.scope}] failed to insert rows into ${event.tableName}`)
+        next: (res) => this.notifyOk(res?.inserted ?? event.rows.length, 'inserted'),
+        error: (err) => this.notifyErr('insert', err)
       });
+  }
+
+  /** UPDATE — per-row rowid + changed columns + updated_by. Popups the count. */
+  onRowsUpdated(event: RowsUpdatedEvent): void {
+    this.api
+      .post<{ updated?: number }>(API.config.updateRows(this.scope, event.tableName), {
+        updated_by: this.actor,
+        updates: event.updates
+      })
+      .subscribe({
+        next: (res) => this.notifyOk(res?.updated ?? event.updates.length, 'updated'),
+        error: (err) => this.notifyErr('update', err)
+      });
+  }
+
+  /** DELETE — rowids + deleted_by. Popups the count returned by the DB. */
+  onRowsDeleted(event: RowsDeletedEvent): void {
+    this.api
+      .post<{ deleted?: number }>(API.config.deleteRows(this.scope, event.tableName), {
+        deleted_by: this.actor,
+        rowids: event.rowids
+      })
+      .subscribe({
+        next: (res) => this.notifyOk(res?.deleted ?? event.rowids.length, 'deleted'),
+        error: (err) => this.notifyErr('delete', err)
+      });
+  }
+
+  /** Success result popup with the affected-row count from the API. */
+  private notifyOk(count: number, verb: string): void {
+    this.confirm.notify({
+      title: 'Success',
+      message: `${count} row${count === 1 ? '' : 's'} ${verb} successfully.`,
+      tone: 'success'
+    });
+  }
+
+  /** Error result popup showing the message returned by the API. */
+  private notifyErr(op: string, err: unknown): void {
+    const e = err as { error?: { message?: string }; message?: string; statusText?: string };
+    const msg = e?.error?.message || e?.message || e?.statusText || `The ${op} could not be completed.`;
+    this.confirm.notify({ title: `${op.charAt(0).toUpperCase()}${op.slice(1)} failed`, message: msg, tone: 'danger' });
   }
 
   /** Roll Data → Process: hand the table + range to the backend. */

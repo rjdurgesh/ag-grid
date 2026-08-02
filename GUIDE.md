@@ -151,18 +151,39 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 The `server` param is the composite key from the servers map (see below), e.g. `OLSCIB_WEB_A_1_eur17`.
 A server's value is an **array** — one row per configured `base_log_path` — so a
 server can have **several base paths**. The file tree shows **one root per base
-path** (full path label) with that base's files underneath. Files come back as
-**absolute paths**; the UI groups them under the matching base and **drops any
-path outside every configured base** (jail). `file` / `file-properties` take the
-absolute path; the backend must confirm it sits inside one of the server's base
-paths (and reject `..`) before reading.
+path** (full path label) with that base's files underneath. `file` /
+`file-properties` / `dir` take the **absolute path**; the backend must confirm it
+sits inside one of the server's base paths (and reject `..`) before reading — the jail.
+
+**Two tree-loading modes — the backend chooses, the UI just obeys.** `files`
+returns an envelope with a `mode` discriminator so huge trees never have to be
+enumerated in one shot (the backend does a **bounded walk** and bails early):
+
+- **`full`** (default, and how an old `{ paths }`-only backend is treated) — every
+  **absolute** file path up front. The UI builds the whole tree client-side:
+  instant filter + expand-all, expanding a folder is a free client-side toggle.
+  Best for small/medium trees.
+- **`lazy`** — only the **root folder paths** (`roots`; the UI falls back to the
+  server's base paths if omitted). Each folder's children are fetched **on first
+  expand** via `GET /api/log/dir` (passing that folder's full path), with a
+  per-folder spinner and client-side caching. Scales to enormous trees. In this
+  mode the filter/expand-all only cover already-loaded folders.
+
+The switch is a single field: the UI reads `mode` and renders the matching path
+(`log_analytics.service.ts` → `getFileTree`). It never counts anything itself.
 
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/log/servers` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`) |
-| `GET /api/log/files?server=<key>` | – | `{ paths: string[] }` — **absolute** paths across all the server's base paths |
+| `GET /api/log/files?server=<key>` | – | `LogFilesResponse` `{ mode?, paths?, roots? }` — `full` (default) sends `paths` (absolute); `lazy` sends `roots` |
+| `GET /api/log/dir?server=<key>&path=<abs>` | – | `LogDirResponse` `{ entries: { name, type, path }[] }` — immediate children of ONE folder (lazy mode, jailed) |
 | `GET /api/log/file?server=<key>&path=<abs>` | – | `{ content: string }` (jailed to the server's bases) |
 | `GET /api/log/file-properties?server=<key>&path=<abs>` | – | `FileProperties` (jailed to the server's bases) |
+
+> The mock serves every server `full` **except** `OLSGROUP_APP_9_eur99` (a "lazy
+> demo" with base `C:/bigdata/logs`), which returns `mode:'lazy'` so the
+> load-on-expand path is exercisable. Drop that entry (and it leaves
+> `LAZY_LOG_SERVERS`) to remove the demo. A real backend picks the mode per tree size.
 
 ### Config Ops Console (`scope` = `cib` \| `group` \| `retail`)
 The catalogue and content are **fully dynamic** — the grid renders whatever columns
@@ -173,17 +194,59 @@ the API returns, so adding a column to the backing table needs no UI change. Onl
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/config/{scope}/tables` | – | `TabularData` `{ cols, rows }` — the catalogue |
-| `POST /api/config/{scope}/columns` | `{ table_name }` | `ColumnsResponse` `{ columns: [{ name, type }] }` — from `dba_tab_columns` |
-| `POST /api/config/{scope}/retrieve` | `{ table_name, start?, end?, range? }` | `TabularData` `{ cols, rows }` — dates OPTIONAL (COB only) |
+| `POST /api/config/{scope}/retrieve` | `{ table_name, start?, end?, range? }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` — dates OPTIONAL (COB only) |
 | `POST /api/config/{scope}/roll` | `{ table_name, from, to }` | `{ message, rolledRows }` |
-| `POST /api/config/{scope}/rows` | `{ table_name, rows }` | `{ success, inserted }` |
+| `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
+| `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [{ rowid, values }] }` | `{ updated: N }` — UPDATE |
+| `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ … ] }` | `{ deleted: N }` — DELETE |
 
-**Eye (view content) flow, per row:** the UI fetches the table's columns
-(`/columns`, backed by `dba_tab_columns`) **and** its rows (`/retrieve`) in parallel,
-then merges them. Dates are sent to `/retrieve` **only when IS_COBDT = Y** (defaulting
-to T-1); non-COB tables (e.g. no COB date) pass just `{ table_name }` and get the full
-set with no date bar. The columns' DB `type` (VARCHAR2/NUMBER/DATE/CLOB/JSON/XMLTYPE/BLOB…)
-drives typed rendering (CLOB/JSON/XML/BLOB previews, date pickers, etc.).
+**Eye (view content) flow, per row:** one `/retrieve` call returns a **self-describing**
+payload — `cols` (display columns), `cols_data_types` (parallel cx_Oracle types, e.g.
+`<cx_Oracle.DbType DB_TYPE_DATE>`), and `Table_data` (row objects). The type string drives
+rendering: **DATE → date-only calendar**, **TIMESTAMP → date+time calendar**,
+**CHAR(1) → Yes/No badge** (Y/N flags), **CLOB/BLOB/JSON/XMLTYPE → the "…" value token**,
+everything else → text. Dates are sent to `/retrieve` **only when IS_COBDT = Y**
+(defaulting to T-1); non-COB tables pass just `{ table_name }` and get the full set with no date bar.
+
+**CLOB/JSON/XML/BLOB values** open in a dedicated **value modal** (a standalone overlay, *not*
+a nested CoreUI modal — nested CoreUI modals collapse each other, so closing it never closes the
+data-grid modal underneath). Read-only rows show it as a pretty-printed viewer (JSON/XML indented,
+Copy + Close). While a row is being **edited** (draft or inline-edit), the same cell shows a pencil
+affordance (an "Enter data…" hint when empty) that opens the modal as a **textarea editor with
+OK / Cancel** — these values are edited here, never inline in the grid cell. OK writes the text back
+into the row (part of the INSERT for a draft, or the UPDATE diff for a saved row).
+
+**`rowid` is hidden.** Each `Table_data` object carries a `rowid` (the DB row id) that is
+**not** listed in `cols`, so it never becomes a visible column — the grid keeps it in the
+row data and uses it as the identity for update/delete.
+
+**Insert / Update / Delete** each hit their own endpoint (table name in the URL, rest in
+the body) and stamp the acting user (`inserted_by` / `updated_by` / `deleted_by` = the
+signed-in user). Update sends **only the changed columns** per row (keyed by `rowid`);
+insert sends **values in column order**. Each call returns the affected-row **count**,
+shown in a success popup ("2 rows deleted successfully"); on failure the API's error
+message is shown.
+
+**Selection model (modal grid) — one operation at a time.** The modal never mixes an
+INSERT and an UPDATE into a single ambiguous Save. Exactly one operation can be *pending*:
+**Insert** (Add / Duplicate stage drafts), **Update** (Edit puts saved rows into inline-edit),
+or **Delete** (immediate). Starting a different operation **resets the previous one** — Add or
+Duplicate while editing reverts the edits; Edit while drafting discards the drafts; Delete
+clears whatever was pending. *Add and Duplicate are both INSERT.*
+
+- **Add / Duplicate** stage a new draft row that is **auto-ticked**. The bottom
+  **Save selected N** inserts **only the ticked drafts** — untick a draft to leave it out; it
+  stays as a draft. Add 3, untick 1 → Save selected 2 inserts 2.
+- **Edit selected N** puts the selected saved rows into inline-edit and **keeps them selected**,
+  so the bottom **Save selected N** updates them all in one UPDATE (each row also keeps its own
+  per-row Save). While in update mode the "Edit selected" button hides.
+- **Bulk buttons** — selecting existing (saved) rows shows **Edit selected N / Duplicate
+  selected N / Delete selected N** (count = selected **saved** rows). Duplicate clones them into
+  ticked drafts (switches to Insert); Delete removes them (after confirm).
+- **Per-row buttons** (Edit / Duplicate / Delete on each row) act on **that row only** —
+  never in bulk.
+- **Save selected N** commits only the current pending operation for the **ticked** rows:
+  the ticked drafts in Insert mode, or the ticked edited rows in Update mode.
 
 ### Infrastructure Pulse — see section 5 for the full flow
 | Method & path | Request | Response |
@@ -289,29 +352,44 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
     ["DEV", "BILL",     "N", "N"]
   ] }
 
-// POST /api/config/{scope}/columns     → { table_name }
-//   ← ColumnsResponse — column metadata from dba_tab_columns
-{ "columns": [
-    { "name": "ID", "type": "NUMBER" },
-    { "name": "DESCRIPTION", "type": "CLOB" },
-    { "name": "PAYLOAD", "type": "JSON" },
-    { "name": "COB_DT", "type": "DATE" }
-  ] }
-// DB type → cell type: VARCHAR2/CHAR→string, NUMBER→number, DATE→date,
-// TIMESTAMP→timestamp, CLOB→clob, BLOB→blob, JSON→json, XMLTYPE→xml.
-
 // POST /api/config/{scope}/retrieve    → { table_name, start?, end?, range? }
 //   Dates are OPTIONAL — sent only when IS_COBDT = Y (range:false = the two
 //   dates only). A non-COB table (e.g. BILL, IS_COBDT = N) passes just
 //   { table_name }.
-//   ← TabularData { cols, rows }
-{ "cols": ["ID", "DESCRIPTION", "PAYLOAD", "COB_DT"],
-  "rows": [ [1, "…", "{\"ccy\":\"USD\"}", "2026-07-31"] ] }
+//   ← TableContentResponse — self-describing (column types included).
+{ "cols": ["import_name", "pct", "pct_a", "cob_dt", "ecb"],
+  "cols_data_types": ["<cx_Oracle.DbType DB_TYPE_VARCHAR>", "<cx_Oracle.DbType DB_TYPE_NUMBER>",
+                      "<cx_Oracle.DbType DB_TYPE_CHAR>", "<cx_Oracle.DbType DB_TYPE_DATE>",
+                      "<cx_Oracle.DbType DB_TYPE_CLOB>"],
+  "Table_data": [
+    { "import_name": "ABC", "pct": 1, "pct_a": "Y", "cob_dt": "2026-07-23", "ecb": "abc…", "rowid": "AAAR12000001" }
+  ] }
+// `cols_data_types` maps to rendering: DATE→date-only calendar, TIMESTAMP→date+time,
+// CLOB/BLOB/JSON/XMLTYPE→"…" token, else text. `rowid` rides in each row but is NOT
+// in `cols`, so it stays hidden; the grid uses it for update/delete.
 
 // POST /api/config/{scope}/roll        → { table_name, from, to }
-//                                       ← { success, table_name, from, to, rolledRows, message }
-// POST /api/config/{scope}/rows        → { table_name, rows: [ {…} ] }
-//                                       ← { success, inserted, table_name }
+//                                       ← { success, rolledRows, message }
+
+// --- Insert / Update / Delete (table name in the URL) --------------------------
+// POST /api/config/{scope}/table/EMPLOYEE/rows   (INSERT)
+{ "inserted_by": "OPS-10432",
+  "columns": ["ID", "CODE", "COB_DT"],
+  "rows": [ [101, "EMP-0101", "2026-07-31"], [102, "EMP-0102", "2026-07-31"] ] }
+//                                       ← { inserted: 2 }
+
+// POST /api/config/{scope}/table/EMPLOYEE/update   (UPDATE — changed columns only)
+{ "updated_by": "OPS-10432",
+  "updates": [
+    { "rowid": "AAAR12000001", "values": { "CODE": "EMP-9999" } },
+    { "rowid": "AAAR12000002", "values": { "ENABLED": "N" } }
+  ] }
+//                                       ← { updated: 2 }
+
+// POST /api/config/{scope}/table/EMPLOYEE/delete   (DELETE)
+{ "deleted_by": "OPS-10432", "rowids": ["AAAR12000001", "AAAR12000002"] }
+//                                       ← { deleted: 2 }
+// All three return the affected count (popup); errors return { message } shown verbatim.
 ```
 
 **Infrastructure Pulse** — request/response bodies (`HealthServerConfigRow`,

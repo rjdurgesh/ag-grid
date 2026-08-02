@@ -1,5 +1,5 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, computed, input, output, signal } from '@angular/core';
+import { Component, computed, effect, input, output, signal } from '@angular/core';
 
 import { LoaderComponent } from '../loader/loader.component';
 
@@ -10,6 +10,10 @@ export interface TreeNode {
   type: 'folder' | 'file';
   children: TreeNode[];
   expanded: boolean;
+  /** Lazy mode: false until this folder's children have been fetched. */
+  loaded?: boolean;
+  /** Lazy mode: true while this folder's children are being fetched. */
+  loading?: boolean;
 }
 
 /**
@@ -20,6 +24,23 @@ export interface TreeNode {
 export interface TreeRoot {
   label: string;
   paths: string[];
+}
+
+/**
+ * A root for **lazy** mode — just the folder itself; its children are fetched on
+ * demand (first expand). `label` is the display name, `path` the full path used
+ * to request its children.
+ */
+export interface LazyRoot {
+  label: string;
+  path: string;
+}
+
+/** One immediate child supplied to {@link FiletreeComponent.applyChildren}. */
+export interface LazyChild {
+  name: string;
+  type: 'folder' | 'file';
+  path: string;
 }
 
 /**
@@ -42,22 +63,68 @@ export class FiletreeComponent {
    * and its relative `paths` form the subtree.
    */
   readonly roots = input<TreeRoot[] | null>(null);
+  /**
+   * Lazy roots (one per base path). When provided, takes precedence over
+   * everything: only the root folders are shown and each folder's children are
+   * requested via {@link folderLoad} on first expand. Drives "lazy" mode.
+   */
+  readonly lazyRoots = input<LazyRoot[] | null>(null);
   readonly loading = input(false);
 
   readonly fileSelect = output<string>();
+  /** Lazy mode: a folder was expanded and needs its children fetched. */
+  readonly folderLoad = output<{ path: string }>();
 
   readonly filterText = signal('');
   readonly selectedPath = signal<string | null>(null);
 
-  /** Bumped whenever a folder is toggled so `visibleNodes` recomputes. */
+  /** True when the tree is operating in lazy (load-on-expand) mode. */
+  readonly isLazy = computed(() => !!this.lazyRoots()?.length);
+
+  /**
+   * The working tree. Held as mutable state (not a pure computed) because in
+   * lazy mode it grows as folders load, and expand/collapse toggles node flags
+   * in place. Re-seeded whenever the inputs change (e.g. a different server).
+   */
+  private readonly treeState = signal<TreeNode[]>([]);
+
+  /** Bumped whenever a node is mutated in place so `visibleNodes` recomputes. */
   private readonly rev = signal(0);
 
-  private readonly tree = computed<TreeNode[]>(() => {
-    const roots = this.roots();
-    return roots && roots.length ? buildRootedTree(roots) : buildTree(this.paths());
-  });
+  constructor() {
+    // (Re)build the tree whenever the source inputs change. Lazy roots win, then
+    // labelled roots, then a flat path list.
+    effect(() => {
+      const lazy = this.lazyRoots();
+      const roots = this.roots();
+      const paths = this.paths();
+      let next: TreeNode[];
+      if (lazy && lazy.length) {
+        next = lazy.map((r) => ({
+          name: r.label,
+          path: stripTrailingSep(r.path),
+          type: 'folder' as const,
+          children: [],
+          expanded: false,
+          loaded: false,
+          loading: false
+        }));
+      } else if (roots && roots.length) {
+        next = buildRootedTree(roots);
+      } else {
+        next = buildTree(paths);
+      }
+      this.treeState.set(next);
+      this.rev.update((v) => v + 1);
+    });
+  }
 
   readonly fileCount = computed(() => {
+    // Lazy mode can't know the total up front — report what's loaded so far.
+    if (this.isLazy()) {
+      this.rev();
+      return countFiles(this.treeState());
+    }
     const roots = this.roots();
     return roots && roots.length
       ? roots.reduce((n, r) => n + r.paths.length, 0)
@@ -67,7 +134,7 @@ export class FiletreeComponent {
   readonly visibleNodes = computed<TreeNode[]>(() => {
     this.rev();
     const query = this.filterText().trim().toLowerCase();
-    const nodes = this.tree();
+    const nodes = this.treeState();
     return query ? pruneTree(nodes, query) : nodes;
   });
 
@@ -78,22 +145,68 @@ export class FiletreeComponent {
   }
 
   onRowClick(node: TreeNode): void {
-    if (node.type === 'folder') {
-      node.expanded = !node.expanded;
-      this.rev.update((v) => v + 1);
-    } else {
+    if (node.type !== 'folder') {
       this.selectedPath.set(node.path);
       this.fileSelect.emit(node.path);
+      return;
+    }
+    // Lazy folder not yet loaded → request its children, show it expanding.
+    if (this.isLazy() && !node.loaded && !node.loading) {
+      node.loading = true;
+      node.expanded = true;
+      this.rev.update((v) => v + 1);
+      this.folderLoad.emit({ path: node.path });
+      return;
+    }
+    node.expanded = !node.expanded;
+    this.rev.update((v) => v + 1);
+  }
+
+  /**
+   * Attach a lazily-loaded folder's children (called by the parent once the
+   * `dir` API returns). Sub-folders start collapsed/unloaded so they load on
+   * their own expand.
+   */
+  applyChildren(path: string, entries: LazyChild[]): void {
+    const node = findNode(this.treeState(), stripTrailingSep(path));
+    if (!node) {
+      return;
+    }
+    node.children = entries.map((e) => ({
+      name: e.name,
+      path: e.path,
+      type: e.type,
+      children: [],
+      expanded: false,
+      loaded: e.type === 'file',
+      loading: false
+    }));
+    sortTree(node.children);
+    node.loaded = true;
+    node.loading = false;
+    node.expanded = true;
+    this.rev.update((v) => v + 1);
+  }
+
+  /** Mark a lazy folder's load as failed so it can be retried. */
+  markFolderError(path: string): void {
+    const node = findNode(this.treeState(), stripTrailingSep(path));
+    if (node) {
+      node.loading = false;
+      node.loaded = false;
+      node.expanded = false;
+      this.rev.update((v) => v + 1);
     }
   }
 
   expandAll(): void {
-    setExpanded(this.tree(), true);
+    // Only toggles already-loaded nodes; lazy mode never bulk-fetches.
+    setExpanded(this.treeState(), true);
     this.rev.update((v) => v + 1);
   }
 
   collapseAll(): void {
-    setExpanded(this.tree(), false);
+    setExpanded(this.treeState(), false);
     this.rev.update((v) => v + 1);
   }
 
@@ -205,6 +318,34 @@ function buildRootedTree(roots: TreeRoot[]): TreeNode[] {
     sortTree(rootNode.children);
     return rootNode;
   });
+}
+
+/** Drop a trailing `/` or `\` so a base path matches its node's stored path. */
+function stripTrailingSep(path: string): string {
+  return (path ?? '').replace(/[\\/]+$/, '');
+}
+
+/** Count file (non-folder) nodes currently in the tree. */
+function countFiles(nodes: TreeNode[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    n += node.type === 'file' ? 1 : countFiles(node.children);
+  }
+  return n;
+}
+
+/** Depth-first search for a node by its full path. */
+function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) {
+      return node;
+    }
+    const hit = findNode(node.children, path);
+    if (hit) {
+      return hit;
+    }
+  }
+  return null;
 }
 
 /** Folders first, then alphabetical. */

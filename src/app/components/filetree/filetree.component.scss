@@ -132,6 +132,37 @@
   flex: 0 0 12px;
 }
 
+/* Lazy mode: small spinner shown in place of the chevron while a folder loads. */
+.filetree__spinner {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--cui-primary, #4d5dfb) 30%, transparent);
+  border-top-color: var(--cui-primary, #4d5dfb);
+  border-radius: 50%;
+  animation: filetree-spin .6s linear infinite;
+}
+
+@keyframes filetree-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filetree__spinner {
+    animation: none;
+    /* Static "busy" affordance when motion is off (office env). */
+    border-top-color: color-mix(in srgb, var(--cui-primary, #4d5dfb) 30%, transparent);
+    border-right-color: var(--cui-primary, #4d5dfb);
+  }
+}
+
+.filetree__empty {
+  padding-block: 3px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--cui-secondary-color, #8a93a2);
+}
+
 .filetree__icon--folder {
   color: var(--cui-warning, #f0a020);
 }

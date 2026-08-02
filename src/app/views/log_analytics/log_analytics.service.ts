@@ -1,10 +1,27 @@
 import { inject, Injectable } from '@angular/core';
 import { map, Observable } from 'rxjs';
 
-import { TreeRoot } from '../../components/filetree/filetree.component';
+import { LazyChild, LazyRoot, TreeRoot } from '../../components/filetree/filetree.component';
 import { ApiDataService } from '../../shared/api-data.service';
 import { API } from '../../shared/api-endpoints';
-import { FileProperties, LogServer, LogServersResponse } from '../../shared/models';
+import {
+  FileProperties,
+  LogDirResponse,
+  LogFilesResponse,
+  LogServer,
+  LogServersResponse
+} from '../../shared/models';
+
+/**
+ * The tree payload for a server, normalised for the UI. `mode` decides which
+ * field the component uses: `full` → `roots` (whole tree built client-side),
+ * `lazy` → `lazyRoots` (root folders only; children loaded on expand).
+ */
+export interface FileTreeData {
+  mode: 'full' | 'lazy';
+  roots: TreeRoot[];
+  lazyRoots: LazyRoot[];
+}
 
 /** Data access for the Log Analytics Hub. Every call goes through the API. */
 @Injectable({ providedIn: 'root' })
@@ -22,16 +39,51 @@ export class LogAnalyticsService {
   }
 
   /**
-   * File tree roots for a server — one root per configured `base_log_path`,
-   * each showing its full path with its files (relative) underneath. The API
-   * returns absolute file paths; we group them under the server's base paths and
-   * drop anything outside all bases (or containing `..`) — the tree is jailed to
-   * the configured directories.
+   * File tree for a server. Reads the `mode` the backend chose:
+   *
+   * - `full` (default, incl. an old `{ paths }`-only backend): group the
+   *   absolute paths under the server's base paths → one {@link TreeRoot} per
+   *   base, whole tree built up front. Paths outside all bases (or with `..`)
+   *   are dropped — the jail guard.
+   * - `lazy`: seed the tree with root folders only (from `roots`, or the
+   *   server's configured base paths). Each folder's children are fetched via
+   *   {@link getDirChildren} on first expand.
    */
-  getFileRoots(server: LogServer): Observable<TreeRoot[]> {
-    return this.api
-      .get<{ paths: string[] }>(API.log.files(server.key))
-      .pipe(map((res) => toFileRoots(res?.paths ?? [], server.basePaths)));
+  getFileTree(server: LogServer): Observable<FileTreeData> {
+    return this.api.get<LogFilesResponse>(API.log.files(server.key)).pipe(
+      map((res) => {
+        if ((res?.mode ?? 'full') === 'lazy') {
+          const rootPaths = (res?.roots?.length ? res.roots : server.basePaths).filter(Boolean);
+          return {
+            mode: 'lazy' as const,
+            roots: [],
+            lazyRoots: rootPaths.map((p) => ({ label: p, path: norm(p) }))
+          };
+        }
+        return {
+          mode: 'full' as const,
+          roots: toFileRoots(res?.paths ?? [], server.basePaths),
+          lazyRoots: []
+        };
+      })
+    );
+  }
+
+  /**
+   * Immediate children of one folder (lazy mode). Defence-in-depth: even though
+   * the backend jails the path, we drop any entry that isn't actually under the
+   * requested folder (or contains `..`).
+   */
+  getDirChildren(serverId: string, folderPath: string): Observable<LazyChild[]> {
+    const base = norm(folderPath).toLowerCase();
+    return this.api.get<LogDirResponse>(API.log.dir(serverId, folderPath)).pipe(
+      map((res) =>
+        (res?.entries ?? []).filter((e) => {
+          const p = norm(e.path).toLowerCase();
+          return p.startsWith(base + '/') && !p.split('/').some((s) => s === '..');
+        })
+      )
+    );
   }
 
   /** Content of a single log file (full path, jailed to the server's bases). */

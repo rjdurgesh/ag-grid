@@ -7,6 +7,8 @@ export interface ConfirmRequest {
   cancelLabel?: string;
   /** Colours the confirm button — use 'danger' for destructive actions. */
   tone?: 'primary' | 'danger' | 'success';
+  /** 'confirm' shows Confirm + Cancel; 'notice' shows a single OK (result popup). */
+  mode?: 'confirm' | 'notice';
 }
 
 interface PendingConfirm extends ConfirmRequest {
@@ -14,10 +16,12 @@ interface PendingConfirm extends ConfirmRequest {
 }
 
 /**
- * App-wide confirmation prompt.
+ * App-wide confirmation + notice prompt.
  *
  * `ask()` returns a promise that resolves true only when the user confirms, so
  * no mutating action (edit, delete, insert, save) can fire from a stray click.
+ * `notify()` shows a single-button result popup (success or error) after an
+ * action completes.
  */
 @Injectable({ providedIn: 'root' })
 export class ConfirmService {
@@ -25,7 +29,14 @@ export class ConfirmService {
 
   ask(request: ConfirmRequest): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      this.pending.set({ ...request, resolve });
+      this.pending.set({ mode: 'confirm', ...request, resolve });
+    });
+  }
+
+  /** Result popup with a single OK button (e.g. "2 rows updated successfully"). */
+  notify(request: Omit<ConfirmRequest, 'mode' | 'cancelLabel'>): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this.pending.set({ ...request, mode: 'notice', confirmLabel: request.confirmLabel ?? 'OK', resolve });
     });
   }
 

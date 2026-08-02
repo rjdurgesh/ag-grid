@@ -53,6 +53,9 @@ import {
   ROW_ID,
   RetrieveEvent,
   RollDataEvent,
+  RowUpdate,
+  RowsDeletedEvent,
+  RowsUpdatedEvent,
   olsGridTheme,
   olsGridThemeDark
 } from './grid-data.model';
@@ -130,6 +133,8 @@ export class GridDataComponent {
   readonly idField = input<string>();
   /** Row field used for the modal title + as the table name in API payloads. */
   readonly titleField = input('table_name');
+  /** Row field holding the DB row identifier (Oracle rowid) for update/delete. */
+  readonly rowIdField = input('rowid');
   readonly gridHeight = input('520px');
 
   // --- pagination (main grid) -----------------------------------------------
@@ -153,8 +158,12 @@ export class GridDataComponent {
   readonly rollData = output<RollDataEvent>();
   /** Retrieve was pressed on a COB table's date bar. */
   readonly retrieveRequested = output<RetrieveEvent>();
-  /** Draft rows were saved (one row, or all at once). */
+  /** Draft rows were saved (one row, or all at once) — INSERT. */
   readonly rowsCreated = output<GridCreateEvent>();
+  /** Edited saved rows were saved (one, or all at once) — UPDATE. */
+  readonly rowsUpdated = output<RowsUpdatedEvent>();
+  /** Saved rows were deleted (one, or the selection) — DELETE. */
+  readonly rowsDeleted = output<RowsDeletedEvent>();
 
   // --- outputs --------------------------------------------------------------
   readonly action = output<GridActionEvent>();
@@ -175,6 +184,11 @@ export class GridDataComponent {
   readonly modalError = signal<string | null>(null);
   readonly modalContent = signal<TableContent | null>(null);
   readonly modalSelectedCount = signal(0);
+  /** Selected rows split by kind: saved (existing) vs new drafts. */
+  readonly selectedSavedCount = signal(0);
+  readonly selectedDraftCount = signal(0);
+  /** Selected rows that are currently in inline-edit mode. */
+  readonly selectedEditingCount = signal(0);
   private modalApi?: GridApi;
 
   /** The catalogue row the modal was opened for (drives COB extras). */
@@ -348,8 +362,23 @@ export class GridDataComponent {
   }
 
 
-  onModalSelectionChanged(event: SelectionChangedEvent): void {
-    this.modalSelectedCount.set(event.api.getSelectedRows().length);
+  onModalSelectionChanged(_event: SelectionChangedEvent): void {
+    this.recountSelection();
+  }
+
+  /**
+   * Recompute the selection counts, split into saved vs draft rows, so the bulk
+   * (saved-row) buttons and the draft-insert Save each react to their own subset.
+   */
+  private recountSelection(): void {
+    const selected = (this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[];
+    const editing = this.editingRows();
+    this.modalSelectedCount.set(selected.length);
+    this.selectedDraftCount.set(selected.filter((r) => r[NEW_FLAG] === true).length);
+    this.selectedSavedCount.set(selected.filter((r) => r[NEW_FLAG] !== true).length);
+    this.selectedEditingCount.set(
+      selected.filter((r) => r[NEW_FLAG] !== true && editing.has(String(r[ROW_ID]))).length
+    );
   }
 
   /**
@@ -413,13 +442,37 @@ export class GridDataComponent {
       return;
     }
 
-    // CLOB/JSON/XML/BLOB token — view the full value (not while inline-editing).
-    if (target.closest('.ols-special') && data && !rowEditable && colId) {
+    // CLOB/JSON/XML/BLOB affordance — view the full value, or edit it in the
+    // value modal (with OK/Cancel) while the row is being edited.
+    if (target.closest('.ols-special') && data && colId) {
       const dataType = (api.getColumnDef(colId)?.cellRendererParams as { dataType?: CellDataType } | undefined)?.dataType;
       if (dataType) {
-        this.valueModal.open({ type: dataType, field: colId, value: data[colId] });
+        if (rowEditable) {
+          this.valueModal.open({
+            type: dataType,
+            field: colId,
+            value: data[colId],
+            editable: true,
+            onSave: (newValue) => this.applyCellValue(data, colId, newValue)
+          });
+        } else {
+          this.valueModal.open({ type: dataType, field: colId, value: data[colId] });
+        }
       }
     }
+  }
+
+  /**
+   * Write an edited value back into a modal row (used by the value modal for
+   * CLOB/JSON/XML/BLOB cells). For a saved row in edit mode this becomes part of
+   * the UPDATE diff; for a draft it is picked up by the INSERT.
+   */
+  private applyCellValue(row: Record<string, unknown>, field: string, value: unknown): void {
+    const id = String(row[ROW_ID]);
+    this.modalRows.update((rows) =>
+      rows.map((r) => (String(r[ROW_ID]) === id ? { ...r, [field]: value } : r))
+    );
+    this.refreshModalCells();
   }
 
   // --- expand / collapse ----------------------------------------------------
@@ -657,6 +710,8 @@ export class GridDataComponent {
     if (!content) {
       return;
     }
+    // Add is an INSERT: cancel any pending edits so only one operation is live.
+    this.beforeInsert();
     // No confirmation — Add only stages an editable draft row; nothing is
     // persisted until the user presses Save.
     const draft: Record<string, unknown> = {
@@ -674,6 +729,8 @@ export class GridDataComponent {
 
   /** Clone a saved row into an editable draft placed directly beneath it. */
   private duplicateRow(row: Record<string, unknown>): void {
+    // Duplicate is an INSERT: cancel any pending edits first (single operation).
+    this.beforeInsert();
     const clone: Record<string, unknown> = { ...row };
     clone[ROW_ID] = `draft-${++this.draftSeq}`;
     clone[NEW_FLAG] = true;
@@ -690,8 +747,13 @@ export class GridDataComponent {
       return next;
     });
     // The grid picks up the new rowData on the next change-detection pass, so
-    // scroll the draft into view once it exists rather than synchronously here.
-    setTimeout(() => this.modalApi?.ensureIndexVisible(placed, 'bottom'), 0);
+    // once the node exists: auto-SELECT the new draft (Save persists only ticked
+    // drafts) and scroll it into view.
+    const draftId = String(draft[ROW_ID]);
+    setTimeout(() => {
+      this.modalApi?.getRowNode(draftId)?.setSelected(true);
+      this.modalApi?.ensureIndexVisible(placed, 'bottom');
+    }, 0);
   }
 
   /**
@@ -715,19 +777,20 @@ export class GridDataComponent {
 
   // --- Inline edit of a saved row -------------------------------------------
   private startEdit(row: Record<string, unknown>): void {
+    // Edit is an UPDATE: discard any pending drafts first (single operation).
+    this.beforeUpdate();
     const id = String(row[ROW_ID]);
     this.editingRows.update((map) => new Map(map).set(id, { ...row }));
     this.refreshModalCells();
   }
 
   private async saveRow(row: Record<string, unknown>): Promise<void> {
-    const id = String(row[ROW_ID]);
     const isNew = row[NEW_FLAG] === true;
     const ok = await this.confirm.ask({
       title: isNew ? 'Save new row' : 'Save changes',
       message: isNew
         ? `Insert this new row into ${this.modalTitle()}?`
-        : `Are you sure you want to update the data of this row?`,
+        : `Update this row in ${this.modalTitle()}?`,
       confirmLabel: 'Save',
       tone: 'success'
     });
@@ -736,23 +799,16 @@ export class GridDataComponent {
     }
     if (isNew) {
       this.commitDrafts([row]);
-      return;
+    } else {
+      this.commitEdits([row]);
     }
-    // Saved row leaving edit mode.
-    this.editingRows.update((map) => {
-      const next = new Map(map);
-      next.delete(id);
-      return next;
-    });
-    this.syncContentFromRows();
-    this.action.emit({ action: { id: 'update', label: 'Update', color: 'primary' }, row });
-    this.refreshModalCells();
   }
 
   private cancelRow(row: Record<string, unknown>): void {
     const id = String(row[ROW_ID]);
     if (row[NEW_FLAG] === true) {
       this.modalRows.update((rows) => rows.filter((r) => r[ROW_ID] !== id));
+      setTimeout(() => this.recountSelection());
       return;
     }
     // Restore the pre-edit snapshot.
@@ -768,24 +824,145 @@ export class GridDataComponent {
     this.refreshModalCells();
   }
 
-  /** Bottom "Save" — commit every pending draft in one go. */
-  async saveAllDrafts(): Promise<void> {
-    const drafts = this.draftRows();
-    if (!drafts.length) {
+  /** Selected NEW draft rows (the ones that will be inserted on Save). */
+  private selectedDraftRows(): Record<string, unknown>[] {
+    return ((this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[]).filter(
+      (r) => r[NEW_FLAG] === true
+    );
+  }
+
+  /** Selected saved rows currently in edit mode (bottom "Save selected" target). */
+  private selectedEditingRows(): Record<string, unknown>[] {
+    const editing = this.editingRows();
+    return ((this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[]).filter(
+      (r) => r[NEW_FLAG] !== true && editing.has(String(r[ROW_ID]))
+    );
+  }
+
+  /**
+   * The single pending operation. INSERT (staged drafts, via Add/Duplicate) and
+   * UPDATE (rows in inline-edit, via Edit) never coexist — starting one discards
+   * the other (see {@link beforeInsert} / {@link beforeUpdate}) — so this is
+   * unambiguous. DELETE is immediate and never leaves a pending state.
+   */
+  readonly pendingMode = computed<'none' | 'insert' | 'update'>(() => {
+    if (this.hasDrafts()) {
+      return 'insert';
+    }
+    if (this.hasEditing()) {
+      return 'update';
+    }
+    return 'none';
+  });
+
+  /**
+   * How many rows the bottom "Save selected" button will commit: selected drafts
+   * in insert mode, selected edited rows in update mode. Un-ticked rows are
+   * excluded, so the user picks exactly which of the staged rows to persist.
+   */
+  readonly saveSelectedCount = computed(() => {
+    const mode = this.pendingMode();
+    if (mode === 'insert') {
+      return this.selectedDraftCount();
+    }
+    if (mode === 'update') {
+      return this.selectedEditingCount();
+    }
+    return 0;
+  });
+
+  /** The bottom Save button shows only when there are selected rows to commit. */
+  readonly hasPendingSave = computed(() => this.saveSelectedCount() > 0);
+
+  // --- Single-operation enforcement -----------------------------------------
+  // Only ONE kind of change can be pending at a time: Insert (Add/Duplicate),
+  // Update (Edit) or Delete. Starting a new operation resets the previous one so
+  // the bottom Save can never mix an INSERT and an UPDATE into one ambiguous save.
+
+  /** Discard every unsaved draft row (used when switching to an edit/delete op). */
+  private discardAllDrafts(): void {
+    if (!this.hasDrafts()) {
       return;
     }
-    const ok = await this.confirm.ask({
-      title: 'Save all new rows',
-      message: `Insert ${drafts.length} new row${drafts.length === 1 ? '' : 's'} into ${this.modalTitle()}?`,
-      confirmLabel: `Save ${drafts.length}`,
-      tone: 'success'
-    });
-    if (ok) {
-      this.commitDrafts(drafts);
+    this.modalRows.update((rows) => rows.filter((r) => r[NEW_FLAG] !== true));
+    setTimeout(() => this.recountSelection());
+  }
+
+  /** Revert every in-progress inline edit back to its pre-edit snapshot. */
+  private revertAllEdits(): void {
+    const snaps = this.editingRows();
+    if (!snaps.size) {
+      return;
+    }
+    this.modalRows.update((rows) =>
+      rows.map((r) => {
+        const snap = snaps.get(String(r[ROW_ID]));
+        return snap ? { ...snap } : r;
+      })
+    );
+    this.editingRows.set(new Map());
+    setTimeout(() => this.recountSelection());
+  }
+
+  /** Enforce single-operation: starting an INSERT cancels any pending edits. */
+  private beforeInsert(): void {
+    this.revertAllEdits();
+  }
+
+  /** Enforce single-operation: starting an UPDATE discards any pending drafts. */
+  private beforeUpdate(): void {
+    this.discardAllDrafts();
+  }
+
+  /** Enforce single-operation: a DELETE clears any pending insert/update first. */
+  private clearPending(): void {
+    this.revertAllEdits();
+    this.discardAllDrafts();
+  }
+
+  /**
+   * Bottom "Save selected" — commit the current pending operation for the
+   * SELECTED rows only: INSERT the ticked drafts (insert mode) OR UPDATE the
+   * ticked edited rows (update mode). Never both — the two modes are exclusive.
+   */
+  async saveSelected(): Promise<void> {
+    const mode = this.pendingMode();
+    if (mode === 'insert') {
+      const drafts = this.selectedDraftRows();
+      if (!drafts.length) {
+        return;
+      }
+      const ok = await this.confirm.ask({
+        title: 'Save new rows',
+        message: `Insert ${drafts.length} new row${drafts.length === 1 ? '' : 's'} into ${this.modalTitle()}?`,
+        confirmLabel: 'Save',
+        tone: 'success'
+      });
+      if (ok) {
+        this.commitDrafts(drafts);
+      }
+    } else if (mode === 'update') {
+      const edits = this.selectedEditingRows();
+      if (!edits.length) {
+        return;
+      }
+      const ok = await this.confirm.ask({
+        title: 'Save changes',
+        message: `Update ${edits.length} selected row${edits.length === 1 ? '' : 's'} in ${this.modalTitle()}?`,
+        confirmLabel: 'Save',
+        tone: 'success'
+      });
+      if (ok) {
+        this.commitEdits(edits);
+      }
     }
   }
 
   private commitDrafts(drafts: Record<string, unknown>[]): void {
+    const content = this.modalContent();
+    if (!content) {
+      return;
+    }
     const ids = new Set(drafts.map((d) => String(d[ROW_ID])));
     // Promote the drafts in place — they keep their position in the grid.
     this.modalRows.update((rows) =>
@@ -799,12 +976,99 @@ export class GridDataComponent {
       })
     );
     this.syncContentFromRows();
-    const saved = drafts.map((d) => {
-      const clean: Record<string, unknown> = { ...d };
-      delete clean[NEW_FLAG];
-      return clean;
+    // INSERT payload: column order + each draft's values in that same order.
+    const columns = content.columns.map((c) => c.field);
+    const rows = drafts.map((d) => columns.map((f) => d[f] ?? null));
+    this.rowsCreated.emit({ tableName: this.modalTitle(), columns, rows });
+    // The promoted rows are now saved — clear their (draft) selection.
+    setTimeout(() => {
+      ids.forEach((id) => this.modalApi?.getRowNode(id)?.setSelected(false));
+      this.recountSelection();
     });
-    this.rowsCreated.emit({ tableName: this.modalTitle(), rows: saved });
+    this.refreshModalCells();
+  }
+
+  /**
+   * Commit edited saved rows → emit an UPDATE carrying each row's DB rowid and
+   * only the columns whose value changed (diffed against the pre-edit snapshot).
+   */
+  private commitEdits(rows: Record<string, unknown>[]): void {
+    const snapshots = this.editingRows();
+    const fields = (this.modalContent()?.columns ?? []).map((c) => c.field);
+    const updates: RowUpdate[] = rows.map((row) => {
+      const snap = snapshots.get(String(row[ROW_ID]));
+      const values: Record<string, unknown> = {};
+      for (const f of fields) {
+        if (!snap || row[f] !== snap[f]) {
+          values[f] = row[f];
+        }
+      }
+      return { rowid: row[this.rowIdField()], values };
+    });
+    // Leave edit mode for these rows.
+    this.editingRows.update((map) => {
+      const next = new Map(map);
+      rows.forEach((r) => next.delete(String(r[ROW_ID])));
+      return next;
+    });
+    this.syncContentFromRows();
+    this.rowsUpdated.emit({ tableName: this.modalTitle(), updates });
+    // The rows are now saved — clear their selection and recount.
+    setTimeout(() => {
+      rows.forEach((r) => this.modalApi?.getRowNode(String(r[ROW_ID]))?.setSelected(false));
+      this.recountSelection();
+    });
+    this.refreshModalCells();
+  }
+
+  /**
+   * Bulk edit: put every selected saved row into inline-edit mode at once and
+   * KEEP them selected, so the bottom "Save selected N" can update them together
+   * (each row also keeps its own per-row Save). This is an UPDATE, so any pending
+   * drafts are discarded first (single operation).
+   */
+  editSelected(): void {
+    const selected = (this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[];
+    const savedRows = selected.filter((r) => r[NEW_FLAG] !== true);
+    if (!savedRows.length) {
+      return;
+    }
+    this.beforeUpdate();
+    this.editingRows.update((map) => {
+      const next = new Map(map);
+      savedRows.forEach((r) => next.set(String(r[ROW_ID]), { ...r }));
+      return next;
+    });
+    // Rows stay selected on purpose — they drive the "Save selected N" button.
+    this.recountSelection();
+    this.refreshModalCells();
+  }
+
+  /** Bulk duplicate: clone every selected saved row into editable, pre-ticked drafts. */
+  duplicateSelected(): void {
+    const selected = (this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[];
+    const savedRows = selected.filter((r) => r[NEW_FLAG] !== true);
+    if (!savedRows.length) {
+      return;
+    }
+    // Duplicate is an INSERT: cancel any pending edits first (single operation).
+    this.beforeInsert();
+    const clones = savedRows.map((r) => {
+      const clone: Record<string, unknown> = { ...r };
+      clone[ROW_ID] = `draft-${++this.draftSeq}`;
+      clone[NEW_FLAG] = true;
+      delete clone[this.rowIdField()]; // a fresh row has no DB rowid yet
+      return clone;
+    });
+    // Deselect just the originals (keep any other draft ticks intact).
+    savedRows.forEach((r) => this.modalApi?.getRowNode(String(r[ROW_ID]))?.setSelected(false));
+    this.modalRows.update((rows) => [...rows, ...clones]);
+    // Select the new draft clones (they'll be inserted on Save) once rendered.
+    setTimeout(() => {
+      clones.forEach((c) => this.modalApi?.getRowNode(String(c[ROW_ID]))?.setSelected(true));
+      this.modalApi?.ensureIndexVisible(this.modalRows().length - 1, 'bottom');
+      this.recountSelection();
+    }, 0);
     this.refreshModalCells();
   }
 
@@ -857,7 +1121,9 @@ export class GridDataComponent {
       if (!ok) {
         return;
       }
-      this.action.emit({ action: { id: 'delete', label: 'Delete', color: 'danger' }, row });
+      // Delete is its own operation — clear any pending insert/update first.
+      this.clearPending();
+      this.rowsDeleted.emit({ tableName: this.modalTitle(), rowids: [row[this.rowIdField()]] });
       this.removeRows([row[ROW_ID]]);
       this.syncContentFromRows();
       return;
@@ -868,22 +1134,28 @@ export class GridDataComponent {
   }
 
   async deleteSelected(): Promise<void> {
-    const selected = this.modalApi?.getSelectedRows() ?? [];
-    if (selected.length === 0) {
+    // Only SAVED rows can be deleted (drafts aren't persisted — Cancel discards them).
+    const saved = ((this.modalApi?.getSelectedRows() ?? []) as Record<string, unknown>[]).filter(
+      (r) => r[NEW_FLAG] !== true
+    );
+    if (saved.length === 0) {
       return;
     }
     const ok = await this.confirm.ask({
       title: 'Delete selected rows',
-      message: `Are you sure you want to delete ${selected.length} selected row${selected.length === 1 ? '' : 's'}? This cannot be undone.`,
-      confirmLabel: `Delete ${selected.length}`,
+      message: `Are you sure you want to delete ${saved.length} selected row${saved.length === 1 ? '' : 's'}? This cannot be undone.`,
+      confirmLabel: `Delete ${saved.length}`,
       tone: 'danger'
     });
     if (!ok) {
       return;
     }
-    this.removeRows(selected.map((r) => (r as Record<string, unknown>)[ROW_ID]));
-    selected.forEach((row) => this.action.emit({ action: { id: 'delete', label: 'Delete', color: 'danger' }, row }));
-    this.modalSelectedCount.set(0);
+    // Delete is its own operation — clear any pending insert/update first.
+    this.clearPending();
+    const rowids = saved.map((r) => r[this.rowIdField()]);
+    this.removeRows(saved.map((r) => r[ROW_ID]));
+    this.rowsDeleted.emit({ tableName: this.modalTitle(), rowids });
+    setTimeout(() => this.recountSelection());
   }
 
   /** Drop rows (saved or draft) from the modal by their internal id. */

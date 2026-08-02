@@ -87,8 +87,20 @@ export const API = {
   },
   log: {
     servers: `${API_BASE_URL}/api/log/servers`,
-    /** Flat list of file paths for the selected server. */
+    /**
+     * File tree for a server → `LogFilesResponse` `{ mode, paths?, roots? }`.
+     * `mode:'full'` (or omitted) returns every path up front; `mode:'lazy'`
+     * returns only root folders and the UI loads each folder on expand via
+     * {@link dir}. The backend picks the mode from tree size.
+     */
     files: (serverId: string) => `${API_BASE_URL}/api/log/files?server=${encodeURIComponent(serverId)}`,
+    /**
+     * Immediate children of ONE folder (lazy mode) → `LogDirResponse`
+     * `{ entries: { name, type, path }[] }`. `path` is the folder's FULL path;
+     * the backend must jail it to the server's base paths (reject `..`/outside).
+     */
+    dir: (serverId: string, path: string) =>
+      `${API_BASE_URL}/api/log/dir?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`,
     /** Content of a single log file. */
     fileContent: (serverId: string, path: string) =>
       `${API_BASE_URL}/api/log/file?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`,
@@ -99,22 +111,34 @@ export const API = {
   config: {
     /** Table catalogue for a scope — returns `TabularData` ({ cols, rows }). */
     tables: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/tables`,
-    /**
-     * Column metadata for one table (from `dba_tab_columns`). POST { table_name }
-     * → `ColumnsResponse`. Drives the modal grid's column headers + typed rendering.
-     */
-    columns: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/columns`,
     /** Roll (COB) data for a table over a date range. POST { table_name, from, to }. */
     rollData: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/roll`,
     /**
-     * Table content. POST { table_name, start?, end?, range? } → `TabularData`.
-     * Dates are OPTIONAL — sent only for COB tables (IS_COBDT = Y); non-COB
-     * tables (e.g. no COB date) pass just { table_name }.
-     * `range: false` = the two dates only; `true` = everything between them.
+     * Table content (eye-click). POST { table_name, start?, end?, range? } →
+     * `TableContentResponse` { cols, cols_data_types, Table_data }. Self-describing
+     * (column types included). Dates are OPTIONAL — sent only for COB tables
+     * (IS_COBDT = Y). `range: false` = the two dates only; `true` = between them.
      */
     retrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/retrieve`,
-    /** Insert new rows. POST { table_name, rows }. */
-    createRows: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/rows`
+    /**
+     * INSERT rows. Table name in the URL; body = `{ inserted_by, columns, rows }`
+     * where `rows` are value arrays in `columns` order. Returns `{ inserted: N }`.
+     */
+    createRows: (scope: ConfigScope, table: string) =>
+      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/rows`,
+    /**
+     * UPDATE rows. Table name in the URL; body = `{ updated_by, updates:
+     * [{ rowid, values: { COL: val } }] }` (changed columns only). Returns
+     * `{ updated: N }`.
+     */
+    updateRows: (scope: ConfigScope, table: string) =>
+      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/update`,
+    /**
+     * DELETE rows. Table name in the URL; body = `{ deleted_by, rowids: [...] }`.
+     * Returns `{ deleted: N }`.
+     */
+    deleteRows: (scope: ConfigScope, table: string) =>
+      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`
   },
   infra: {
     /**

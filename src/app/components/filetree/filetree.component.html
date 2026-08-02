@@ -15,14 +15,20 @@
         aria-label="Filter files"
       />
     </div>
-    <div class="filetree__actions">
-      <button type="button" class="filetree__btn" (click)="expandAll()" title="Expand all">Expand</button>
-      <button type="button" class="filetree__btn" (click)="collapseAll()" title="Collapse all">Collapse</button>
-    </div>
+    @if (!isLazy()) {
+      <div class="filetree__actions">
+        <button type="button" class="filetree__btn" (click)="expandAll()" title="Expand all">Expand</button>
+        <button type="button" class="filetree__btn" (click)="collapseAll()" title="Collapse all">Collapse</button>
+      </div>
+    }
   </div>
 
   <div class="filetree__meta">
-    <span>{{ fileCount() }} files</span>
+    @if (isLazy()) {
+      <span>{{ fileCount() }} files loaded · expand to load more</span>
+    } @else {
+      <span>{{ fileCount() }} files</span>
+    }
   </div>
 
   <div class="filetree__body">
@@ -46,9 +52,13 @@
       (click)="onRowClick(node)"
     >
       @if (node.type === 'folder') {
-        <svg class="filetree__chevron" [class.filetree__chevron--open]="node.expanded" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        @if (node.loading) {
+          <span class="filetree__spinner" aria-hidden="true" title="Loading…"></span>
+        } @else {
+          <svg class="filetree__chevron" [class.filetree__chevron--open]="node.expanded" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+            <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        }
         <svg class="filetree__icon filetree__icon--folder" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
           <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill="currentColor" opacity="0.85" />
         </svg>
@@ -103,6 +113,8 @@
 
     @if (node.type === 'folder' && node.expanded && node.children.length) {
       <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: node.children, depth: depth + 1 }" />
+    } @else if (node.type === 'folder' && node.expanded && node.loaded && !node.children.length) {
+      <div class="filetree__empty" [style.padding-inline-start.px]="26 + depth * 16">empty</div>
     }
   }
 </ng-template>

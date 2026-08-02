@@ -186,14 +186,22 @@
 
     @if (!readOnly()) {
       <button cButton color="primary" variant="outline" size="sm" [disabled]="!modalContent()" (click)="addRow()">Add</button>
-      @if (hasDrafts()) {
-        <button cButton color="success" size="sm" (click)="saveAllDrafts()">
-          Save <span class="ols-save-count">{{ draftRows().length }}</span>
+      @if (hasPendingSave()) {
+        <button cButton color="success" size="sm" (click)="saveSelected()">
+          Save selected <span class="ols-save-count">{{ saveSelectedCount() }}</span>
         </button>
       }
-      @if (modalSelectedCount() > 0) {
+      @if (selectedSavedCount() > 0) {
+        @if (pendingMode() !== 'update') {
+          <button cButton color="primary" variant="outline" size="sm" (click)="editSelected()">
+            Edit selected <span class="ols-save-count">{{ selectedSavedCount() }}</span>
+          </button>
+        }
+        <button cButton color="secondary" variant="outline" size="sm" (click)="duplicateSelected()">
+          Duplicate selected <span class="ols-save-count">{{ selectedSavedCount() }}</span>
+        </button>
         <button cButton color="danger" variant="outline" size="sm" (click)="deleteSelected()">
-          Delete selected <span class="ols-save-count">{{ modalSelectedCount() }}</span>
+          Delete selected <span class="ols-save-count">{{ selectedSavedCount() }}</span>
         </button>
       }
     }
