@@ -114,23 +114,33 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
   });
 }
 
+/** Minimal HTML escape for values interpolated into a renderer string. */
+const escapeHtml = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 /**
- * HTML badge renderer for boolean cells. Declared as an arrow function (no
+ * HTML badge renderer for boolean / flag cells. Declared as an arrow function (no
  * prototype) so ag-grid treats it as a render function rather than a component
  * class to instantiate. Blank on empty (new draft rows).
+ *
+ * The badge shows the value **exactly as it came** (Y, N, Yes, No, true, yes, …)
+ * — it is never relabelled — but is coloured green for truthy / grey for falsy.
+ * Truthy / falsy detection is case-insensitive across Y|YES|TRUE|1 / N|NO|FALSE|0.
  */
 const booleanRenderer = (params: ICellRendererParams): string => {
   const raw = params.value;
   if (raw === null || raw === undefined || raw === '') {
     return '';
   }
-  const s = String(raw).trim().toUpperCase();
+  const original = String(raw).trim();
+  const s = original.toUpperCase();
   const truthy = raw === true || s === 'TRUE' || s === 'Y' || s === 'YES' || s === '1';
   const falsy = raw === false || s === 'FALSE' || s === 'N' || s === 'NO' || s === '0';
-  // Unknown value → show it verbatim rather than mislabelling it.
+  const label = escapeHtml(original);
+  // Unknown value → neutral badge (still shown verbatim).
   if (!truthy && !falsy) {
-    return `<span class="badge text-bg-light ols-bool-badge">${s}</span>`;
+    return `<span class="badge text-bg-light ols-bool-badge">${label}</span>`;
   }
   const cls = truthy ? 'text-bg-success' : 'text-bg-secondary';
-  return `<span class="badge ${cls} ols-bool-badge">${truthy ? 'Yes' : 'No'}</span>`;
+  return `<span class="badge ${cls} ols-bool-badge">${label}</span>`;
 };

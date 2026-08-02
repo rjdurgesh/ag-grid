@@ -1,7 +1,7 @@
 import { HttpErrorResponse, HttpInterceptorFn, HttpResponse } from '@angular/common/http';
 import { delay, Observable, of, throwError } from 'rxjs';
 
-import { API_BASE_URL, APP_ENV, AppEnv, ConfigScope, DEV_ROLES, USE_MOCK } from './api-endpoints';
+import { API_BASE_URL, APP_ENV, ApiEnv, ConfigScope, DEV_ROLES, USE_MOCK } from './api-endpoints';
 import { LoginResponse } from './models';
 import {
   AgentActionPayload,
@@ -12,6 +12,7 @@ import {
   MOCK_MEMORY_TREND,
   mockAgentAction,
   mockAgentCollect,
+  mockColumnRetrieve,
   mockConfigTables,
   mockDirEntries,
   mockFileContent,
@@ -39,6 +40,14 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   const url = new URL(req.url);
   const path = url.pathname;
   const q = url.searchParams;
+
+  // Dev aid: the mock answers requests INSIDE Angular, so they never become real
+  // network requests and won't show in DevTools → Network. Log every mock call to
+  // the Console so it's obvious the app IS hitting its APIs (each refresh /
+  // refresh-button re-fires them). With a real backend (USE_MOCK = false) this
+  // interceptor bails out above and the calls appear in the Network tab as usual.
+  // eslint-disable-next-line no-console
+  console.debug(`[mock-api] ${req.method} ${path}${url.search}`);
 
   // --- Auth -----------------------------------------------------------------
   if (path === '/api/auth/login' && req.method === 'POST') {
@@ -115,6 +124,15 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   if (tablesMatch) {
     return respond(mockConfigTables(tablesMatch[1] as ConfigScope));
   }
+  // Column detail (down-arrow expand) — { cols, rows } for one table.
+  const columnMatch = path.match(/^\/api\/config\/(cib|group|retail)\/columnretrieve$/);
+  if (columnMatch && req.method === 'POST') {
+    const body = (req.body ?? {}) as { table_name?: string };
+    if (!body.table_name) {
+      return respondError(400, 'table_name is required');
+    }
+    return respond(mockColumnRetrieve(body.table_name));
+  }
   const rollMatch = path.match(/^\/api\/config\/(cib|group|retail)\/roll$/);
   if (rollMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { table_name?: string; from?: string; to?: string };
@@ -131,14 +149,28 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     });
   }
 
-  // Table content — { cols, rows }. Dates are optional (COB tables only).
+  // Table content (eye) — { table_name, is_cobdt, start_date, end_date, date_range }.
+  // Dates are honoured only when is_cobdt = Y (null otherwise).
   const retrieveMatch = path.match(/^\/api\/config\/(cib|group|retail)\/retrieve$/);
   if (retrieveMatch && req.method === 'POST') {
-    const body = (req.body ?? {}) as { table_name?: string; start?: string; end?: string; range?: boolean };
+    const body = (req.body ?? {}) as {
+      table_name?: string;
+      is_cobdt?: string;
+      start_date?: string | null;
+      end_date?: string | null;
+      date_range?: boolean;
+    };
     if (!body.table_name) {
       return respondError(400, 'table_name is required');
     }
-    return respond(mockTableData(body.table_name, { start: body.start, end: body.end, range: body.range }));
+    const isCob = String(body.is_cobdt ?? '').toUpperCase() === 'Y';
+    return respond(
+      mockTableData(body.table_name, {
+        start: isCob ? body.start_date ?? undefined : undefined,
+        end: isCob ? body.end_date ?? undefined : undefined,
+        range: !!body.date_range
+      })
+    );
   }
 
   // INSERT: /table/{name}/rows  → { inserted_by, columns, rows: [[...]] } → { inserted }
@@ -163,7 +195,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   // --- Infrastructure Pulse -------------------------------------------------
   // Config table (health_Server_Details) for the running environment.
   if (path === '/api/infra/config') {
-    return respond(mockInfraConfig((q.get('env') as AppEnv) ?? 'DEV'));
+    return respond(mockInfraConfig((q.get('env') as ApiEnv) ?? 'DEV'));
   }
   // Agent collect — live disk / infra / service readings for one server.
   if (path === '/api/infra/agent/collect' && req.method === 'POST') {

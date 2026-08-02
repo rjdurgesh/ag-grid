@@ -127,8 +127,13 @@ export class GridDataComponent {
   readonly actions = input<GridAction[]>([]);
   /** Read-only mode (RBAC): hides every mutating control (Add/Save/Delete/Edit/Roll/Upload). */
   readonly readOnly = input(false);
-  /** Loader invoked with a row to fetch its detail/modal content. */
+  /** Loader invoked with a row to fetch its eye-modal content. */
   readonly getDetail = input<(row: Record<string, unknown>) => Observable<TableContent>>();
+  /**
+   * Loader for the down-arrow (expand) detail row. Falls back to {@link getDetail}
+   * when not provided, so a grid that only sets one loader still expands.
+   */
+  readonly getExpand = input<(row: Record<string, unknown>) => Observable<TableContent>>();
   /** Optional stable id field (falls back to row index). */
   readonly idField = input<string>();
   /** Row field used for the modal title + as the table name in API payloads. */
@@ -354,6 +359,11 @@ export class GridDataComponent {
 
   onGridReady(event: GridReadyEvent): void {
     this.gridApi = event.api;
+    // Cold page load: data may have arrived before the grid was ready. Push it
+    // now so the grid paints instead of getting stuck on the no-rows overlay.
+    if (this.displayRows().length) {
+      event.api.setGridOption('rowData', this.displayRows());
+    }
   }
 
 
@@ -505,7 +515,8 @@ export class GridDataComponent {
   }
 
   private loadDetail(rid: string, row: Record<string, unknown>): void {
-    const loader = this.getDetail();
+    // Expand uses its own loader (columnretrieve); falls back to the eye loader.
+    const loader = this.getExpand() ?? this.getDetail();
     if (!loader) {
       this.patchDetail(rid, { loading: false, error: 'No content loader provided' });
       return;
@@ -1241,6 +1252,11 @@ export class GridDataComponent {
       this.rowsPainted = true;
       queueMicrotask(() => {
         this.colsVersion.update((v) => v + 1);
+        // Cold page load: ag-grid can take the initial [rowData] into its model
+        // before the body viewport exists and then never paint (model has the
+        // rows, DOM shows the no-rows overlay). Re-push via the API to force the
+        // first paint, then repaint function-rendered cells.
+        this.gridApi?.setGridOption('rowData', this.displayRows());
         this.gridApi?.refreshCells({ force: true });
       });
     }

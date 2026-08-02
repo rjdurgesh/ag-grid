@@ -17,16 +17,27 @@ export const API_BASE_URL = 'https://ols-api.local';
 /** When true, requests to the endpoints below are answered by the mock interceptor. */
 export const USE_MOCK = true;
 
-/** Environment this tool instance is running in. */
-export type AppEnv = 'DEV' | 'STG' | 'PROD';
+/** Environment this tool instance is running in — as configured & displayed. */
+export type AppEnv = 'DEV' | 'STG' | 'LIVE';
+
+/** Environment label as the BACKEND knows it — the UI's `LIVE` is the API's `PROD`. */
+export type ApiEnv = 'DEV' | 'STG' | 'PROD';
 
 /**
- * The environment this deployment is running in. It is sent to the Infrastructure
- * Pulse config API so the backend returns only the rows for this environment
- * (health_Server_Details.app_env). **Change this per deployment** (DEV / STG / PROD)
- * — it is the single source of truth for the running environment.
+ * The environment this deployment is running in. **Change this per deployment**
+ * (DEV / STG / LIVE) — it is the single source of truth for the running
+ * environment, used for display and (via {@link apiEnv}) in API calls.
  */
 export const APP_ENV: AppEnv = 'DEV';
+
+/**
+ * The environment label sent to the BACKEND. The UI stores/shows `LIVE`, but the
+ * APIs expect `PROD`, so `LIVE` is mapped to `PROD` here (DEV/STG pass through).
+ * Use this — never the raw {@link APP_ENV} — for any env value put on the wire.
+ */
+export function apiEnv(env: AppEnv = APP_ENV): ApiEnv {
+  return env === 'LIVE' ? 'PROD' : env;
+}
 
 /**
  * Master switch for OpenID Connect / SSO.
@@ -109,15 +120,29 @@ export const API = {
       `${API_BASE_URL}/api/log/file-properties?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`
   },
   config: {
-    /** Table catalogue for a scope — returns `TabularData` ({ cols, rows }). */
-    tables: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/tables`,
+    /**
+     * Table catalogue for a scope — returns `TabularData` ({ cols, rows }).
+     * The running environment is sent as `?app_env=` so the backend returns the
+     * catalogue for this environment. `LIVE` is sent to the API as `PROD` (see
+     * {@link apiEnv}).
+     */
+    tables: (scope: ConfigScope) =>
+      `${API_BASE_URL}/api/config/${scope}/tables?app_env=${encodeURIComponent(apiEnv())}`,
+    /**
+     * Column detail (down-arrow expand). POST { table_name } → `TabularData`
+     * `{ cols, rows }`. The nested detail grid renders whatever comes back as-is.
+     */
+    columnRetrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/columnretrieve`,
     /** Roll (COB) data for a table over a date range. POST { table_name, from, to }. */
     rollData: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/roll`,
     /**
-     * Table content (eye-click). POST { table_name, start?, end?, range? } →
-     * `TableContentResponse` { cols, cols_data_types, Table_data }. Self-describing
-     * (column types included). Dates are OPTIONAL — sent only for COB tables
-     * (IS_COBDT = Y). `range: false` = the two dates only; `true` = between them.
+     * Table content (eye-click). POST
+     * `{ table_name, is_cobdt, start_date, end_date, date_range }` →
+     * `TableContentResponse` { cols, cols_data_types, Table_data } (self-describing).
+     * `is_cobdt` ('Y'/'N') comes from the catalogue row. When it is 'Y' the two
+     * dates are sent (default: T-1 on both; `date_range` false = just those two
+     * days, true = the inclusive range between them). When it is 'N' both dates
+     * are sent as `null`.
      */
     retrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/retrieve`,
     /**
@@ -146,7 +171,7 @@ export const API = {
      * call per page load. Returns which servers/shares to monitor and each
      * server's `monitor_config` (disk / infra / services).
      */
-    config: (env: AppEnv) => `${API_BASE_URL}/api/infra/config?env=${env}`,
+    config: (env: AppEnv) => `${API_BASE_URL}/api/infra/config?env=${encodeURIComponent(apiEnv(env))}`,
     /**
      * Collect live readings from a server's agent. POST
      * { hostname, host_platform, host_address, agent_listen_port, monitor_config }.

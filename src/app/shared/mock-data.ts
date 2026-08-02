@@ -9,7 +9,7 @@ import {
   TableContentResponse,
   TabularData
 } from './models';
-import { APP_ENV, AppEnv, ConfigScope } from './api-endpoints';
+import { APP_ENV, ApiEnv, ConfigScope } from './api-endpoints';
 import {
   AgentActionResponse,
   AgentCollectResponse,
@@ -367,6 +367,22 @@ export function mockConfigTables(scope: ConfigScope): TabularData {
   return { cols: CATALOGUE_COLS, rows };
 }
 
+/**
+ * Column detail for the down-arrow expand (`columnretrieve`). Returns a plain
+ * `{ cols, rows }` table for the clicked table — the nested grid renders it as-is
+ * (mirrors the example backend shape: APP_ENV / TABLE_NAME / IS_COBDT / IS_ACTIVE).
+ */
+export function mockColumnRetrieve(tableName: string): TabularData {
+  const cols = ['APP_ENV', 'TABLE_NAME', 'IS_COBDT', 'IS_ACTIVE'];
+  const seed = [...tableName].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const rows: unknown[][] = [
+    [APP_ENV, tableName, yn(seed % 2 === 0), 'Y'],
+    [APP_ENV, `${tableName}_HIST`, yn(seed % 3 === 0), yn(seed % 2 === 1)],
+    [APP_ENV, `${tableName}_STG`, 'N', 'Y']
+  ];
+  return { cols, rows };
+}
+
 // ---------------------------------------------------------------------------
 // Config Ops Console — content of a single table (mixed data types)
 // ---------------------------------------------------------------------------
@@ -554,7 +570,7 @@ const HEALTH_SERVER_CONFIG: HealthServerConfigRow[] = [
 ];
 
 /** Config API: rows for the given environment. */
-export function mockInfraConfig(env: AppEnv): HealthServerConfigRow[] {
+export function mockInfraConfig(env: ApiEnv): HealthServerConfigRow[] {
   return HEALTH_SERVER_CONFIG.filter((r) => r.app_env === env);
 }
 
