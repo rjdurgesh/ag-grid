@@ -72,11 +72,32 @@ export const actionsRenderer = (params: ICellRendererParams): string => {
 
 /**
  * Factory: a token renderer for a specific special type (clob/json/xml/blob).
- * Empty values (e.g. on a new draft row) render blank rather than a token.
+ *
+ * - Read-only row: an empty value renders blank; a filled one shows the
+ *   `type ..` token that opens the value modal for viewing.
+ * - Editable row (draft or inline-edit): always renders a clickable affordance
+ *   — the `type ..` token when it has content, or an "Enter data…" hint when
+ *   empty — so the user can open the editor modal either way. These cells are
+ *   NOT edited inline (they'd never fit a grid cell); the modal is the editor.
  */
 export const specialRenderer = (type: CellDataType) => (params: ICellRendererParams): string => {
+  const row = (params.data ?? {}) as Record<string, unknown>;
   const value = params.value;
-  if (value === null || value === undefined || value === '') {
+  const hasValue = !(value === null || value === undefined || value === '');
+
+  if (isEditableRow(row, params.context)) {
+    const label = hasValue
+      ? `<span class="ols-special__type">${type}</span><span class="ols-special__dots">..</span>`
+      : `<span class="ols-cell-placeholder">Enter data…</span>`;
+    return (
+      `<button type="button" class="ols-special ols-special--edit" tabindex="-1" title="Edit ${type} value">` +
+      `${label}<span class="ols-special__pencil" aria-hidden="true">` +
+      `<svg viewBox="0 0 24 24" width="12" height="12"><path d="M4 20h4L18.5 9.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` +
+      `</span></button>`
+    );
+  }
+
+  if (!hasValue) {
     return '';
   }
   return (
@@ -170,7 +191,13 @@ export class DateCellEditor {
 
   afterGuiAttached(): void {
     this.input.focus();
-    this.input.showPicker?.();
+    // Open the native calendar immediately. Guarded: showPicker throws without a
+    // user gesture (e.g. programmatic edits) and in some embedded contexts.
+    try {
+      this.input.showPicker?.();
+    } catch {
+      /* no-op — the field is still usable; the calendar opens on click */
+    }
   }
 
   /** Store an ISO string so the value round-trips like the rest of the data. */

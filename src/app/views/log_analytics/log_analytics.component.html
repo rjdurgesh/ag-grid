@@ -37,8 +37,10 @@
         <app-filetree
           class="la-tree__inner"
           [roots]="fileRoots()"
+          [lazyRoots]="lazyRoots()"
           [loading]="loadingFiles()"
           (fileSelect)="onFileSelect($event)"
+          (folderLoad)="onFolderLoad($event)"
         />
       </div>
     </div>

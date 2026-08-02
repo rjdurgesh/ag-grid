@@ -1,38 +1,34 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 
-import {
-  ButtonCloseDirective,
-  ButtonDirective,
-  ModalBodyComponent,
-  ModalComponent,
-  ModalFooterComponent,
-  ModalHeaderComponent,
-  ModalTitleDirective
-} from '@coreui/angular';
+import { ButtonDirective } from '@coreui/angular';
 
 import { ValueModalService } from './value-modal.service';
 
 /**
- * App-wide modal that shows the full content of a CLOB/JSON/XML/BLOB cell,
- * pretty-printed. Driven by {@link ValueModalService}; mounted once at app root.
+ * App-wide modal that shows (and, in edit mode, edits) the full content of a
+ * CLOB/JSON/XML/BLOB cell, pretty-printed. Driven by {@link ValueModalService};
+ * mounted once at app root.
+ *
+ * Deliberately NOT a CoreUI `c-modal`: nested inside the data-grid's own
+ * `c-modal`, CoreUI's shared backdrop/dismiss machinery collapsed the underlying
+ * modal whenever this one closed. This is a standalone fixed overlay layered
+ * above everything, so closing it never touches another modal's state.
  */
 @Component({
   selector: 'app-value-modal',
   templateUrl: './value-modal.component.html',
-  imports: [
-    ModalComponent,
-    ModalHeaderComponent,
-    ModalTitleDirective,
-    ModalBodyComponent,
-    ModalFooterComponent,
-    ButtonDirective,
-    ButtonCloseDirective
-  ]
+  styleUrls: ['./value-modal.component.scss'],
+  imports: [ButtonDirective]
 })
 export class ValueModalComponent {
   private readonly svc = inject(ValueModalService);
 
   readonly payload = this.svc.payload;
+
+  /** Working copy of the text while editing. */
+  readonly draft = signal('');
+
+  readonly editable = computed(() => this.payload()?.editable === true);
 
   readonly title = computed(() => {
     const p = this.payload();
@@ -50,10 +46,26 @@ export class ValueModalComponent {
     return formatValue(p.type, p.value);
   });
 
-  onVisibleChange(open: boolean): void {
-    if (!open) {
-      this.svc.close();
-    }
+  constructor() {
+    // Seed the textarea with the current (pretty-printed) value each time an
+    // editable payload opens.
+    effect(() => {
+      const p = this.payload();
+      if (p?.editable) {
+        this.draft.set(formatValue(p.type, p.value));
+      }
+    });
+  }
+
+  onDraftInput(event: Event): void {
+    this.draft.set((event.target as HTMLTextAreaElement).value);
+  }
+
+  /** Commit the edited text back to the originating cell, then close. */
+  save(): void {
+    const p = this.payload();
+    p?.onSave?.(this.draft());
+    this.svc.close();
   }
 
   close(): void {
@@ -62,7 +74,7 @@ export class ValueModalComponent {
 
   async copy(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(this.formatted());
+      await navigator.clipboard.writeText(this.editable() ? this.draft() : this.formatted());
     } catch {
       /* clipboard unavailable — ignore */
     }

@@ -20,6 +20,42 @@ export interface LogServerRow {
  */
 export type LogServersResponse = Record<string, LogServerRow[]>;
 
+/**
+ * Response of `GET /api/log/files`. The backend decides how much to send based
+ * on tree size (a **bounded walk** it caps itself), and labels the shape with
+ * `mode` — the UI switches on this field, it never counts anything itself:
+ *
+ * - `full` (default) — small tree: every absolute file path, up front. The UI
+ *   builds the whole tree client-side (instant filter / expand-all).
+ * - `lazy` — huge tree: the backend bailed early and sends only the root folder
+ *   paths (`roots`). The UI shows those and fetches each folder's children on
+ *   demand via `GET /api/log/dir` when it is first expanded.
+ *
+ * `mode` is optional so an older/simpler backend that just returns `{ paths }`
+ * is treated as `full` — the front end is backward-compatible.
+ */
+export interface LogFilesResponse {
+  mode?: 'full' | 'lazy';
+  /** `full` mode: every absolute file path under the server's base paths. */
+  paths?: string[];
+  /** `lazy` mode: the root folder paths to seed the tree (usually the base
+   *  paths). Optional — the UI falls back to the server's configured bases. */
+  roots?: string[];
+}
+
+/** One immediate child returned by `GET /api/log/dir` (lazy expansion). */
+export interface LogDirEntry {
+  name: string;
+  type: 'folder' | 'file';
+  /** Full absolute path of this entry (used to expand further or read a file). */
+  path: string;
+}
+
+/** Response of `GET /api/log/dir` — the immediate children of one folder. */
+export interface LogDirResponse {
+  entries: LogDirEntry[];
+}
+
 /** Flattened, UI-friendly log server — one option in the server dropdown. */
 export interface LogServer {
   /** Composite unique key from the API map, e.g. "OLSCIB_WEB_A_1_eur17". */
@@ -76,9 +112,8 @@ export interface TableContent {
 }
 
 /**
- * Generic tabular payload: column names + row value arrays. The Config Ops
- * catalogue (`/tables`) and table content (`/retrieve`) both use this, so the
- * grid renders whatever columns the API returns — no hardcoded headers.
+ * Config Ops **catalogue** payload (`/tables`): column names + row value arrays.
+ * The grid renders whatever columns the API returns — no hardcoded headers.
  */
 export interface TabularData {
   cols: string[];
@@ -86,18 +121,18 @@ export interface TabularData {
 }
 
 /**
- * One column's metadata as returned by the table-columns API (backed by
- * `dba_tab_columns`): the column name + its DB data type.
+ * Config Ops **table-content** payload (eye-click / `/retrieve`). Self-describing:
+ *  - `cols`            : display column names (rowid is intentionally NOT here).
+ *  - `cols_data_types` : parallel cx_Oracle DB types, e.g.
+ *                        "<cx_Oracle.DbType DB_TYPE_DATE>" — drives typed rendering.
+ *  - `Table_data`      : row objects keyed by column name; each ALSO carries a
+ *                        `rowid` (the DB row id) used for update/delete but hidden
+ *                        from the grid because it isn't in `cols`.
  */
-export interface ColumnDetail {
-  name: string;
-  /** DB data type, e.g. VARCHAR2 | NUMBER | DATE | TIMESTAMP | CLOB | JSON | XMLTYPE | BLOB. */
-  type: string;
-}
-
-/** Response of the table-columns API. */
-export interface ColumnsResponse {
-  columns: ColumnDetail[];
+export interface TableContentResponse {
+  cols: string[];
+  cols_data_types: string[];
+  Table_data: Record<string, unknown>[];
 }
 
 /** Live memory usage stats shown in the header. */

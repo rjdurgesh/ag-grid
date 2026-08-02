@@ -57,7 +57,8 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
         def.cellClass = 'ols-cell-center';
         if (options.editableDrafts) {
           def.cellEditor = 'agSelectCellEditor';
-          def.cellEditorParams = { values: [true, false] };
+          // Y/N flags round-trip to Oracle CHAR(1) columns.
+          def.cellEditorParams = { values: ['Y', 'N'] };
         }
         break;
       case 'date':
@@ -81,11 +82,10 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
         def.cellRendererParams = { dataType: col.type };
         def.sortable = false;
         def.filter = false;
-        if (options.editableDrafts) {
-          def.cellEditor = 'agLargeTextCellEditor';
-          def.cellEditorPopup = true;
-          def.cellEditorParams = { dataType: col.type, rows: 10, cols: 60 };
-        }
+        // These values never fit an inline grid cell — they are edited in the
+        // value modal (opened by clicking the cell's affordance), not inline.
+        // Force editable off so ag-grid never starts its own cell editor here.
+        def.editable = false;
         break;
       case 'number':
         if (options.editableDrafts) {
@@ -97,9 +97,16 @@ export function buildDataColumnDefs(columns: GridColumn[], options: BuildColumnO
     }
 
     // Show a muted "Enter data…" hint in empty cells of editable rows.
-    // Date columns are skipped — dateRenderer already renders its own hint and
-    // must keep its calendar trigger visible when empty.
-    const handlesOwnPlaceholder = col.type === 'date' || col.type === 'timestamp';
+    // Date and special (clob/json/xml/blob) columns are skipped — their own
+    // renderers already draw the hint plus the affordance that opens the picker
+    // or value editor, and must keep it visible when empty.
+    const handlesOwnPlaceholder =
+      col.type === 'date' ||
+      col.type === 'timestamp' ||
+      col.type === 'clob' ||
+      col.type === 'json' ||
+      col.type === 'xml' ||
+      col.type === 'blob';
     if (options.editableDrafts && !handlesOwnPlaceholder) {
       def.cellRenderer = withPlaceholder(def.cellRenderer as ((p: ICellRendererParams) => string) | undefined);
     }

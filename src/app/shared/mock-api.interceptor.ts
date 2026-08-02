@@ -13,13 +13,13 @@ import {
   mockAgentAction,
   mockAgentCollect,
   mockConfigTables,
+  mockDirEntries,
   mockFileContent,
-  mockFilePaths,
   mockFileProperties,
   mockInfraConfig,
+  mockLogFiles,
   mockMemory,
   mockShareSpace,
-  mockTableColumns,
   mockTableData,
   isLogPathAllowed
 } from './mock-data';
@@ -86,7 +86,14 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(MOCK_LOG_SERVERS);
   }
   if (path === '/api/log/files') {
-    return respond({ paths: mockFilePaths(q.get('server') ?? '') });
+    return respond(mockLogFiles(q.get('server') ?? ''));
+  }
+  if (path === '/api/log/dir') {
+    const p = q.get('path') ?? '';
+    if (!isLogPathAllowed(q.get('server'), p)) {
+      return respondError(400, 'Path is outside the server base log directories');
+    }
+    return respond({ entries: mockDirEntries(q.get('server') ?? '', p) });
   }
   if (path === '/api/log/file') {
     const p = q.get('path') ?? '';
@@ -107,15 +114,6 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   const tablesMatch = path.match(/^\/api\/config\/(cib|group|retail)\/tables$/);
   if (tablesMatch) {
     return respond(mockConfigTables(tablesMatch[1] as ConfigScope));
-  }
-  // Column metadata for one table (dba_tab_columns).
-  const columnsMatch = path.match(/^\/api\/config\/(cib|group|retail)\/columns$/);
-  if (columnsMatch && req.method === 'POST') {
-    const body = (req.body ?? {}) as { table_name?: string };
-    if (!body.table_name) {
-      return respondError(400, 'table_name is required');
-    }
-    return respond(mockTableColumns(body.table_name));
   }
   const rollMatch = path.match(/^\/api\/config\/(cib|group|retail)\/roll$/);
   if (rollMatch && req.method === 'POST') {
@@ -143,10 +141,23 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockTableData(body.table_name, { start: body.start, end: body.end, range: body.range }));
   }
 
-  const createMatch = path.match(/^\/api\/config\/(cib|group|retail)\/rows$/);
-  if (createMatch && req.method === 'POST') {
-    const body = (req.body ?? {}) as { table_name?: string; rows?: unknown[] };
-    return respond({ success: true, inserted: body.rows?.length ?? 0, table_name: body.table_name });
+  // INSERT: /table/{name}/rows  → { inserted_by, columns, rows: [[...]] } → { inserted }
+  const insertMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/rows$/);
+  if (insertMatch && req.method === 'POST') {
+    const body = (req.body ?? {}) as { rows?: unknown[]; inserted_by?: string };
+    return respond({ success: true, inserted: body.rows?.length ?? 0 });
+  }
+  // UPDATE: /table/{name}/update  → { updated_by, updates: [{rowid, values}] } → { updated }
+  const updateMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/update$/);
+  if (updateMatch && req.method === 'POST') {
+    const body = (req.body ?? {}) as { updates?: unknown[]; updated_by?: string };
+    return respond({ success: true, updated: body.updates?.length ?? 0 });
+  }
+  // DELETE: /table/{name}/delete  → { deleted_by, rowids: [...] } → { deleted }
+  const deleteMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/delete$/);
+  if (deleteMatch && req.method === 'POST') {
+    const body = (req.body ?? {}) as { rowids?: unknown[]; deleted_by?: string };
+    return respond({ success: true, deleted: body.rowids?.length ?? 0 });
   }
 
   // --- Infrastructure Pulse -------------------------------------------------

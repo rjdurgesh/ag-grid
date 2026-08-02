@@ -113,10 +113,32 @@ export interface RetrieveEvent {
   range: boolean;
 }
 
-/** Payload emitted when draft rows are saved (single row or all at once). */
+/**
+ * Payload emitted when draft rows are saved (single row or all at once) — an
+ * INSERT. `columns` is the column order; `rows` are value arrays in that order.
+ */
 export interface GridCreateEvent {
   tableName: string;
-  rows: Record<string, unknown>[];
+  columns: string[];
+  rows: unknown[][];
+}
+
+/** One row's update: its DB rowid + only the columns that changed. */
+export interface RowUpdate {
+  rowid: unknown;
+  values: Record<string, unknown>;
+}
+
+/** Payload emitted when edited saved rows are saved — an UPDATE. */
+export interface RowsUpdatedEvent {
+  tableName: string;
+  updates: RowUpdate[];
+}
+
+/** Payload emitted when saved rows are deleted — a DELETE (by DB rowid). */
+export interface RowsDeletedEvent {
+  tableName: string;
+  rowids: unknown[];
 }
 
 /** Prettify a snake_case field into a header label. */

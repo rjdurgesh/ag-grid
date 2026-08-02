@@ -34,9 +34,11 @@ import { ConfirmService } from './confirm.service';
         <p class="ols-confirm__msg">{{ p.message }}</p>
 
         <div class="ols-confirm-box__actions">
-          <button cButton color="secondary" variant="outline" size="sm" (click)="cancel()">
-            {{ p.cancelLabel ?? 'Cancel' }}
-          </button>
+          @if (p.mode !== 'notice') {
+            <button cButton color="secondary" variant="outline" size="sm" (click)="cancel()">
+              {{ p.cancelLabel ?? 'Cancel' }}
+            </button>
+          }
           <button cButton [color]="p.tone ?? 'primary'" size="sm" (click)="confirm()">
             {{ p.confirmLabel ?? 'OK' }}
           </button>
