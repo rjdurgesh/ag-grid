@@ -4,28 +4,35 @@ This guide is the single reference for wiring the OLS Dashboard to your real bac
 where to configure things, every API the app calls, and the exact request/response
 shape each one expects. It is kept up to date as the app evolves.
 
-> TL;DR to go live: set `APP_ENV`, `API_BASE_URL`, and `USE_MOCK = false` in
-> [`src/app/shared/api-endpoints.ts`](src/app/shared/api-endpoints.ts), point the
-> endpoints at your services, and make sure each API returns the documented shape.
+> TL;DR to go live: edit **`src/environments/environment.ts`** — set `apiBaseUrl`, `appEnv`,
+> and either `useMock: false` (all real) or add path prefixes to `liveApiPrefixes` (real one
+> area at a time). Make sure each API returns the documented shape.
 
 ---
 
-## 1. Central configuration — `src/app/shared/api-endpoints.ts`
+## 1. Central configuration — `src/environments/environment.ts`
 
-Everything you need to change lives at the top of this one file.
+All app/runtime config lives in this **one** file (not in `api-endpoints.ts`, which is now
+URLs only and reads `apiBaseUrl` from here).
 
 | Setting | Purpose | Change to |
 |---|---|---|
-| `API_BASE_URL` | Root of your backend. Every endpoint is built from it. | Your API host, e.g. `https://ols-api.mybank.net` |
-| `USE_MOCK` | While `true`, the in-app mock interceptor answers all endpoints with canned data. | `false` to hit the real backend |
-| `APP_ENV` | Which environment this deployment is (`DEV` \| `STG` \| `LIVE`). Shown in the header pill and sent to env-aware APIs (Config `tables`, Infra `config`). **The UI's `LIVE` is sent to the backend as `PROD`** via `apiEnv()` — configure/display `LIVE`, the wire carries `PROD`. | The env this instance runs in |
-| `IS_SSO_ENABLED` | `true` = authenticate via OpenID Connect (`src/app/auth/sso.config.ts`); `false` = bypass SSO and use the direct login form. | `true` once `SSO_CONFIG` is filled in |
+| `apiBaseUrl` | Root of your backend. Every endpoint is built from it. | Your API host, e.g. `https://ols-api.mybank.net` |
+| `useMock` | While `true`, the in-app mock answers endpoints with canned data. | `false` to hit the real backend for everything |
+| `liveApiPrefixes` | While `useMock` is true, request paths starting with any of these go to the **real** backend (the rest stay mocked). Wire endpoints one area at a time. | e.g. `['/api/log/']` (Log Analytics is live), add `'/api/config/'` etc. as you go |
+| `appEnv` | Environment (`DEV` \| `STG` \| `LIVE`). Header pill + sent to env-aware APIs (Config `tables`, Infra `config`). **`LIVE` is sent to the backend as `PROD`** via `apiEnv()`. | The env this instance runs in |
+| `supportEmail` | Address the error-popup "Email" button reports to. | Your support inbox |
+| `username` / `name` | Demo identity for the direct (non-SSO) login / dev mode (real SSO overrides it). | Your dev user |
+| `isSsoEnabled` | `true` = OpenID Connect (`src/app/auth/sso.config.ts`); `false` = direct login form. | `true` once `SSO_CONFIG` is filled in |
+| `devRoles` | Preview role flags while `GET /api/auth/roles` is mocked. | — |
 
-`API` is one object holding every URL as a function/string. Change a URL in one place
-and it updates everywhere.
+**Wiring an endpoint to the real backend (no code change):** point `apiBaseUrl` at your host,
+keep `useMock: true`, and add the path prefix to `liveApiPrefixes`. That area then hits the
+real API (visible in DevTools → Network) while everything else stays on the mock. Log Analytics
+(`/api/log/`) is already wired this way to the FastAPI backend in `backend/`.
 
-To fully detach the mock you can also remove `mockApiInterceptor` from
-[`src/app/app.config.ts`](src/app/app.config.ts) `provideHttpClient(withInterceptors([...]))`.
+`API` (in `api-endpoints.ts`) is one object holding every URL. To fully detach the mock, set
+`useMock: false` (or remove `mockApiInterceptor` from [`app.config.ts`](src/app/app.config.ts)).
 
 ---
 
@@ -201,10 +208,23 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 | `GET /api/config/{scope}/tables?app_env=<DEV\|STG\|PROD>` | – | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`) |
 | `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
 | `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
-| `POST /api/config/{scope}/roll` | `{ table_name, from, to }` | `{ message, rolledRows }` |
+| `POST /api/config/{scope}/roll` | `{ rolled_by, table_name, from, to }` | `{ message, rolledRows }` |
 | `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
-| `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [{ rowid, values }] }` | `{ updated: N }` — UPDATE |
-| `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ … ] }` | `{ deleted: N }` — DELETE |
+| `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
+| `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |
+
+**Mutation payload shapes** (the backend keys rows by their DB `rowid`):
+- **INSERT** — `rows` are value arrays in `columns` order; new drafts are entered at the
+  **top of the first page** (so pagination never hides them). Save persists only the ticked drafts.
+- **UPDATE** — `updates` is an array of `{ "<rowid>": { onlyChangedColumn: value } }` objects.
+- **DELETE** — `rowids` is an array of the DB rowids. (A just-inserted row has no rowid until
+  the grid is refreshed — refresh before editing/deleting a row you just added.)
+
+**Errors** — INSERT/UPDATE/DELETE failures open the rich **error popup**: the FULL server
+message (`error.details` from Oracle, or `error.message`), scrollable, with **Email / Copy /
+OK / Close**. *Email* opens a pre-filled report to `SUPPORT_EMAIL` (`api-endpoints.ts`, single
+source) — subject `"<UserID>: Issue with OLS Operations Dashboard - DD-Mon-YYYY"`. Success still
+shows the simple "N rows …" notice. *(Dev: submit a cell value of `ERR` to trigger a mock ORA error.)*
 
 **Down-arrow (expand) flow:** clicking a row's ▾ calls **`columnretrieve`** with that
 row's `table_name` and renders the returned `{ cols, rows }` verbatim in a full-width

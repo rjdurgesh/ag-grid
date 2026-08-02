@@ -1,0 +1,125 @@
+/* Layered above the data grid modal (1055) and the confirm dialog (1080/1081) —
+   an error is top priority and may appear over either. */
+.ols-err-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1090;
+  background: rgba(15, 20, 36, 0.55);
+  backdrop-filter: blur(1px);
+  animation: ols-err-fade 0.15s ease both;
+}
+
+.ols-err-box {
+  position: fixed;
+  z-index: 1091;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(94vw, 640px);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--cui-body-bg, #fff);
+  color: var(--cui-body-color, #212631);
+  border: 1px solid var(--cui-border-color, #e0e3e9);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  animation: ols-err-pop 0.16s ease both;
+}
+
+.ols-err-box__head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--cui-border-color, #e0e3e9);
+}
+
+.ols-err__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  flex: 0 0 34px;
+  color: var(--cui-danger, #e55353);
+  background: color-mix(in srgb, var(--cui-danger, #e55353) 14%, transparent);
+}
+
+.ols-err__title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 650;
+  flex: 1 1 auto;
+}
+
+.ols-err__x {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cui-secondary-color, #5b6470);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    background: var(--cui-tertiary-bg, rgba(0, 0, 0, 0.06));
+    color: var(--cui-body-color, #212631);
+  }
+}
+
+.ols-err-box__body {
+  padding: 14px 20px;
+  overflow: auto;
+}
+
+.ols-err__lead {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: var(--cui-secondary-color, #5b6470);
+}
+
+.ols-err__msg {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--cui-tertiary-bg);
+  border: 1px solid var(--cui-border-color, #e0e3e9);
+  border-radius: 10px;
+  font-family: var(--cui-font-monospace, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--cui-body-color);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.ols-err-box__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--cui-border-color, #e0e3e9);
+}
+
+@keyframes ols-err-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ols-err-pop {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ols-err-backdrop,
+  .ols-err-box { animation: none; }
+}

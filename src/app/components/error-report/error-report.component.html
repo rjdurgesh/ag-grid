@@ -1,0 +1,31 @@
+<!-- Standalone fixed overlay (NOT a CoreUI modal) so it layers above the data
+     grid's own modal without CoreUI's shared backdrop collapsing it. -->
+@if (report(); as r) {
+  <div class="ols-err-backdrop" (click)="close()"></div>
+  <div class="ols-err-box" role="alertdialog" aria-modal="true" aria-labelledby="olsErrTitle">
+    <div class="ols-err-box__head">
+      <span class="ols-err__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path d="M12 8v5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <circle cx="12" cy="16.6" r="1.2" fill="currentColor" />
+          <path d="M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.4h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
+            fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        </svg>
+      </span>
+      <h5 id="olsErrTitle" class="ols-err__title">{{ r.title }}</h5>
+      <button type="button" class="ols-err__x" (click)="close()" aria-label="Close">×</button>
+    </div>
+
+    <div class="ols-err-box__body">
+      <p class="ols-err__lead">The server returned an error:</p>
+      <pre class="ols-err__msg"><code>{{ r.message }}</code></pre>
+    </div>
+
+    <div class="ols-err-box__actions">
+      <button cButton color="secondary" variant="outline" size="sm" (click)="email()">Email</button>
+      <button cButton color="secondary" variant="outline" size="sm" (click)="copy()">{{ copied() ? 'Copied' : 'Copy' }}</button>
+      <button cButton color="primary" size="sm" (click)="close()">OK</button>
+      <button cButton color="secondary" size="sm" (click)="close()">Close</button>
+    </div>
+  </div>
+}

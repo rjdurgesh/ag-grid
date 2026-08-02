@@ -1,7 +1,8 @@
 import { HttpErrorResponse, HttpInterceptorFn, HttpResponse } from '@angular/common/http';
 import { delay, Observable, of, throwError } from 'rxjs';
 
-import { API_BASE_URL, APP_ENV, ApiEnv, ConfigScope, DEV_ROLES, USE_MOCK } from './api-endpoints';
+import { ApiEnv, ConfigScope } from './api-endpoints';
+import { environment } from '../../environments/environment';
 import { LoginResponse } from './models';
 import {
   AgentActionPayload,
@@ -33,13 +34,20 @@ import {
  * is passed through untouched.
  */
 export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
-  if (!USE_MOCK || !req.url.startsWith(API_BASE_URL)) {
+  if (!environment.useMock || !req.url.startsWith(environment.apiBaseUrl)) {
     return next(req);
   }
 
   const url = new URL(req.url);
   const path = url.pathname;
   const q = url.searchParams;
+
+  // Config-driven passthrough: while mocking, requests whose path starts with a
+  // `liveApiPrefixes` entry go to the REAL backend (wire endpoints one prefix at
+  // a time from environment.ts — no code change needed here).
+  if (environment.liveApiPrefixes.some((prefix) => path.startsWith(prefix))) {
+    return next(req);
+  }
 
   // Dev aid: the mock answers requests INSIDE Angular, so they never become real
   // network requests and won't show in DevTools → Network. Log every mock call to
@@ -70,7 +78,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond({ success: true });
   }
   if (path === '/api/auth/roles') {
-    return respond({ ...DEV_ROLES });
+    return respond({ ...environment.devRoles });
   }
 
   // --- System / dashboard ---------------------------------------------------
@@ -78,7 +86,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockMemory());
   }
   if (path === '/api/system/database') {
-    return respond({ name: `OLSDB_${APP_ENV}01` });
+    return respond({ name: `OLSDB_${environment.appEnv}01` });
   }
   if (path === '/api/dashboard/stats') {
     return respond(MOCK_DASHBOARD_STATS);
@@ -177,18 +185,28 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   const insertMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/rows$/);
   if (insertMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { rows?: unknown[]; inserted_by?: string };
+    if (hasErrSentinel(body)) {
+      return respondOraError();
+    }
     return respond({ success: true, inserted: body.rows?.length ?? 0 });
   }
-  // UPDATE: /table/{name}/update  → { updated_by, updates: [{rowid, values}] } → { updated }
+  // UPDATE: /table/{name}/update  → { updated_by, updates: [{ <rowid>: {col:val} }] } → { updated }
   const updateMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/update$/);
   if (updateMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { updates?: unknown[]; updated_by?: string };
+    if (hasErrSentinel(body)) {
+      return respondOraError();
+    }
     return respond({ success: true, updated: body.updates?.length ?? 0 });
   }
   // DELETE: /table/{name}/delete  → { deleted_by, rowids: [...] } → { deleted }
   const deleteMatch = path.match(/^\/api\/config\/(cib|group|retail)\/table\/[^/]+\/delete$/);
   if (deleteMatch && req.method === 'POST') {
     const body = (req.body ?? {}) as { rowids?: unknown[]; deleted_by?: string };
+    // A null/blank rowid can't identify a row → a real backend errors; surface it.
+    if (hasErrSentinel(body) || (body.rowids ?? []).some((r) => r == null || r === '')) {
+      return respondOraError();
+    }
     return respond({ success: true, deleted: body.rowids?.length ?? 0 });
   }
 
@@ -239,6 +257,30 @@ function respondError(status: number, message: string): Observable<never> {
   return throwError(
     () => new HttpErrorResponse({ status, statusText: message, error: { message } })
   ).pipe(delay(200)) as Observable<never>;
+}
+
+/**
+ * Simulate a backend DB failure with the real `{ details }` shape (as the Oracle
+ * backend returns), multi-line so the error popup's scroller is exercised.
+ */
+function respondOraError(): Observable<never> {
+  const details =
+    'ORA-20999: unique constraint (OLS.PK_CONFIG) violated\n' +
+    'ORA-06512: at "OLS.PKG_CONFIG_OPS", line 142\n' +
+    'ORA-06512: at "OLS.PKG_CONFIG_OPS", line 87\n' +
+    'ORA-06512: at line 1';
+  return throwError(
+    () => new HttpErrorResponse({ status: 400, statusText: 'Bad Request', error: { details } })
+  ).pipe(delay(400)) as Observable<never>;
+}
+
+/** DEV test hook: a submitted value of "ERR" (any case) triggers {@link respondOraError}. */
+function hasErrSentinel(body: unknown): boolean {
+  try {
+    return JSON.stringify(body ?? '').toUpperCase().includes('"ERR"');
+  } catch {
+    return false;
+  }
 }
 
 function titleCase(value: string): string {

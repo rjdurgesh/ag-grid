@@ -4,6 +4,7 @@ import { map, Observable } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
 import { RbacService } from '../../auth/rbac.service';
 import { ConfirmService } from '../../components/confirm/confirm.service';
+import { ErrorReportService } from '../../components/error-report/error-report.service';
 import { GridDataComponent } from '../../components/grid-data/grid-data.component';
 import {
   GridActionEvent,
@@ -143,6 +144,7 @@ export abstract class ConfigScopeBase implements OnInit {
   private readonly rbac = inject(RbacService);
   private readonly auth = inject(AuthService);
   private readonly confirm = inject(ConfirmService);
+  private readonly errorReport = inject(ErrorReportService);
 
   /** Current user id stamped onto inserted_by / updated_by / deleted_by. */
   private get actor(): string {
@@ -288,15 +290,19 @@ export abstract class ConfigScopeBase implements OnInit {
       });
   }
 
-  /** UPDATE — per-row rowid + changed columns + updated_by. Popups the count. */
+  /**
+   * UPDATE — the backend identifies each row by its DB rowid, so `updates` is an
+   * array of `{ <rowid>: { changedColumn: value } }` objects (not `{ rowid, values }`).
+   */
   onRowsUpdated(event: RowsUpdatedEvent): void {
+    const updates = event.updates.map((u) => ({ [String(u.rowid)]: u.values }));
     this.api
       .post<{ updated?: number }>(API.config.updateRows(this.scope, event.tableName), {
         updated_by: this.actor,
-        updates: event.updates
+        updates
       })
       .subscribe({
-        next: (res) => this.notifyOk(res?.updated ?? event.updates.length, 'updated'),
+        next: (res) => this.notifyOk(res?.updated ?? updates.length, 'updated'),
         error: (err) => this.notifyErr('update', err)
       });
   }
@@ -323,18 +329,38 @@ export abstract class ConfigScopeBase implements OnInit {
     });
   }
 
-  /** Error result popup showing the message returned by the API. */
+  /**
+   * Error popup showing the FULL message the API returned — in the rich error
+   * dialog (scrollable, with Email / Copy / OK / Close). Handles the backend's
+   * `{ details }` shape as well as `{ message }`, a plain-string body, or the
+   * transport error.
+   */
   private notifyErr(op: string, err: unknown): void {
-    const e = err as { error?: { message?: string }; message?: string; statusText?: string };
-    const msg = e?.error?.message || e?.message || e?.statusText || `The ${op} could not be completed.`;
-    this.confirm.notify({ title: `${op.charAt(0).toUpperCase()}${op.slice(1)} failed`, message: msg, tone: 'danger' });
+    const e = err as {
+      error?: { details?: string; message?: string } | string;
+      message?: string;
+      statusText?: string;
+    };
+    const body = e?.error;
+    const msg =
+      (typeof body === 'string' && body) ||
+      (typeof body === 'object' && (body?.details || body?.message)) ||
+      e?.message ||
+      e?.statusText ||
+      `The ${op} could not be completed.`;
+    this.errorReport.show({
+      title: `${op.charAt(0).toUpperCase()}${op.slice(1)} failed`,
+      message: String(msg),
+      userId: this.actor,
+    });
   }
 
-  /** Roll Data → Process: hand the table + range to the backend. */
+  /** Roll Data → Process: hand the table + range to the backend, stamped with the actor. */
   onRollData(event: RollDataEvent, grid: GridDataComponent): void {
     grid.setRollNotice('Processing roll…');
     this.api
       .post<{ message?: string; rolledRows?: number }>(API.config.rollData(this.scope), {
+        rolled_by: this.actor,
         table_name: event.tableName,
         from: event.from,
         to: event.to

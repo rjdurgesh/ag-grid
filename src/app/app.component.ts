@@ -8,14 +8,15 @@ import { ColorModeService } from '@coreui/angular';
 import { IconSetService } from '@coreui/icons-angular';
 import { iconSubset } from './icons/icon-subset';
 import { ConfirmComponent } from './components/confirm/confirm.component';
+import { ErrorReportComponent } from './components/error-report/error-report.component';
 import { ValueModalComponent } from './components/grid-data/value-modal/value-modal.component';
 
 @Component({
   selector: 'app-root',
-  // The shared value modal and confirmation prompt are mounted once here so any
-  // component in the app can use them.
-  template: '<router-outlet /><app-value-modal /><app-confirm />',
-  imports: [RouterOutlet, ValueModalComponent, ConfirmComponent]
+  // The shared value modal, confirmation prompt and error popup are mounted once
+  // here so any component in the app can use them.
+  template: '<router-outlet /><app-value-modal /><app-confirm /><app-error-report />',
+  imports: [RouterOutlet, ValueModalComponent, ConfirmComponent, ErrorReportComponent]
 })
 export class AppComponent implements OnInit {
   title = 'OLS Dashboard';

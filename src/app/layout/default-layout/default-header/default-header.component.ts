@@ -19,7 +19,7 @@ import {
 
 import { IconDirective } from '@coreui/icons-angular';
 
-import { APP_ENV } from '../../../shared/api-endpoints';
+import { environment } from '../../../../environments/environment';
 import { ArrowStreamService } from '../../../shared/arrow-stream.service';
 import { UserProfileComponent } from '../../../user_profile/user-profile.component';
 
@@ -51,8 +51,8 @@ export class DefaultHeaderComponent extends HeaderComponent {
 
   /** Environment pill next to the theme switcher — shows the configured env
    *  (DEV / STG / LIVE) as-is. Only API calls remap LIVE → PROD (see apiEnv). */
-  readonly envLabel = APP_ENV;
-  readonly envClass = APP_ENV.toLowerCase();
+  readonly envLabel = environment.appEnv;
+  readonly envClass = environment.appEnv.toLowerCase();
 
   readonly memoryColor = computed(() => {
     const p = this.memory()?.percent ?? 0;
