@@ -49,8 +49,9 @@ export class DefaultHeaderComponent extends HeaderComponent {
   /** Live header memory-usage feed (polls every 5s via the mock/real API). */
   readonly memory = toSignal(this.#arrowStream.memory(5000));
 
-  /** Environment pill next to the theme switcher: PROD shows "LIVE", else the env. */
-  readonly envLabel = APP_ENV === 'PROD' ? 'LIVE' : APP_ENV;
+  /** Environment pill next to the theme switcher — shows the configured env
+   *  (DEV / STG / LIVE) as-is. Only API calls remap LIVE → PROD (see apiEnv). */
+  readonly envLabel = APP_ENV;
   readonly envClass = APP_ENV.toLowerCase();
 
   readonly memoryColor = computed(() => {

@@ -46,7 +46,11 @@ function resolveKey(cols: string[], candidates: string[], fallback: string): str
   return fallback;
 }
 
-/** Catalogue column type: IS_* flags render as Yes/No badges, everything else as text. */
+/**
+ * Catalogue column type: IS_* flags (IS_COBDT / IS_ACTIVE) render as coloured
+ * green/grey badges — but showing their **raw** value (Y / N / Yes / true …), not
+ * a relabelled Yes/No. Everything else is plain text.
+ */
 function catalogueType(field: string): CellDataType {
   return /^is[_a-z0-9]*$/i.test(field) ? 'boolean' : 'string';
 }
@@ -103,6 +107,23 @@ function buildContent(res: TableContentResponse | null): TableContent {
     type: cxOracleTypeToCellType(types[i])
   }));
   return { columns, rows: res?.Table_data ?? [] };
+}
+
+/**
+ * Build detail-grid content from the down-arrow `columnretrieve` response — a
+ * plain `TabularData` ({ cols, rows }). Every column is shown as text (raw value)
+ * — the grid just displays whatever the backend returns.
+ */
+function tabularToContent(data: TabularData | null): TableContent {
+  const cols = data?.cols ?? [];
+  const columns: ColumnMeta[] = cols.map((name) => ({
+    field: name,
+    header: prettifyHeader(name),
+    // Same rule as the catalogue: IS_* flags get the coloured badge.
+    type: catalogueType(name)
+  }));
+  const rows = (data?.rows ?? []).map((arr) => Object.fromEntries(cols.map((c, i) => [c, arr[i]])));
+  return { columns, rows };
 }
 
 /**
@@ -181,32 +202,44 @@ export abstract class ConfigScopeBase implements OnInit {
   }
 
   /**
-   * Loader passed to <app-grid-data> for row-expand + eye-modal content. Fetches
-   * the table's columns (dba_tab_columns) and its rows in parallel. A COB table
-   * (IS_COBDT = Y) loads its most-recent business day by default; a non-COB table
-   * passes only the table name (no date).
+   * Down-arrow (expand) loader → `columnretrieve`. Passes the row's table name;
+   * renders the returned `{ cols, rows }` as-is in the nested detail grid.
+   */
+  getExpand = (row: Record<string, unknown>): Observable<TableContent> => {
+    return this.api
+      .post<TabularData>(API.config.columnRetrieve(this.scope), { table_name: String(row[this.tableNameKey]) })
+      .pipe(map(tabularToContent));
+  };
+
+  /**
+   * Eye (view content) loader → `retrieve`. Sends `is_cobdt` from the catalogue
+   * row; for a COB table (Y) the two dates default to T-1 (discrete, not a range);
+   * for a non-COB table (N) both dates are sent as null.
    */
   getDetail = (row: Record<string, unknown>): Observable<TableContent> => {
     const tableName = String(row[this.tableNameKey]);
     const isCob = isFlagSet(row[this.cobKey]);
-    return this.loadContent(tableName, isCob ? defaultDates() : undefined);
+    return this.loadContent(tableName, isCob, defaultDates());
   };
 
   /**
-   * Fetch the table content (columns + types + rows) in one call. The response is
-   * self-describing (`cols` + `cols_data_types` + `Table_data`), so no separate
-   * column-metadata call is needed. Dates are sent only for COB tables.
+   * Fetch the table content (columns + types + rows) in one `retrieve` call. The
+   * response is self-describing (`cols` + `cols_data_types` + `Table_data`). The
+   * payload always carries `is_cobdt`; the dates are the selected range for a COB
+   * table, or `null` when the table is not COB-partitioned.
    */
   private loadContent(
     tableName: string,
-    dates?: { start: string; end: string; range: boolean }
+    isCob: boolean,
+    dates: { start: string; end: string; range: boolean }
   ): Observable<TableContent> {
-    const body: Record<string, unknown> = { table_name: tableName };
-    if (dates) {
-      body['start'] = dates.start;
-      body['end'] = dates.end;
-      body['range'] = dates.range;
-    }
+    const body = {
+      table_name: tableName,
+      is_cobdt: isCob ? 'Y' : 'N',
+      start_date: isCob ? dates.start : null,
+      end_date: isCob ? dates.end : null,
+      date_range: dates.range
+    };
     return this.api.post<TableContentResponse>(API.config.retrieve(this.scope), body).pipe(map(buildContent));
   }
 
@@ -228,12 +261,14 @@ export abstract class ConfigScopeBase implements OnInit {
   }
 
   /**
-   * Retrieve → fetch rows for the chosen dates and push them into the modal.
-   * `range: false` sends the two dates as discrete values. (COB tables only.)
+   * Modal Retrieve → re-fetch via the same `retrieve` API with the user's chosen
+   * dates and Date-Range checkbox. The bar only shows for COB tables, so
+   * `is_cobdt` is resolved from the modal row (Y). `date_range` = the checkbox.
    */
   onRetrieve(event: RetrieveEvent, grid: GridDataComponent): void {
     grid.setModalLoading(true);
-    this.loadContent(event.tableName, { start: event.start, end: event.end, range: event.range }).subscribe({
+    const isCob = isFlagSet(event.row[this.cobKey]);
+    this.loadContent(event.tableName, isCob, { start: event.start, end: event.end, range: event.range }).subscribe({
       next: (content) => grid.applyModalContent(content),
       error: () => grid.setModalLoading(false)
     });

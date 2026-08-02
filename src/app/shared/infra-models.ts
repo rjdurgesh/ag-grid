@@ -1,6 +1,6 @@
 /** Data-model contracts for Infrastructure Pulse (health + services). */
 
-import { AppEnv, InfraApp } from './api-endpoints';
+import { ApiEnv, InfraApp } from './api-endpoints';
 
 // ---------------------------------------------------------------------------
 // Configuration — health_Server_Details table
@@ -12,7 +12,8 @@ import { AppEnv, InfraApp } from './api-endpoints';
  * exact shape the config API returns (one call per page load).
  */
 export interface HealthServerConfigRow {
-  app_env: AppEnv;
+  /** Env as the backend labels it (DEV/STG/PROD — the UI's LIVE is PROD here). */
+  app_env: ApiEnv;
   /** 'SERVER' (agent-monitored) or 'share_drive' (computed directly). */
   resource_category: 'SERVER' | 'share_drive';
   /** 'LINUX' | 'WINDOW' | 'share_drive'. */

@@ -18,7 +18,7 @@ Everything you need to change lives at the top of this one file.
 |---|---|---|
 | `API_BASE_URL` | Root of your backend. Every endpoint is built from it. | Your API host, e.g. `https://ols-api.mybank.net` |
 | `USE_MOCK` | While `true`, the in-app mock interceptor answers all endpoints with canned data. | `false` to hit the real backend |
-| `APP_ENV` | Which environment this deployment is (`DEV` \| `STG` \| `PROD`). Sent to the Infra config API so it returns only that env's rows. | The env this instance runs in |
+| `APP_ENV` | Which environment this deployment is (`DEV` \| `STG` \| `LIVE`). Shown in the header pill and sent to env-aware APIs (Config `tables`, Infra `config`). **The UI's `LIVE` is sent to the backend as `PROD`** via `apiEnv()` — configure/display `LIVE`, the wire carries `PROD`. | The env this instance runs in |
 | `IS_SSO_ENABLED` | `true` = authenticate via OpenID Connect (`src/app/auth/sso.config.ts`); `false` = bypass SSO and use the direct login form. | `true` once `SSO_CONFIG` is filled in |
 
 `API` is one object holding every URL as a function/string. Change a URL in one place
@@ -190,23 +190,40 @@ The catalogue and content are **fully dynamic** — the grid renders whatever co
 the API returns, so adding a column to the backing table needs no UI change. Only the
 *semantic* catalogue columns are looked up by name (case-insensitive): **TABLE_NAME**
 (row key + modal title), **IS_ACTIVE** (Y ⇒ openable), **IS_COBDT** (Y ⇒ date-partitioned).
+**IS_COBDT / IS_ACTIVE render as coloured flag badges** — green for truthy, grey for
+falsy — but showing the **raw value verbatim** (`Y`, `N`, `Yes`, `true`, …), never
+relabelled. Truthy/falsy detection is case-insensitive across `Y|YES|TRUE|1` / `N|NO|FALSE|0`
+(so `y`, `nO`, `False`, etc. all colour correctly). Same badge is used in the content modal's
+CHAR(1) columns and the expand-detail's IS_* columns.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/config/{scope}/tables` | – | `TabularData` `{ cols, rows }` — the catalogue |
-| `POST /api/config/{scope}/retrieve` | `{ table_name, start?, end?, range? }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` — dates OPTIONAL (COB only) |
+| `GET /api/config/{scope}/tables?app_env=<DEV\|STG\|PROD>` | – | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`) |
+| `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
+| `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
 | `POST /api/config/{scope}/roll` | `{ table_name, from, to }` | `{ message, rolledRows }` |
 | `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
 | `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [{ rowid, values }] }` | `{ updated: N }` — UPDATE |
 | `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ … ] }` | `{ deleted: N }` — DELETE |
 
-**Eye (view content) flow, per row:** one `/retrieve` call returns a **self-describing**
-payload — `cols` (display columns), `cols_data_types` (parallel cx_Oracle types, e.g.
-`<cx_Oracle.DbType DB_TYPE_DATE>`), and `Table_data` (row objects). The type string drives
+**Down-arrow (expand) flow:** clicking a row's ▾ calls **`columnretrieve`** with that
+row's `table_name` and renders the returned `{ cols, rows }` verbatim in a full-width
+detail grid (plain text, no typing). This is separate from the eye modal.
+
+**Eye (view content) flow, per row:** the **`retrieve`** call always sends
+`{ table_name, is_cobdt, start_date, end_date, date_range }`:
+- `is_cobdt` — the catalogue row's `Y`/`N` flag, passed straight through.
+- `start_date` / `end_date` — the two dates currently selected on the modal's date bar
+  (default **T-1** on both) **when is_cobdt = Y**; sent as **`null`** when is_cobdt = N.
+- `date_range` — `false` = just those two days, `true` = the inclusive range. Defaults to
+  `false`; on the modal's **Retrieve** button it follows the "Date Range" checkbox.
+
+The response is **self-describing** — `cols`, `cols_data_types` (parallel cx_Oracle types,
+e.g. `<cx_Oracle.DbType DB_TYPE_DATE>`), `Table_data` (row objects). The type drives
 rendering: **DATE → date-only calendar**, **TIMESTAMP → date+time calendar**,
-**CHAR(1) → Yes/No badge** (Y/N flags), **CLOB/BLOB/JSON/XMLTYPE → the "…" value token**,
-everything else → text. Dates are sent to `/retrieve` **only when IS_COBDT = Y**
-(defaulting to T-1); non-COB tables pass just `{ table_name }` and get the full set with no date bar.
+**CHAR(1) → Yes/No badge**, **CLOB/BLOB/JSON/XMLTYPE → the "…" value token**, else text.
+The modal **Retrieve** button re-issues the *same* `retrieve` call with the chosen dates +
+checkbox (COB tables only — the date bar shows only when is_cobdt = Y).
 
 **CLOB/JSON/XML/BLOB values** open in a dedicated **value modal** (a standalone overlay, *not*
 a nested CoreUI modal — nested CoreUI modals collapse each other, so closing it never closes the
