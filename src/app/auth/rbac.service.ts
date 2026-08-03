@@ -38,6 +38,16 @@ export class RbacService {
     return this.roles$;
   }
 
+  /*ensureLoaded(): Observable<UserRoles> {
+    if (!this.roles$) {
+      this.roles$ = of({is_admin: true, is_read: false, is_salt: false,}).pipe(
+        tap((r) => this.roles.set(r)),
+        shareReplay(1)
+      );
+    }
+    return this.roles$;
+  }*/
+
   /** Drop the cached roles (on logout). */
   reset(): void {
     this.roles$ = undefined;
