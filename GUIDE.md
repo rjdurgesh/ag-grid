@@ -148,7 +148,8 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 ### System / Home
 | Method & path | Request | Response | Used by |
 |---|---|---|---|
-| `GET /api/system/memory` | – | `MemoryStats` `{ free, used, total, unit, percent }` | Header live memory |
+| `GET /api/system/memory` | – | `MemoryStats` `{ free, used, total, unit, percent }` | One-shot snapshot (real host memory via `psutil`/stdlib) |
+| `GET /api/system/memory/stream` | – | **SSE** stream of `MemoryStats` (one `data:` frame every ~2s) | Header live memory — consumed via `EventSource`, so it's ONE persistent connection (single network-tab entry), not a poll. Bypasses the mock → always the real backend. |
 | `GET /api/system/database` | – | `{ name: string }` | Footer DB name (centered) |
 | `GET /api/dashboard/stats` | – | `DashboardStat[]` | Home KPI cards |
 | `GET /api/dashboard/activity` | – | `ActivityItem[]` | Home activity feed |
@@ -163,7 +164,8 @@ has plus the `path` it wants — no further DB calls.
 
 **How browsing works (lazy, one folder per expand).** The tree seeds directly from
 the base paths returned by `/servers` (no separate "list files" call). When a folder
-is expanded, the UI calls `GET /api/log/dir?base=<base_log_path>&path=<folder>`:
+is expanded, the UI **POSTs** to `/api/log/dir` with body `{ server_id, base, path }`
+(body, not query string, so long paths never bloat the URL):
 
 - `base` = the selected server's configured `base_log_path` — **constant**; it is
   the security **ceiling** (the request may not climb above it).
@@ -171,8 +173,10 @@ is expanded, the UI calls `GET /api/log/dir?base=<base_log_path>&path=<folder>`:
   path each time you go down (e.g. `D:/Website` → `D:/Website/coreui` →
   `D:/Website/coreui/src`). The backend confirms `path` sits inside `base`, then
   reads that folder from disk and returns its immediate children. Works to any depth.
+- `server_id` = which server is being browsed — **context only** (logged for
+  traceability); the jail uses `base`, not this.
 
-`file` / `file-properties` take the same `base` + the file's `path`.
+`file` / `file-properties` POST the same `{ server_id, base, path }`.
 
 **Per-folder cap (anti-hang):** `/dir` returns at most `OLS_DIR_LIMIT` entries (default
 **500**) *per folder call*; when a folder holds more, `truncated: true` + the real `total`
@@ -188,9 +192,9 @@ same for that server.
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/log/servers?app_env=<DEV\|STG\|PROD>` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`); `app_env` scopes the DB query (`LIVE`→`PROD`). **The only DB-backed call.** |
-| `GET /api/log/dir?base=<base_log_path>&path=<abs>` | – | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder, read from disk (jailed to `base`, **capped per folder** — `truncated`/`total` when the cap is hit) |
-| `GET /api/log/file?base=<base_log_path>&path=<abs>` | – | `{ content: string }` (jailed to `base`) |
-| `GET /api/log/file-properties?base=<base_log_path>&path=<abs>` | – | `FileProperties` (jailed to `base`) |
+| `POST /api/log/dir` | `{ server_id?, base, path }` | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder, read from disk (jailed to `base`, **capped per folder** — `truncated`/`total` when the cap is hit) |
+| `POST /api/log/file` | `{ server_id?, base, path }` | `{ content: string }` (jailed to `base`) |
+| `POST /api/log/file-properties` | `{ server_id?, base, path }` | `FileProperties` (jailed to `base`) |
 
 > **Jail:** `path` must resolve to inside `base`. Escape (`..`, another drive, symlink out)
 > → **400**; a path inside `base` that no longer exists (deleted since the tree loaded) →
@@ -321,8 +325,13 @@ real backend can match it field-for-field. (Infra bodies are in section 5.)
 
 **System & Home**
 ```jsonc
-// GET /api/system/memory     ← { free, used, total, unit, percent }
+// GET /api/system/memory     ← { free, used, total, unit, percent }  (real host RAM)
 { "free": 18.4, "used": 45.6, "total": 64, "unit": "GB", "percent": 71 }
+
+// GET /api/system/memory/stream   ← Server-Sent Events (text/event-stream)
+// One long-lived connection; the header consumes it via EventSource so the network
+// tab shows a SINGLE entry. Each frame is the same MemoryStats shape:
+//   data: {"free":18.4,"used":45.6,"total":64,"unit":"GB","percent":71}\n\n   (every ~2s)
 
 // GET /api/system/database   ← { name }
 { "name": "OLSDB_DEV01" }
@@ -367,19 +376,20 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 // above. Browsing reads the filesystem live: `base` is the server's base_log_path
 // (constant, the ceiling); `path` is the folder to open (deeper each expand).
 
-// Expand C:/my/cib   ← GET /api/log/dir?base=C:/my/cib&path=C:/my/cib
+// Expand C:/my/cib   ← POST /api/log/dir  body {server_id, base, path}
+//   { "server_id": "OLSCIB_WEB_A_1_eur17", "base": "C:/my/cib", "path": "C:/my/cib" }
 { "entries": [
     { "name": "app",       "type": "folder", "path": "C:/my/cib/app" },
     { "name": "BatchLogs", "type": "folder", "path": "C:/my/cib/BatchLogs" },
     { "name": "startup.log", "type": "file", "path": "C:/my/cib/startup.log" }
   ], "total": 3, "truncated": false }
 
-// Go deeper — expand app   ← GET /api/log/dir?base=C:/my/cib&path=C:/my/cib/app
+// Go deeper — expand app   ← POST /api/log/dir  body { …, "path": "C:/my/cib/app" }
 // Same `base`, deeper `path`. Backend confirms path ⊆ base, lists it from disk.
 { "entries": [ { "name": "application.log", "type": "file", "path": "C:/my/cib/app/application.log" } ],
   "total": 1, "truncated": false }
 
-// GET /api/log/file?base=C:/my/cib&path=C:/my/cib/app/application.log   ← { content: string }
+// POST /api/log/file  body {server_id, base, path}   ← { content: string }
 // Backend confirms `path` sits inside `base` (reject `..`) before reading — the jail.
 // Escape → 400; a path inside base that no longer exists (deleted since the tree
 // loaded) → 404 "Path not found" (clean error, never a hang). The UI clears the
@@ -387,7 +397,7 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 // marks the node errored (retryable). Refreshing the tree reconciles it with disk.
 { "content": "2026-07-21 20:10:00 INFO  Loader started\n..." }
 
-// GET /api/log/file-properties?base=C:/my/cib&path=C:/my/cib/app/application.log   ← FileProperties
+// POST /api/log/file-properties  body {server_id, base, path}   ← FileProperties
 { "name": "application.log", "type": "Log File", "location": "C:/my/cib/app",
   "size": 20480, "created": "2026-07-01T09:00:00Z", "modified": "2026-07-21T20:10:00Z",
   "accessed": "2026-07-21T20:11:00Z", "lines": 512, "attributes": "Read-only" }

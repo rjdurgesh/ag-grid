@@ -46,8 +46,9 @@ export class DefaultHeaderComponent extends HeaderComponent {
     return this.colorModes.find(mode => mode.name === currentMode)?.icon ?? 'cilSun';
   });
 
-  /** Live header memory-usage feed (polls every 5s via the mock/real API). */
-  readonly memory = toSignal(this.#arrowStream.memory(5000));
+  /** Live header memory-usage feed — one SSE connection streams real host memory
+   *  (see ArrowStreamService.memoryStream); the network tab shows a single entry. */
+  readonly memory = toSignal(this.#arrowStream.memoryStream());
 
   /** Environment pill next to the theme switcher — shows the configured env
    *  (DEV / STG / LIVE) as-is. Only API calls remap LIVE → PROD (see apiEnv). */

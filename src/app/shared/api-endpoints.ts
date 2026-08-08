@@ -51,7 +51,15 @@ export const API = {
     roles: `${API_BASE_URL}/api/auth/roles`
   },
   system: {
+    /** One-shot memory snapshot → `MemoryStats`. */
     memory: `${API_BASE_URL}/api/system/memory`,
+    /**
+     * Live memory as Server-Sent Events — ONE persistent connection that streams
+     * a `MemoryStats` snapshot every couple of seconds. Consumed via `EventSource`
+     * (not HttpClient), so it always hits the real backend and shows as a single
+     * entry in the network tab instead of a poll every N seconds.
+     */
+    memoryStream: `${API_BASE_URL}/api/system/memory/stream`,
     /** Name of the database this instance is connected to (shown in the footer). */
     database: `${API_BASE_URL}/api/system/database`
   },
@@ -65,19 +73,18 @@ export const API = {
     servers: () => `${API_BASE_URL}/api/log/servers?app_env=${encodeURIComponent(apiEnv())}`,
     /**
      * Immediate children of ONE folder → `LogDirResponse`
-     * `{ entries: { name, type, path }[], total, truncated }`. `base` is the
-     * selected server's `base_log_path` (the UI already has it from {@link servers});
-     * `path` is the folder's FULL path. The backend confirms `path` sits inside
-     * `base` (reject `..`/outside) — no DB call. The tree loads one level per expand.
+     * `{ entries: { name, type, path }[], total, truncated }`. POST body
+     * `{ server_id, base, path }` — `base` is the selected server's `base_log_path`
+     * (the UI already has it from {@link servers}); `path` is the folder's FULL path;
+     * `server_id` is context only. The backend confirms `path` sits inside `base`
+     * (reject `..`/outside) — no DB call. Body (not query) so long paths never bloat
+     * the URL. The tree loads one level per expand.
      */
-    dir: (base: string, path: string) =>
-      `${API_BASE_URL}/api/log/dir?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`,
-    /** Content of a single log file (`base` = its server's base path). */
-    fileContent: (base: string, path: string) =>
-      `${API_BASE_URL}/api/log/file?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`,
-    /** Metadata for a single file (`base` = its server's base path). */
-    fileProperties: (base: string, path: string) =>
-      `${API_BASE_URL}/api/log/file-properties?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`
+    dir: `${API_BASE_URL}/api/log/dir`,
+    /** Content of a single log file. POST body `{ server_id, base, path }`. */
+    fileContent: `${API_BASE_URL}/api/log/file`,
+    /** Metadata for a single file. POST body `{ server_id, base, path }`. */
+    fileProperties: `${API_BASE_URL}/api/log/file-properties`
   },
   config: {
     /**
