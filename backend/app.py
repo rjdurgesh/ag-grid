@@ -1,6 +1,6 @@
 """FastAPI entrypoint for the OLS Dashboard backend.
 
-Mounts the Log Analytics API and enables CORS for the Angular dev server.
+Mounts the Log Analytics + System APIs and enables CORS for the Angular dev server.
 
 Run (from the ``backend/`` directory)::
 
@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from log_analytics.log_analytics_api import router as log_analytics_router
+from system_api import router as system_router
 from utils.logging import configure_logging, get_logger
 
 configure_logging()
@@ -58,6 +59,7 @@ app.add_middleware(
 )
 
 app.include_router(log_analytics_router)
+app.include_router(system_router)
 
 
 @app.get("/health", tags=["meta"])

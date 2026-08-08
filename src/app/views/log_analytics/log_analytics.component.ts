@@ -190,7 +190,7 @@ export class LogAnalyticsComponent implements OnInit {
    */
   onFolderLoad(event: { path: string }): void {
     this.svc
-      .getDirChildren(this.ownerBase(event.path), event.path)
+      .getDirChildren(this.selectedServer(), this.ownerBase(event.path), event.path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (res) =>
@@ -203,7 +203,7 @@ export class LogAnalyticsComponent implements OnInit {
     this.selectedFile.set(path);
     this.loadingContent.set(true);
     this.svc
-      .getFileContent(this.ownerBase(path), path)
+      .getFileContent(this.selectedServer(), this.ownerBase(path), path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (content) => {
@@ -270,7 +270,7 @@ export class LogAnalyticsComponent implements OnInit {
     this.propertiesLoading.set(true);
     this.propertiesVisible.set(true);
     this.svc
-      .getFileProperties(this.ownerBase(path), path)
+      .getFileProperties(this.selectedServer(), this.ownerBase(path), path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (props) => {

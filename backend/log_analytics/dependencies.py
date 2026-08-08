@@ -6,10 +6,10 @@ Two clearly separate concerns:
    connection config and returns each server's ``base_log_path`` (a stand-in query
    for now; swap the body for the real DB call). Used ONLY by ``GET /servers``.
 
-2. `jailed_path` — browsing. The UI already has the base path from ``/servers``, so
-   it sends it back as ``base`` when it wants to browse; the backend just confirms
-   the requested ``path`` stays inside that ``base`` (no DB call). Everything below
-   the base path is read live from disk (see utils/fs_browser.py).
+2. `resolve_jailed` — browsing. The UI already has the base path from ``/servers``,
+   so it sends it back (in the POST body) when it wants to browse; the backend just
+   confirms the requested ``path`` stays inside that ``base`` (no DB call). Everything
+   below the base path is read live from disk (see utils/fs_browser.py).
 
 Getting `request` / the DB config: FastAPI injects the `Request` object wherever you
 declare a `request: Request` parameter — here, in the `group_db_config` dependency.
@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Query, Request
+from fastapi import HTTPException, Request
 
 from utils import fs_browser
 
@@ -60,14 +60,13 @@ def fetch_log_path(group_db_config: Any, app_env: str | None = None) -> dict[str
     }
 
 
-def jailed_path(base: str = Query(...), path: str = Query(...)) -> Path:
-    """FastAPI dependency shared by ``/dir``, ``/file`` and ``/file-properties``.
+def resolve_jailed(base: str, path: str) -> Path:
+    """Resolve ``path`` and return it only if it sits inside ``base`` — the browse jail.
 
     ``base`` is the selected server's ``base_log_path`` (the UI already has it from
-    ``/servers`` and sends it back); ``path`` is the folder/file to open. Return the
-    resolved path only if it sits inside ``base`` — no DB call. This keeps a request
-    from climbing above the configured base (``..``/escape → 400) while everything
-    inside it is browsable.
+    ``/servers`` and sends it back in the request body); ``path`` is the folder/file
+    to open. No DB call. Keeps a request from climbing above the configured base
+    (``..``/escape → 400) while everything inside it is browsable.
 
     - Path escapes the base (.., other drive, symlink out) → 400
     - Path is inside the base but doesn't exist (e.g. deleted since the tree loaded)

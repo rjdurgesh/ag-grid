@@ -1,2 +1,6 @@
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.27,<1.0
+# Optional: nicer cross-platform memory readings for /api/system/memory. If it's
+# not installed, system_api falls back to stdlib (Windows GlobalMemoryStatusEx /
+# Linux /proc/meminfo), so this is not required.
+psutil>=5.9

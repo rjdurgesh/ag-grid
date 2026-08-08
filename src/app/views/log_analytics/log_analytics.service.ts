@@ -38,34 +38,37 @@ export class LogAnalyticsService {
   }
 
   /**
-   * Immediate children of one folder plus the per-folder cap info. `base` is the
-   * server's `base_log_path` (from {@link getServers}); the backend confirms
-   * `folderPath` sits inside it. Defence-in-depth: we also drop any entry that
-   * isn't actually under the requested folder (or contains `..`).
+   * Immediate children of one folder plus the per-folder cap info. Sent as a POST
+   * body `{ server_id, base, path }` — `base` is the server's `base_log_path` (from
+   * {@link getServers}) and the backend confirms `folderPath` sits inside it;
+   * `serverId` is context only (which server we're browsing). Defence-in-depth: we
+   * also drop any entry that isn't actually under the requested folder (or has `..`).
    */
-  getDirChildren(base: string, folderPath: string): Observable<DirChildren> {
+  getDirChildren(serverId: string, base: string, folderPath: string): Observable<DirChildren> {
     const parent = norm(folderPath).toLowerCase();
-    return this.api.get<LogDirResponse>(API.log.dir(base, folderPath)).pipe(
-      map((res) => {
-        const entries = (res?.entries ?? []).filter((e) => {
-          const p = norm(e.path).toLowerCase();
-          return p.startsWith(parent + '/') && !p.split('/').some((s) => s === '..');
-        });
-        return { entries, total: res?.total ?? entries.length, truncated: !!res?.truncated };
-      })
-    );
+    return this.api
+      .post<LogDirResponse>(API.log.dir, { server_id: serverId, base, path: folderPath })
+      .pipe(
+        map((res) => {
+          const entries = (res?.entries ?? []).filter((e) => {
+            const p = norm(e.path).toLowerCase();
+            return p.startsWith(parent + '/') && !p.split('/').some((s) => s === '..');
+          });
+          return { entries, total: res?.total ?? entries.length, truncated: !!res?.truncated };
+        })
+      );
   }
 
   /** Content of a single log file (`base` = its server's base path). */
-  getFileContent(base: string, path: string): Observable<string> {
+  getFileContent(serverId: string, base: string, path: string): Observable<string> {
     return this.api
-      .get<{ content: string }>(API.log.fileContent(base, path))
+      .post<{ content: string }>(API.log.fileContent, { server_id: serverId, base, path })
       .pipe(map((res) => res.content));
   }
 
   /** Metadata for a single file (Properties dialog; `base` = its server's base path). */
-  getFileProperties(base: string, path: string): Observable<FileProperties> {
-    return this.api.get<FileProperties>(API.log.fileProperties(base, path));
+  getFileProperties(serverId: string, base: string, path: string): Observable<FileProperties> {
+    return this.api.post<FileProperties>(API.log.fileProperties, { server_id: serverId, base, path });
   }
 }
 

@@ -98,28 +98,31 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
 
   // --- Log Analytics --------------------------------------------------------
-  // Only /servers is DB-backed; browsing takes the selected `base` (from /servers)
+  // Only /servers is DB-backed; browsing POSTs the selected `base` (from /servers)
   // + `path` and reads the filesystem — the backend confirms `path` sits inside `base`.
   if (path === '/api/log/servers') {
     return respond(MOCK_LOG_SERVERS);
   }
-  if (path === '/api/log/dir') {
-    const p = q.get('path') ?? '';
-    if (!isLogPathAllowed(q.get('base'), p)) {
+  if (path === '/api/log/dir' && req.method === 'POST') {
+    const body = (req.body ?? {}) as { base?: string; path?: string };
+    const p = body.path ?? '';
+    if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
     }
-    return respond({ entries: mockDirEntries(q.get('base') ?? '', p) });
+    return respond({ entries: mockDirEntries(body.base ?? '', p) });
   }
-  if (path === '/api/log/file') {
-    const p = q.get('path') ?? '';
-    if (!isLogPathAllowed(q.get('base'), p)) {
+  if (path === '/api/log/file' && req.method === 'POST') {
+    const body = (req.body ?? {}) as { base?: string; path?: string };
+    const p = body.path ?? '';
+    if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
     }
     return respond({ content: mockFileContent(p) });
   }
-  if (path === '/api/log/file-properties') {
-    const p = q.get('path') ?? '';
-    if (!isLogPathAllowed(q.get('base'), p)) {
+  if (path === '/api/log/file-properties' && req.method === 'POST') {
+    const body = (req.body ?? {}) as { base?: string; path?: string };
+    const p = body.path ?? '';
+    if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
     }
     return respond(mockFileProperties(p));

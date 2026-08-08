@@ -1,5 +1,5 @@
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { ApplicationConfig } from '@angular/core';
+import { ApplicationConfig, provideZonelessChangeDetection } from '@angular/core';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import {
   provideRouter,
@@ -14,6 +14,13 @@ import { mockApiInterceptor } from './shared/mock-api.interceptor';
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    // zone.js was removed from this project, so Angular's change detection must be
+    // driven by the signals scheduler. Without this the scheduler isn't installed:
+    // signal writes from async callbacks (e.g. the file-tree's /dir response) don't
+    // reliably schedule a repaint, so the UI only catches up on the next unrelated
+    // tick (a click, the live memory poll) — the "spinner hangs until I click again"
+    // bug. This makes every signal write deterministically trigger change detection.
+    provideZonelessChangeDetection(),
     provideRouter(routes,
       withRouterConfig({
         onSameUrlNavigation: 'reload'
