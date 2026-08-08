@@ -1,27 +1,10 @@
 import { inject, Injectable } from '@angular/core';
 import { map, Observable } from 'rxjs';
 
-import { LazyChild, LazyRoot, TreeRoot } from '../../components/filetree/filetree.component';
+import { LazyChild } from '../../components/filetree/filetree.component';
 import { ApiDataService } from '../../shared/api-data.service';
 import { API } from '../../shared/api-endpoints';
-import {
-  FileProperties,
-  LogDirResponse,
-  LogFilesResponse,
-  LogServer,
-  LogServersResponse
-} from '../../shared/models';
-
-/**
- * The tree payload for a server, normalised for the UI. `mode` decides which
- * field the component uses: `full` → `roots` (whole tree built client-side),
- * `lazy` → `lazyRoots` (root folders only; children loaded on expand).
- */
-export interface FileTreeData {
-  mode: 'full' | 'lazy';
-  roots: TreeRoot[];
-  lazyRoots: LazyRoot[];
-}
+import { FileProperties, LogDirResponse, LogServer, LogServersResponse } from '../../shared/models';
 
 /** A folder's children plus the per-folder cap info from the backend. */
 export interface DirChildren {
@@ -32,7 +15,14 @@ export interface DirChildren {
   truncated: boolean;
 }
 
-/** Data access for the Log Analytics Hub. Every call goes through the API. */
+/**
+ * Data access for the Log Analytics Hub.
+ *
+ * Only {@link getServers} touches the DB — it returns each server's `base_log_path`.
+ * From there the UI browses by handing that base back to the backend, which reads
+ * the filesystem live (no further DB calls): {@link getDirChildren} for a folder's
+ * subdirs/files, {@link getFileContent} / {@link getFileProperties} for a file.
+ */
 @Injectable({ providedIn: 'root' })
 export class LogAnalyticsService {
   private readonly api = inject(ApiDataService);
@@ -48,91 +38,38 @@ export class LogAnalyticsService {
   }
 
   /**
-   * File tree for a server. Reads the `mode` the backend chose:
-   *
-   * - `full` (default, incl. an old `{ paths }`-only backend): group the
-   *   absolute paths under the server's base paths → one {@link TreeRoot} per
-   *   base, whole tree built up front. Paths outside all bases (or with `..`)
-   *   are dropped — the jail guard.
-   * - `lazy`: seed the tree with root folders only (from `roots`, or the
-   *   server's configured base paths). Each folder's children are fetched via
-   *   {@link getDirChildren} on first expand.
+   * Immediate children of one folder plus the per-folder cap info. `base` is the
+   * server's `base_log_path` (from {@link getServers}); the backend confirms
+   * `folderPath` sits inside it. Defence-in-depth: we also drop any entry that
+   * isn't actually under the requested folder (or contains `..`).
    */
-  getFileTree(server: LogServer): Observable<FileTreeData> {
-    return this.api.get<LogFilesResponse>(API.log.files(server.key)).pipe(
-      map((res) => {
-        if ((res?.mode ?? 'full') === 'lazy') {
-          const rootPaths = (res?.roots?.length ? res.roots : server.basePaths).filter(Boolean);
-          return {
-            mode: 'lazy' as const,
-            roots: [],
-            lazyRoots: rootPaths.map((p) => ({ label: p, path: norm(p) }))
-          };
-        }
-        return {
-          mode: 'full' as const,
-          roots: toFileRoots(res?.paths ?? [], server.basePaths),
-          lazyRoots: []
-        };
-      })
-    );
-  }
-
-  /**
-   * Immediate children of one folder (lazy mode) plus the per-folder cap info.
-   * Defence-in-depth: even though the backend jails the path, we drop any entry
-   * that isn't actually under the requested folder (or contains `..`).
-   */
-  getDirChildren(serverId: string, folderPath: string): Observable<DirChildren> {
-    const base = norm(folderPath).toLowerCase();
-    return this.api.get<LogDirResponse>(API.log.dir(serverId, folderPath)).pipe(
+  getDirChildren(base: string, folderPath: string): Observable<DirChildren> {
+    const parent = norm(folderPath).toLowerCase();
+    return this.api.get<LogDirResponse>(API.log.dir(base, folderPath)).pipe(
       map((res) => {
         const entries = (res?.entries ?? []).filter((e) => {
           const p = norm(e.path).toLowerCase();
-          return p.startsWith(base + '/') && !p.split('/').some((s) => s === '..');
+          return p.startsWith(parent + '/') && !p.split('/').some((s) => s === '..');
         });
         return { entries, total: res?.total ?? entries.length, truncated: !!res?.truncated };
       })
     );
   }
 
-  /** Content of a single log file (full path, jailed to the server's bases). */
-  getFileContent(serverId: string, path: string): Observable<string> {
+  /** Content of a single log file (`base` = its server's base path). */
+  getFileContent(base: string, path: string): Observable<string> {
     return this.api
-      .get<{ content: string }>(API.log.fileContent(serverId, path))
+      .get<{ content: string }>(API.log.fileContent(base, path))
       .pipe(map((res) => res.content));
   }
 
-  /** Metadata for a single file (Properties dialog). */
-  getFileProperties(serverId: string, path: string): Observable<FileProperties> {
-    return this.api.get<FileProperties>(API.log.fileProperties(serverId, path));
+  /** Metadata for a single file (Properties dialog; `base` = its server's base path). */
+  getFileProperties(base: string, path: string): Observable<FileProperties> {
+    return this.api.get<FileProperties>(API.log.fileProperties(base, path));
   }
 }
 
 const norm = (s: string): string => (s ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-
-/**
- * Group absolute file paths under the server's configured base paths, producing
- * one {@link TreeRoot} per base (full label + relative paths). Every configured
- * base appears (even with no files); paths outside all bases, or containing
- * `..`, are dropped — the jail guard.
- */
-function toFileRoots(paths: string[], basePaths: string[]): TreeRoot[] {
-  const roots = basePaths.map((base) => ({ label: base, baseLower: norm(base).toLowerCase(), paths: [] as string[] }));
-  for (const raw of paths) {
-    const p = (raw ?? '').replace(/\\/g, '/');
-    const lower = p.toLowerCase();
-    const match = roots.find((r) => r.baseLower && (lower === r.baseLower || lower.startsWith(r.baseLower + '/')));
-    if (!match) {
-      continue; // outside every configured base → refuse
-    }
-    const rel = p.slice(norm(match.label).length).replace(/^\/+/, '');
-    if (rel && !rel.split('/').some((seg) => seg === '..')) {
-      match.paths.push(rel);
-    }
-  }
-  return roots.map((r) => ({ label: r.label, paths: r.paths }));
-}
 
 /** Flatten the keyed servers map into a sorted list of dropdown options. */
 function toLogServers(res: LogServersResponse): LogServer[] {

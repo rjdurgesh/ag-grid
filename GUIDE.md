@@ -155,52 +155,46 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 | `GET /api/dashboard/memory-trend` | – | `number[]` (last 12 % samples) | Home trend chart |
 
 ### Log Analytics
-The `server` param is the composite key from the servers map (see below), e.g. `OLSCIB_WEB_A_1_eur17`.
-A server's value is an **array** — one row per configured `base_log_path` — so a
-server can have **several base paths**. The file tree shows **one root per base
-path** (full path label) with that base's files underneath. `file` /
-`file-properties` / `dir` take the **absolute path**; the backend must confirm it
-sits inside one of the server's base paths (and reject `..`) before reading — the jail.
+**Only `/servers` touches the DB** — it returns each server's `base_log_path`. A
+server's value is an **array** (one row per configured `base_log_path`), so a server
+can have **several base paths**; the tree shows **one root per base path**. From
+there the UI browses the filesystem live, handing the backend the `base` it already
+has plus the `path` it wants — no further DB calls.
 
-**Two tree-loading modes — the backend chooses, the UI just obeys.** `files`
-returns an envelope with a `mode` discriminator so huge trees never have to be
-enumerated in one shot (the backend does a **bounded walk** and bails early):
+**How browsing works (lazy, one folder per expand).** The tree seeds directly from
+the base paths returned by `/servers` (no separate "list files" call). When a folder
+is expanded, the UI calls `GET /api/log/dir?base=<base_log_path>&path=<folder>`:
 
-- **`full`** (default, and how an old `{ paths }`-only backend is treated) — every
-  **absolute** file path up front. The UI builds the whole tree client-side:
-  instant filter + expand-all, expanding a folder is a free client-side toggle.
-  Best for small/medium trees.
-- **`lazy`** — only the **root folder paths** (`roots`; the UI falls back to the
-  server's base paths if omitted). Each folder's children are fetched **on first
-  expand** via `GET /api/log/dir` (passing that folder's full path), with a
-  per-folder spinner and client-side caching. Scales to enormous trees. In this
-  mode the filter/expand-all only cover already-loaded folders.
+- `base` = the selected server's configured `base_log_path` — **constant**; it is
+  the security **ceiling** (the request may not climb above it).
+- `path` = the folder being opened — the base itself on first expand, then a deeper
+  path each time you go down (e.g. `D:/Website` → `D:/Website/coreui` →
+  `D:/Website/coreui/src`). The backend confirms `path` sits inside `base`, then
+  reads that folder from disk and returns its immediate children. Works to any depth.
 
-The switch is a single field: the UI reads `mode` and renders the matching path
-(`log_analytics.service.ts` → `getFileTree`). It never counts anything itself.
+`file` / `file-properties` take the same `base` + the file's `path`.
 
 **Per-folder cap (anti-hang):** `/dir` returns at most `OLS_DIR_LIMIT` entries (default
-**500**) per folder; when a folder holds more, `truncated: true` + the real `total` come
-back and the tree shows a "showing N of M — filter to narrow" note. Backend-side so a huge
-folder never ships thousands of entries over the wire.
+**500**) *per folder call*; when a folder holds more, `truncated: true` + the real `total`
+come back and the tree shows a "showing N of M — filter to narrow" note. The cap is
+per-folder, so going **deeper** is never limited — expanding a child triggers a fresh `/dir`
+that returns up to 500 of that child's own entries.
 
-**Left refresh button** reloads the **selected server's** tree (re-hits `/files` for it) and
+**Left refresh button** re-seeds the **selected server's** tree from its base paths and
 **resets the right preview to default** — it never re-hits `/servers` (only page open/refresh
 does that) and never leaves the last-read file showing. Selecting a different server does the
 same for that server.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/log/servers?app_env=<DEV\|STG\|PROD>` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`); `app_env` scopes the DB query (`LIVE`→`PROD`) |
-| `GET /api/log/files?server=<key>` | – | `LogFilesResponse` `{ mode?, paths?, roots? }` — `full` (default) sends `paths` (absolute); `lazy` sends `roots` |
-| `GET /api/log/dir?server=<key>&path=<abs>` | – | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder (lazy, jailed, **capped per folder** — `truncated`/`total` when the cap is hit) |
-| `GET /api/log/file?server=<key>&path=<abs>` | – | `{ content: string }` (jailed to the server's bases) |
-| `GET /api/log/file-properties?server=<key>&path=<abs>` | – | `FileProperties` (jailed to the server's bases) |
+| `GET /api/log/servers?app_env=<DEV\|STG\|PROD>` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`); `app_env` scopes the DB query (`LIVE`→`PROD`). **The only DB-backed call.** |
+| `GET /api/log/dir?base=<base_log_path>&path=<abs>` | – | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder, read from disk (jailed to `base`, **capped per folder** — `truncated`/`total` when the cap is hit) |
+| `GET /api/log/file?base=<base_log_path>&path=<abs>` | – | `{ content: string }` (jailed to `base`) |
+| `GET /api/log/file-properties?base=<base_log_path>&path=<abs>` | – | `FileProperties` (jailed to `base`) |
 
-> The mock serves every server `full` **except** `OLSGROUP_APP_9_eur99` (a "lazy
-> demo" with base `C:/bigdata/logs`), which returns `mode:'lazy'` so the
-> load-on-expand path is exercisable. Drop that entry (and it leaves
-> `LAZY_LOG_SERVERS`) to remove the demo. A real backend picks the mode per tree size.
+> **Jail:** `path` must resolve to inside `base`. Escape (`..`, another drive, symlink out)
+> → **400**; a path inside `base` that no longer exists (deleted since the tree loaded) →
+> **404 "Path not found"** (clean error, never a hang).
 
 ### Config Ops Console (`scope` = `cib` \| `group` \| `retail`)
 The catalogue and content are **fully dynamic** — the grid renders whatever columns
@@ -369,24 +363,31 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
   ]
 }
 
-// GET /api/log/files?server=OLSCIB_WEB_A_1_eur17   ← { paths: string[] }
-// ABSOLUTE paths across every base; the UI groups them into one root per base and
-// drops anything outside all bases. Here: two roots (C:/my/cib and D:/game).
-{ "paths": [
-  "C:/my/cib/app/application.log", "C:/my/cib/BatchLogs/ols_main.log",
-  "D:/game/app/application.log",   "D:/game/config/logback.xml"
-] }
+// There is NO /files call — the UI seeds the tree straight from the base paths
+// above. Browsing reads the filesystem live: `base` is the server's base_log_path
+// (constant, the ceiling); `path` is the folder to open (deeper each expand).
 
-// GET /api/log/file?server=<key>&path=C:/my/cib/app/application.log   ← { content: string }
-// Backend must confirm the path sits inside one of the server's base paths
-// (and reject `..`) before reading — the jail check. Escape → 400; a path that
-// is inside a base but no longer exists (deleted since the tree loaded) → 404
-// "Path not found" (a clean error, never a hang). The UI clears the spinner and,
-// for a file, shows "This file no longer exists…"; for a folder it marks the node
-// as errored (retryable). Refreshing the tree reconciles it with disk.
+// Expand C:/my/cib   ← GET /api/log/dir?base=C:/my/cib&path=C:/my/cib
+{ "entries": [
+    { "name": "app",       "type": "folder", "path": "C:/my/cib/app" },
+    { "name": "BatchLogs", "type": "folder", "path": "C:/my/cib/BatchLogs" },
+    { "name": "startup.log", "type": "file", "path": "C:/my/cib/startup.log" }
+  ], "total": 3, "truncated": false }
+
+// Go deeper — expand app   ← GET /api/log/dir?base=C:/my/cib&path=C:/my/cib/app
+// Same `base`, deeper `path`. Backend confirms path ⊆ base, lists it from disk.
+{ "entries": [ { "name": "application.log", "type": "file", "path": "C:/my/cib/app/application.log" } ],
+  "total": 1, "truncated": false }
+
+// GET /api/log/file?base=C:/my/cib&path=C:/my/cib/app/application.log   ← { content: string }
+// Backend confirms `path` sits inside `base` (reject `..`) before reading — the jail.
+// Escape → 400; a path inside base that no longer exists (deleted since the tree
+// loaded) → 404 "Path not found" (clean error, never a hang). The UI clears the
+// spinner and, for a file, shows "This file no longer exists…"; for a folder it
+// marks the node errored (retryable). Refreshing the tree reconciles it with disk.
 { "content": "2026-07-21 20:10:00 INFO  Loader started\n..." }
 
-// GET /api/log/file-properties?server=<key>&path=C:/my/cib/app/application.log   ← FileProperties
+// GET /api/log/file-properties?base=C:/my/cib&path=C:/my/cib/app/application.log   ← FileProperties
 { "name": "application.log", "type": "Log File", "location": "C:/my/cib/app",
   "size": 20480, "created": "2026-07-01T09:00:00Z", "modified": "2026-07-21T20:10:00Z",
   "accessed": "2026-07-21T20:11:00Z", "lines": 512, "attributes": "Read-only" }

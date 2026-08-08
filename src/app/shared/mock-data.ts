@@ -3,7 +3,6 @@ import {
   DashboardStat,
   FileProperties,
   LogDirEntry,
-  LogFilesResponse,
   LogServersResponse,
   MemoryStats,
   TableContentResponse,
@@ -52,90 +51,23 @@ export const MOCK_LOG_SERVERS: LogServersResponse = {
     { server_name: 'eur34', base_log_path: 'D:/Apps/ols_monitoring_tool/logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' },
     { server_name: 'eur34', base_log_path: 'D:/Apps/OLS/Logs', server_type: 'WEB_B_1', db_source: 'OLSGROUP' }
   ],
-  // DEMO: a server whose tree is served LAZILY (mode:'lazy') to exercise the
-  // load-on-expand path. A real backend picks the mode from tree size. Remove
-  // this entry (and it drops from LAZY_LOG_SERVERS) if you don't want it.
-  OLSGROUP_APP_9_eur99: [{ server_name: 'eur99 · lazy demo', base_log_path: 'C:/bigdata/logs', server_type: 'APP_9', db_source: 'OLSGROUP' }]
+  // Another server with its own base path (remove if you don't want it).
+  OLSGROUP_APP_9_eur99: [{ server_name: 'eur99', base_log_path: 'C:/bigdata/logs', server_type: 'APP_9', db_source: 'OLSGROUP' }]
 };
 
 /**
- * Server keys the mock serves in `lazy` mode. A real backend decides this itself
- * (per tree size) — this set just lets the demo exercise the load-on-expand UI.
+ * Immediate children of one folder — a deterministic, depth-capped synthetic tree
+ * so load-on-expand is demonstrable without a real filesystem. A real backend
+ * lists the actual directory. `base` is the server's `base_log_path`; returns []
+ * for a path outside it (belt-and-braces; the interceptor also jails it).
  */
-export const LAZY_LOG_SERVERS = new Set<string>(['OLSGROUP_APP_9_eur99']);
-
-// Relative subpaths under a base_log_path — a realistic spread of folders and
-// file types so the tree and its type icons are exercised.
-const REL_LOG_PATHS: string[] = [
-  'olslogfileerr.log',
-  'olslogfileout.log',
-  'BatchLogs/ols_main.log',
-  'BatchLogs/2026-07-30/run.log',
-  'BatchLogs/2026-07-30/summary.log',
-  'BatchLogs/2026-07-29/run.log',
-  'BatchLogs/2026-07-28/run.log',
-  'app/application.log',
-  'app/error.log',
-  'app/gc/gc.log',
-  'config/application.yml',
-  'config/logback.xml',
-  'config/db_settings.json',
-  'audit/access.log',
-  'reports/activity.csv',
-  'reports/readme.txt',
-  'scripts/startup.bat',
-  'archive/logs-2026-07.zip'
-];
-
-/**
- * File paths for a server — **absolute paths across every configured
- * `base_log_path`**. The UI groups them back under each base (one tree root per
- * base). A little variety per base so each root looks distinct.
- */
-export function mockFilePaths(serverKey: string): string[] {
-  const bases = (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path);
-  const out: string[] = [];
-  bases.forEach((base, i) => {
-    const b = base.replace(/[\\/]+$/, '');
-    // Rotate the list a little per base so the roots aren't identical.
-    const rel = [...REL_LOG_PATHS];
-    if (i % 2 === 1) {
-      rel.push('app/http/access.log', 'app/http/requests.log');
-    }
-    if (serverKey.includes('APP_2')) {
-      rel.push('batch/settlement/settle.log');
-    }
-    rel.forEach((r) => out.push(`${b}/${r}`));
-  });
-  return out;
-}
-
-/**
- * The `GET /api/log/files` envelope. Full mode (default) returns every path up
- * front; the lazy demo server returns only its root folders and lets the UI
- * fetch children on expand via {@link mockDirEntries}.
- */
-export function mockLogFiles(serverKey: string): LogFilesResponse {
-  if (LAZY_LOG_SERVERS.has(serverKey)) {
-    return { mode: 'lazy', roots: (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path) };
-  }
-  return { mode: 'full', paths: mockFilePaths(serverKey) };
-}
-
-/**
- * Immediate children of one folder (lazy mode) — a deterministic, depth-capped
- * synthetic tree so load-on-expand is demonstrable without a real filesystem.
- * A real backend lists the actual directory. Returns [] for a path outside the
- * server's bases (belt-and-braces; the interceptor also jails it).
- */
-export function mockDirEntries(serverKey: string, folderPath: string): LogDirEntry[] {
+export function mockDirEntries(base: string, folderPath: string): LogDirEntry[] {
   const p = (folderPath ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-  const bases = (MOCK_LOG_SERVERS[serverKey] ?? []).map((r) => r.base_log_path.replace(/[\\/]+$/, ''));
-  const base = bases.find((b) => p.toLowerCase() === b.toLowerCase() || p.toLowerCase().startsWith(b.toLowerCase() + '/'));
-  if (!base) {
+  const b = (base ?? '').replace(/\\/g, '/').replace(/[\\/]+$/, '');
+  if (!b || !(p.toLowerCase() === b.toLowerCase() || p.toLowerCase().startsWith(b.toLowerCase() + '/'))) {
     return [];
   }
-  const rel = p.slice(base.length).replace(/^\/+/, '');
+  const rel = p.slice(b.length).replace(/^\/+/, '');
   const depth = rel ? rel.split('/').length : 0;
   const entries: LogDirEntry[] = [];
   // Sub-folders, capped so the demo tree is deep but finite.
@@ -150,20 +82,18 @@ export function mockDirEntries(serverKey: string, folderPath: string): LogDirEnt
 }
 
 /**
- * True if `absPath` is inside one of the server's configured base paths (and has
- * no `..` traversal) — the jail check a real backend must enforce before reading
- * a file. Used by the content / properties handlers.
+ * True if `absPath` is inside the given `base` (and has no `..` traversal) — the
+ * jail check a real backend must enforce before reading a file. Used by the
+ * content / properties handlers.
  */
-export function isLogPathAllowed(serverKey: string | null, absPath: string | null): boolean {
+export function isLogPathAllowed(base: string | null, absPath: string | null): boolean {
   const p = (absPath ?? '').replace(/\\/g, '/');
   if (!p || p.split('/').some((s) => s === '..')) {
     return false;
   }
   const lower = p.toLowerCase();
-  const bases = (MOCK_LOG_SERVERS[serverKey ?? ''] ?? []).map((r) =>
-    r.base_log_path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-  );
-  return bases.some((b) => b && (lower === b || lower.startsWith(b + '/')));
+  const b = (base ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return !!b && (lower === b || lower.startsWith(b + '/'));
 }
 
 /** Deterministic line count per file so pagination behaviour is demonstrable. */

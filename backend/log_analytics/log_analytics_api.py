@@ -3,18 +3,18 @@
 All routes are under ``/api/log``:
 
 ======================================  ==========================================
-GET /servers                            catalogue (from the DB) → { key: [rows...] }
-GET /files?server=                      { "mode": "lazy", "roots": [paths] }
-GET /dir?server=&path=                  { "entries": [{name, type, path}] }
-GET /file?server=&path=                 { "content": "<text>" }
-GET /file-properties?server=&path=      FileProperties {name,type,size,...}
+GET /servers?app_env=                   catalogue (from the DB) → { key: [rows...] }
+GET /dir?base=&path=                     { "entries": [{name, type, path}], ... }
+GET /file?base=&path=                    { "content": "<text>" }
+GET /file-properties?base=&path=         FileProperties {name,type,size,...}
 ======================================  ==========================================
 
-The tree is served in **lazy** mode: only root folders come back from ``/files``;
-the UI fetches each folder's children on first expand via ``/dir``. That keeps
-browsing responsive on huge real directories. Every ``path`` is sandboxed by the
-``jailed_path`` dependency (see dependencies.py) — confined to the requesting
-server's base paths, whatever the DB returns.
+Only ``/servers`` touches the DB — it returns each server's ``base_log_path``. From
+there the UI browses by sending that ``base`` back with the ``path`` it wants; the
+tree loads one folder level at a time (``/dir`` on each expand) so browsing stays
+responsive on huge directories. ``base`` + ``path`` are sandboxed by the
+``jailed_path`` dependency (see dependencies.py) — the requested path must sit
+inside the given base. No DB call on the browse path.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from config import settings
 from utils import fs_browser
 from utils.logging import get_logger
 
-from .dependencies import base_paths_for, fetch_log_path, group_db_config, jailed_path
+from .dependencies import fetch_log_path, group_db_config, jailed_path
 
 logger = get_logger(__name__)
 
@@ -48,17 +48,6 @@ def get_servers(
     """
     logger.info("servers (app_env=%s)", app_env)
     return fetch_log_path(group_cfg, app_env)
-
-
-@router.get("/files")
-def get_files(
-    server: str = Query(...),
-    group_cfg: Any = Depends(group_db_config),
-) -> dict:
-    """Seed the tree in LAZY mode: root folders only — the server's base paths
-    from the catalogue. The UI loads each folder's children on demand via
-    ``/dir``. Empty roots when the server key is unknown."""
-    return {"mode": "lazy", "roots": [fs_browser.to_posix(b) for b in base_paths_for(server, group_cfg)]}
 
 
 @router.get("/dir")
