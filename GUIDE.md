@@ -179,11 +179,21 @@ enumerated in one shot (the backend does a **bounded walk** and bails early):
 The switch is a single field: the UI reads `mode` and renders the matching path
 (`log_analytics.service.ts` → `getFileTree`). It never counts anything itself.
 
+**Per-folder cap (anti-hang):** `/dir` returns at most `OLS_DIR_LIMIT` entries (default
+**500**) per folder; when a folder holds more, `truncated: true` + the real `total` come
+back and the tree shows a "showing N of M — filter to narrow" note. Backend-side so a huge
+folder never ships thousands of entries over the wire.
+
+**Left refresh button** reloads the **selected server's** tree (re-hits `/files` for it) and
+**resets the right preview to default** — it never re-hits `/servers` (only page open/refresh
+does that) and never leaves the last-read file showing. Selecting a different server does the
+same for that server.
+
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/log/servers` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`) |
+| `GET /api/log/servers?app_env=<DEV\|STG\|PROD>` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`); `app_env` scopes the DB query (`LIVE`→`PROD`) |
 | `GET /api/log/files?server=<key>` | – | `LogFilesResponse` `{ mode?, paths?, roots? }` — `full` (default) sends `paths` (absolute); `lazy` sends `roots` |
-| `GET /api/log/dir?server=<key>&path=<abs>` | – | `LogDirResponse` `{ entries: { name, type, path }[] }` — immediate children of ONE folder (lazy mode, jailed) |
+| `GET /api/log/dir?server=<key>&path=<abs>` | – | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder (lazy, jailed, **capped per folder** — `truncated`/`total` when the cap is hit) |
 | `GET /api/log/file?server=<key>&path=<abs>` | – | `{ content: string }` (jailed to the server's bases) |
 | `GET /api/log/file-properties?server=<key>&path=<abs>` | – | `FileProperties` (jailed to the server's bases) |
 
@@ -208,7 +218,7 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 | `GET /api/config/{scope}/tables?app_env=<DEV\|STG\|PROD>` | – | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`) |
 | `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
 | `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
-| `POST /api/config/{scope}/roll` | `{ rolled_by, table_name, from, to }` | `{ message, rolledRows }` |
+| `POST /api/config/{scope}/roll` | `{ rolled_by, tablespace, table_name, from, to }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ message, rolledRows }` |
 | `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
 | `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
 | `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |

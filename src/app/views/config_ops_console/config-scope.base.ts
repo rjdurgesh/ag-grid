@@ -355,12 +355,17 @@ export abstract class ConfigScopeBase implements OnInit {
     });
   }
 
-  /** Roll Data → Process: hand the table + range to the backend, stamped with the actor. */
+  /**
+   * Roll Data → Process: hand the table + range to the backend, stamped with the
+   * actor (`rolled_by`) and the scope's Oracle tablespace (GROUP → `OLS_RPT32`,
+   * CIB / RETAIL → `OLS`).
+   */
   onRollData(event: RollDataEvent, grid: GridDataComponent): void {
     grid.setRollNotice('Processing roll…');
     this.api
       .post<{ message?: string; rolledRows?: number }>(API.config.rollData(this.scope), {
         rolled_by: this.actor,
+        tablespace: this.scope === 'group' ? 'OLS_RPT32' : 'OLS',
         table_name: event.tableName,
         from: event.from,
         to: event.to

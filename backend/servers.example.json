@@ -1,0 +1,11 @@
+{
+  "_comment": "Example servers catalogue (the /servers response — a stand-in for the DB-connection API). Copy to servers.json (or any path) and point OLS_SERVERS_FILE at it. Key format: {db_source}_{server_type}_{server_name}; each value is a list of rows, one per base_log_path. Every base_log_path must sit inside OLS_LOG_ROOT. Omit this file entirely to browse the whole OLS_LOG_ROOT via one generic 'localhost' server.",
+
+  "OLSCIB_WEB_A_1_eur17": [
+    { "server_name": "eur17", "base_log_path": "D:/ALGO", "server_type": "WEB_A_1", "db_source": "OLSCIB" }
+  ],
+  "OLSGROUP_APP_1_eur12": [
+    { "server_name": "eur12", "base_log_path": "D:/Material", "server_type": "APP_1", "db_source": "OLSGROUP" },
+    { "server_name": "eur12", "base_log_path": "D:/Website", "server_type": "APP_1", "db_source": "OLSGROUP" }
+  ]
+}

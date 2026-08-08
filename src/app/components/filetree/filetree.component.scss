@@ -163,6 +163,15 @@
   color: var(--cui-secondary-color, #8a93a2);
 }
 
+/* Per-folder cap note ("showing N of M") shown after a truncated folder's children. */
+.filetree__truncated {
+  padding-block: 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--cui-warning, #f0a020);
+  cursor: default;
+}
+
 .filetree__icon--folder {
   color: var(--cui-warning, #f0a020);
 }

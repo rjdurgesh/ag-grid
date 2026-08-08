@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Local server catalogue overrides (keep servers.json in VCS only if you want a
+# shared default; remove this line to track it)
+# servers.json

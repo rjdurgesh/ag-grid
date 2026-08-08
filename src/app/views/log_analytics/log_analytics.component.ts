@@ -136,9 +136,16 @@ export class LogAnalyticsComponent implements OnInit {
     this.loadFiles();
   }
 
-  /** Re-hit the files API for the current server and rebuild the tree. */
+  /**
+   * Left refresh button — reload the SELECTED server's tree (re-fetch its base
+   * paths' content) and reset the right preview to default, so a refresh never
+   * leaves the last-read file showing. (Does not re-hit /servers — that only
+   * happens on page open/refresh.)
+   */
   refreshFiles(): void {
     if (this.selectedServerInfo()) {
+      this.selectedFile.set(null);
+      this.fileContent.set('');
       this.loadFiles();
     }
   }
@@ -181,7 +188,8 @@ export class LogAnalyticsComponent implements OnInit {
       .getDirChildren(this.selectedServer(), event.path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (entries) => this.filetree()?.applyChildren(event.path, entries),
+        next: (res) =>
+          this.filetree()?.applyChildren(event.path, res.entries, res.truncated ? res.total : 0),
         error: () => this.filetree()?.markFolderError(event.path)
       });
   }

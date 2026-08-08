@@ -11,6 +11,7 @@ This module is pure (no FastAPI imports) so it is trivially unit-testable.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -57,6 +58,10 @@ def to_posix(path) -> str:
     s = str(path).replace("\\", "/")
     while len(s) > 1 and s.endswith("/"):
         s = s[:-1]
+    # A bare drive letter ("D:") is drive-RELATIVE on Windows (the current dir on
+    # D:), not the root — keep the slash so it unambiguously means the root ("D:/").
+    if re.fullmatch(r"[A-Za-z]:", s):
+        s += "/"
     return s
 
 
@@ -79,8 +84,16 @@ def resolve_within_bases(bases: list[str], requested: str) -> Optional[Path]:
     if ".." in requested.replace("\\", "/").split("/"):
         return None
 
+    # A bare drive letter ("D:") is drive-RELATIVE on Windows — realpath("D:")
+    # returns the current dir on D:, not the root. Coerce it to the root ("D:/")
+    # so a client that sent "D:" (e.g. after trailing-slash normalisation) still
+    # resolves to the drive root.
+    req = requested.replace("\\", "/")
+    if re.fullmatch(r"[A-Za-z]:", req):
+        req = req + "/"
+
     try:
-        target_real = os.path.realpath(requested)
+        target_real = os.path.realpath(req)
     except OSError:
         return None
     target_n = _normcase(target_real)
@@ -88,34 +101,56 @@ def resolve_within_bases(bases: list[str], requested: str) -> Optional[Path]:
     for base in bases:
         base_real = os.path.realpath(base)
         base_n = _normcase(base_real)
-        if target_n == base_n or target_n.startswith(base_n + os.sep):
+        # A drive root (e.g. "D:\\") already ends with the separator; other paths
+        # don't. Normalise to exactly one trailing separator for the prefix test
+        # so "D:\\" correctly contains "D:\\ALGO".
+        base_prefix = base_n if base_n.endswith(os.sep) else base_n + os.sep
+        if target_n == base_n or target_n.startswith(base_prefix):
             return Path(target_real)
     return None
 
 
-def list_dir(resolved: Path, requested: str) -> list[dict]:
+def list_dir(resolved: Path, requested: str, limit: int = 0) -> dict:
     """Immediate children of ``resolved`` (one level only — lazy browsing).
 
     Entry ``path`` values are built from the client's ``requested`` path so they
     round-trip exactly with the UI's tree (which uses them for the next expand).
     Folders first, then files, alphabetical.
+
+    When ``limit`` > 0 and the folder holds more than ``limit`` entries, only the
+    first ``limit`` are returned and ``truncated`` is set — a per-folder cap that
+    keeps a directory of thousands of files from hanging the UI. ``total`` is the
+    real (uncapped) child count.
     """
     base = to_posix(requested)
     entries: list[dict] = []
-    for child in _safe_iterdir(resolved):
-        try:
-            is_dir = child.is_dir()
-        except OSError:
-            continue  # unreadable entry (permissions / broken link) → skip
-        entries.append(
-            {
-                "name": child.name,
-                "type": "folder" if is_dir else "file",
-                "path": f"{base}/{child.name}",
-            }
-        )
+    # os.scandir is used (not Path.iterdir + child.is_dir) so the folder/file type
+    # comes from the directory entry itself — no separate stat() per child. That
+    # keeps a folder with thousands of entries fast instead of hanging the UI.
+    try:
+        with os.scandir(resolved) as it:
+            for de in it:
+                try:
+                    is_dir = de.is_dir()
+                except OSError:
+                    continue  # unreadable entry (permissions / broken link) → skip
+                entries.append(
+                    {
+                        "name": de.name,
+                        "type": "folder" if is_dir else "file",
+                        "path": f"{base}/{de.name}",
+                    }
+                )
+    except (PermissionError, OSError):
+        entries = []
+
     entries.sort(key=lambda e: (e["type"] != "folder", e["name"].lower()))
-    return entries
+
+    total = len(entries)
+    truncated = limit > 0 and total > limit
+    if truncated:
+        entries = entries[:limit]
+    return {"entries": entries, "total": total, "truncated": truncated}
 
 
 def read_file_text(resolved: Path) -> str:
@@ -154,13 +189,6 @@ def file_properties(resolved: Path) -> dict:
 
 
 # --- internals ---------------------------------------------------------------
-
-
-def _safe_iterdir(path: Path) -> list[Path]:
-    try:
-        return list(path.iterdir())
-    except (PermissionError, OSError):
-        return []
 
 
 def _read_capped(resolved: Path) -> tuple[bytes, bool]:
