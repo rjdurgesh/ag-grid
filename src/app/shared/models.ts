@@ -20,29 +20,6 @@ export interface LogServerRow {
  */
 export type LogServersResponse = Record<string, LogServerRow[]>;
 
-/**
- * Response of `GET /api/log/files`. The backend decides how much to send based
- * on tree size (a **bounded walk** it caps itself), and labels the shape with
- * `mode` — the UI switches on this field, it never counts anything itself:
- *
- * - `full` (default) — small tree: every absolute file path, up front. The UI
- *   builds the whole tree client-side (instant filter / expand-all).
- * - `lazy` — huge tree: the backend bailed early and sends only the root folder
- *   paths (`roots`). The UI shows those and fetches each folder's children on
- *   demand via `GET /api/log/dir` when it is first expanded.
- *
- * `mode` is optional so an older/simpler backend that just returns `{ paths }`
- * is treated as `full` — the front end is backward-compatible.
- */
-export interface LogFilesResponse {
-  mode?: 'full' | 'lazy';
-  /** `full` mode: every absolute file path under the server's base paths. */
-  paths?: string[];
-  /** `lazy` mode: the root folder paths to seed the tree (usually the base
-   *  paths). Optional — the UI falls back to the server's configured bases. */
-  roots?: string[];
-}
-
 /** One immediate child returned by `GET /api/log/dir` (lazy expansion). */
 export interface LogDirEntry {
   name: string;

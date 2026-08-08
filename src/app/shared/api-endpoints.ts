@@ -64,25 +64,20 @@ export const API = {
     /** Server catalogue (DB connection). `app_env` (LIVE→PROD) scopes it to the env. */
     servers: () => `${API_BASE_URL}/api/log/servers?app_env=${encodeURIComponent(apiEnv())}`,
     /**
-     * File tree for a server → `LogFilesResponse` `{ mode, paths?, roots? }`.
-     * `mode:'full'` (or omitted) returns every path up front; `mode:'lazy'`
-     * returns only root folders and the UI loads each folder on expand via
-     * {@link dir}. The backend picks the mode from tree size.
+     * Immediate children of ONE folder → `LogDirResponse`
+     * `{ entries: { name, type, path }[], total, truncated }`. `base` is the
+     * selected server's `base_log_path` (the UI already has it from {@link servers});
+     * `path` is the folder's FULL path. The backend confirms `path` sits inside
+     * `base` (reject `..`/outside) — no DB call. The tree loads one level per expand.
      */
-    files: (serverId: string) => `${API_BASE_URL}/api/log/files?server=${encodeURIComponent(serverId)}`,
-    /**
-     * Immediate children of ONE folder (lazy mode) → `LogDirResponse`
-     * `{ entries: { name, type, path }[] }`. `path` is the folder's FULL path;
-     * the backend must jail it to the server's base paths (reject `..`/outside).
-     */
-    dir: (serverId: string, path: string) =>
-      `${API_BASE_URL}/api/log/dir?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`,
-    /** Content of a single log file. */
-    fileContent: (serverId: string, path: string) =>
-      `${API_BASE_URL}/api/log/file?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`,
-    /** Metadata for a single file (name, type, size, timestamps). */
-    fileProperties: (serverId: string, path: string) =>
-      `${API_BASE_URL}/api/log/file-properties?server=${encodeURIComponent(serverId)}&path=${encodeURIComponent(path)}`
+    dir: (base: string, path: string) =>
+      `${API_BASE_URL}/api/log/dir?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`,
+    /** Content of a single log file (`base` = its server's base path). */
+    fileContent: (base: string, path: string) =>
+      `${API_BASE_URL}/api/log/file?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`,
+    /** Metadata for a single file (`base` = its server's base path). */
+    fileProperties: (base: string, path: string) =>
+      `${API_BASE_URL}/api/log/file-properties?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`
   },
   config: {
     /**

@@ -24,6 +24,9 @@ import { LogAnalyticsService } from './log_analytics.service';
 
 const PAGE_SIZE_OPTIONS = [100, 1000, 5000, 10000];
 
+/** Forward-slash form, trailing slash stripped — matches how paths travel to the API. */
+const norm = (s: string): string => (s ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+
 /**
  * Log Analytics Hub — pick a server (list + file paths both from the API) and
  * browse its logs as a file tree, previewing file content with pagination for
@@ -155,28 +158,30 @@ export class LogAnalyticsComponent implements OnInit {
     if (!server) {
       return;
     }
-    this.loadingFiles.set(true);
-    this.svc
-      .getFileTree(server)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (data) => {
-          // The backend chose the mode; the UI just applies whichever it got.
-          if (data.mode === 'lazy') {
-            this.fileRoots.set([]);
-            this.lazyRoots.set(data.lazyRoots);
-          } else {
-            this.lazyRoots.set([]);
-            this.fileRoots.set(data.roots);
-          }
-          this.loadingFiles.set(false);
-        },
-        error: () => {
-          this.fileRoots.set([]);
-          this.lazyRoots.set([]);
-          this.loadingFiles.set(false);
-        }
-      });
+    // The dropdown already carries the server's base paths (from /servers) — seed
+    // the tree straight from them, one lazy root per base. Each folder's children
+    // load on first expand via /dir. No extra API call needed here.
+    this.fileRoots.set([]);
+    this.lazyRoots.set(server.basePaths.filter(Boolean).map((p) => ({ label: p, path: norm(p) })));
+    this.loadingFiles.set(false);
+  }
+
+  /**
+   * The server `base_log_path` that owns `path` (longest matching prefix). The UI
+   * sends this back to the backend as `base` so it can confine browsing to that
+   * base without another DB call. Falls back to the first base if none matches.
+   */
+  private ownerBase(path: string): string {
+    const p = norm(path).toLowerCase();
+    const bases = this.selectedServerInfo()?.basePaths ?? [];
+    return (
+      bases.find((b) => {
+        const bl = norm(b).toLowerCase();
+        return p === bl || p.startsWith(bl + '/');
+      }) ??
+      bases[0] ??
+      ''
+    );
   }
 
   /**
@@ -185,7 +190,7 @@ export class LogAnalyticsComponent implements OnInit {
    */
   onFolderLoad(event: { path: string }): void {
     this.svc
-      .getDirChildren(this.selectedServer(), event.path)
+      .getDirChildren(this.ownerBase(event.path), event.path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (res) =>
@@ -198,7 +203,7 @@ export class LogAnalyticsComponent implements OnInit {
     this.selectedFile.set(path);
     this.loadingContent.set(true);
     this.svc
-      .getFileContent(this.selectedServer(), path)
+      .getFileContent(this.ownerBase(path), path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (content) => {
@@ -265,7 +270,7 @@ export class LogAnalyticsComponent implements OnInit {
     this.propertiesLoading.set(true);
     this.propertiesVisible.set(true);
     this.svc
-      .getFileProperties(this.selectedServer(), path)
+      .getFileProperties(this.ownerBase(path), path)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (props) => {
