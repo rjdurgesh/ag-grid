@@ -208,8 +208,16 @@ export class LogAnalyticsComponent implements OnInit {
           this.currentPage.set(0);
           this.loadingContent.set(false);
         },
-        error: () => {
-          this.fileContent.set('Failed to load file content.');
+        error: (err) => {
+          // A file that was deleted after the tree loaded still shows as a node;
+          // the backend answers 404 (never hangs). Say so plainly, and hint at
+          // the refresh that reconciles the tree with disk.
+          const gone = (err as { status?: number })?.status === 404;
+          this.fileContent.set(
+            gone
+              ? 'This file no longer exists on the server. Use the refresh button to update the tree.'
+              : 'Failed to load file content.'
+          );
           this.currentPage.set(0);
           this.loadingContent.set(false);
         }

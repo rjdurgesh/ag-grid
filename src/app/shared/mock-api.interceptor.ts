@@ -147,13 +147,10 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     if (!body.table_name || !body.from || !body.to) {
       return respondError(400, 'table_name, from and to are required');
     }
+    // Same shape the real API returns: { status, message }. The UI shows `message`.
     return respond({
-      success: true,
-      table_name: body.table_name,
-      from: body.from,
-      to: body.to,
-      rolledRows: 40 + (body.table_name.length * 7) % 400,
-      message: `Rolled ${body.table_name} from ${body.from} to ${body.to}.`
+      status: 'success',
+      message: `Successfully rolled data for table ${body.table_name}.`
     });
   }
 

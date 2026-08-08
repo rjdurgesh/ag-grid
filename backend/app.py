@@ -21,6 +21,28 @@ logger = get_logger(__name__)
 
 app = FastAPI(title="OLS Dashboard API", version="0.1.0")
 
+
+def load_db_configs() -> dict[str, dict]:
+    """Per-schema DB connection configs, read once at startup.
+
+    Stand-in — swap for your real loader (config file / env / secrets manager).
+    Each value holds whatever your DB layer needs (dsn, user, password, pool
+    settings, …). ``fetch_log_path`` receives the ``"group"`` one to open the
+    connection and call the stored proc. Keyed by schema.
+    """
+    return {
+        "group": {},   # GROUP schema — used by GET /servers + the path jail
+        "cib": {},
+        "retail": {},
+    }
+
+
+# Exposed on the app so any request can read it via ``request.app.state.db_configs``
+# (see log_analytics/dependencies.py → ``group_db_config``). For real connection
+# *pools* you'd open them in a lifespan handler and close them on shutdown; a plain
+# config dict needs nothing more than this.
+app.state.db_configs = load_db_configs()
+
 # The Angular dev server runs on :4200. Add your real front-end origins for prod.
 ALLOWED_ORIGINS = [
     "http://localhost:4200",

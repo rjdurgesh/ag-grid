@@ -3,7 +3,7 @@
 All routes are under ``/api/log``:
 
 ======================================  ==========================================
-GET /servers                            catalogue (config-driven) → { key: [rows...] }
+GET /servers                            catalogue (from the DB) → { key: [rows...] }
 GET /files?server=                      { "mode": "lazy", "roots": [paths] }
 GET /dir?server=&path=                  { "entries": [{name, type, path}] }
 GET /file?server=&path=                 { "content": "<text>" }
@@ -13,13 +13,14 @@ GET /file-properties?server=&path=      FileProperties {name,type,size,...}
 The tree is served in **lazy** mode: only root folders come back from ``/files``;
 the UI fetches each folder's children on first expand via ``/dir``. That keeps
 browsing responsive on huge real directories. Every ``path`` is sandboxed by the
-``jailed_path`` dependency (see dependencies.py) — confined to the configured
-root, generic for any path/server.
+``jailed_path`` dependency (see dependencies.py) — confined to the requesting
+server's base paths, whatever the DB returns.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -27,7 +28,7 @@ from config import settings
 from utils import fs_browser
 from utils.logging import get_logger
 
-from .dependencies import SERVERS, base_paths_for, jailed_path
+from .dependencies import base_paths_for, fetch_log_path, group_db_config, jailed_path
 
 logger = get_logger(__name__)
 
@@ -35,22 +36,29 @@ router = APIRouter(prefix="/api/log", tags=["log_analytics"])
 
 
 @router.get("/servers")
-def get_servers(app_env: str | None = Query(None)) -> dict:
-    """The server catalogue the dropdown reads (config-driven — see config.py).
+def get_servers(
+    app_env: str | None = Query(None),
+    group_cfg: Any = Depends(group_db_config),
+) -> dict:
+    """The server catalogue the dropdown reads — from the DB (see fetch_log_path).
 
-    `app_env` (DEV/STG/PROD, sent by the UI) is where the real DB query would
-    filter by environment; the config stand-in returns the full catalogue.
+    `group_cfg` is the GROUP db connection config, injected via the
+    `group_db_config` dependency (which reads it off the request's app.state).
+    `app_env` (DEV/STG/PROD, sent by the UI) scopes the query by environment.
     """
     logger.info("servers (app_env=%s)", app_env)
-    return SERVERS
+    return fetch_log_path(group_cfg, app_env)
 
 
 @router.get("/files")
-def get_files(server: str = Query(...)) -> dict:
-    """Seed the tree in LAZY mode: root folders only — the server's DB base paths
-    (or the D:/ default when it declares none). The UI loads each folder's
-    children on demand via ``/dir``."""
-    return {"mode": "lazy", "roots": [fs_browser.to_posix(b) for b in base_paths_for(server)]}
+def get_files(
+    server: str = Query(...),
+    group_cfg: Any = Depends(group_db_config),
+) -> dict:
+    """Seed the tree in LAZY mode: root folders only — the server's base paths
+    from the catalogue. The UI loads each folder's children on demand via
+    ``/dir``. Empty roots when the server key is unknown."""
+    return {"mode": "lazy", "roots": [fs_browser.to_posix(b) for b in base_paths_for(server, group_cfg)]}
 
 
 @router.get("/dir")
