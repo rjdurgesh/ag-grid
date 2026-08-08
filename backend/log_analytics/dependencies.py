@@ -20,27 +20,21 @@ SERVERS: dict[str, list[dict]] = load_servers()
 
 
 def base_paths_for(server: str) -> list[str]:
-    """Configured base_log_path list for a server key (empty if unknown)."""
-    return [row["base_log_path"] for row in SERVERS.get(server, [])]
+    """The server's configured base_log_path list from the DB catalogue. Falls
+    back to the default root (`settings.log_root`, D:/) ONLY when the DB returns
+    none — so we browse the real base paths whenever they exist, D:/ otherwise."""
+    bases = [row["base_log_path"] for row in SERVERS.get(server, []) if row.get("base_log_path")]
+    return bases or [settings.log_root]
 
 
-def allowed_roots() -> list[str]:
-    """Every directory browsing is confined to: the jail root plus each server's
-    configured base path. With the default config this is just the jail root, so
-    the whole `log_root` tree is browsable — generic, no per-path assumptions."""
-    roots = [settings.log_root]
-    for rows in SERVERS.values():
-        roots.extend(row["base_log_path"] for row in rows)
-    return roots
-
-
-def jailed_path(path: str = Query(...)) -> Path:
+def jailed_path(server: str = Query(...), path: str = Query(...)) -> Path:
     """FastAPI dependency shared by `/dir`, `/file` and `/file-properties`:
-    resolve `path` and return it only if it lands inside an allowed root — else
-    raise. Works for ANY path/server; the boundary is config, never hardcoded."""
-    resolved = fs_browser.resolve_within_bases(allowed_roots(), path)
+    resolve `path` and return it only if it lands inside one of THIS server's base
+    paths (or the D:/ default when the server declares none) — else raise. Generic:
+    the boundary is whatever the DB catalogue returns, never hardcoded."""
+    resolved = fs_browser.resolve_within_bases(base_paths_for(server), path)
     if resolved is None:
-        raise HTTPException(status_code=400, detail="Path is outside the allowed root directory")
+        raise HTTPException(status_code=400, detail="Path is outside the server's base log directories")
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="Path not found")
     return resolved

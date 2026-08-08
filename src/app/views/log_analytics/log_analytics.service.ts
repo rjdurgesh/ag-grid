@@ -23,6 +23,15 @@ export interface FileTreeData {
   lazyRoots: LazyRoot[];
 }
 
+/** A folder's children plus the per-folder cap info from the backend. */
+export interface DirChildren {
+  entries: LazyChild[];
+  /** Real (uncapped) child count. */
+  total: number;
+  /** True when the folder was capped (more children exist than were returned). */
+  truncated: boolean;
+}
+
 /** Data access for the Log Analytics Hub. Every call goes through the API. */
 @Injectable({ providedIn: 'root' })
 export class LogAnalyticsService {
@@ -35,7 +44,7 @@ export class LogAnalyticsService {
    * per configured `base_log_path` — so each server carries all of them.
    */
   getServers(): Observable<LogServer[]> {
-    return this.api.get<LogServersResponse>(API.log.servers).pipe(map(toLogServers));
+    return this.api.get<LogServersResponse>(API.log.servers()).pipe(map(toLogServers));
   }
 
   /**
@@ -70,19 +79,20 @@ export class LogAnalyticsService {
   }
 
   /**
-   * Immediate children of one folder (lazy mode). Defence-in-depth: even though
-   * the backend jails the path, we drop any entry that isn't actually under the
-   * requested folder (or contains `..`).
+   * Immediate children of one folder (lazy mode) plus the per-folder cap info.
+   * Defence-in-depth: even though the backend jails the path, we drop any entry
+   * that isn't actually under the requested folder (or contains `..`).
    */
-  getDirChildren(serverId: string, folderPath: string): Observable<LazyChild[]> {
+  getDirChildren(serverId: string, folderPath: string): Observable<DirChildren> {
     const base = norm(folderPath).toLowerCase();
     return this.api.get<LogDirResponse>(API.log.dir(serverId, folderPath)).pipe(
-      map((res) =>
-        (res?.entries ?? []).filter((e) => {
+      map((res) => {
+        const entries = (res?.entries ?? []).filter((e) => {
           const p = norm(e.path).toLowerCase();
           return p.startsWith(base + '/') && !p.split('/').some((s) => s === '..');
-        })
-      )
+        });
+        return { entries, total: res?.total ?? entries.length, truncated: !!res?.truncated };
+      })
     );
   }
 

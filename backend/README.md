@@ -40,29 +40,44 @@ uvicorn app:app --reload --port 8000
 | `GET /file?server=&path=` | File content (capped at 5 MB) | `{ "content": "…" }` |
 | `GET /file-properties?server=&path=` | File metadata | `{ name, type, location, size, created, modified, accessed, lines, attributes }` |
 
-## Configured servers (hardcoded)
+## Configuration (nothing hardcoded)
 
-Edit `log_analytics/dependencies.py` → `SERVERS`. Current mapping:
+All of it comes from `config.py`, read from env vars with safe defaults — nothing about
+servers or paths is hardcoded in the request logic:
 
-- `OLSCIB_WEB_A_1_eur17` → `D:/ALGO`
-- `OLSGROUP_APP_1_eur12` → `D:/Material`, `D:/Website`
+| Env var | Default | Purpose |
+|---|---|---|
+| `OLS_SERVERS_FILE` | `servers.json` (next to `config.py`) | JSON catalogue for `GET /servers` (the DB-connection stand-in). |
+| `OLS_LOG_ROOT` | `D:/` | **Fallback** directory, used only when a server declares **no** `base_log_path`. |
+
+**Servers catalogue** — each server's `base_log_path` values come from the catalogue (a real
+DB later; `servers.json` for now). A request is confined to **that server's own base paths**,
+whatever drive they're on (`C:/my/cib`, `D:/logs`, …). `OLS_LOG_ROOT` (D:/) is used **only** as
+the fallback for a server that has no base path — so D:/ is never shown when the DB provides
+paths. Delete `servers.json` (and leave `OLS_SERVERS_FILE` unset) to fall back to one generic
+server rooted at `OLS_LOG_ROOT`. Later, swap `config.load_servers()` for a live DB query — the
+endpoints don't change. See `servers.example.json` for the format.
+
+Example (`servers.json`):
+
+```json
+{
+  "OLSCIB_WEB_A_1_eur17": [
+    { "server_name": "eur17", "base_log_path": "C:/my/cib", "server_type": "WEB_A_1", "db_source": "OLSCIB" }
+  ]
+}
+```
 
 ## Security — the path jail
 
-Every `path` is resolved with symlinks and `..` collapsed (`os.path.realpath`) and
-must land **inside** one of the server's `base_log_path` values. Requests to a
-parent directory, another drive, a symlink pointing out, or containing `..` are
-rejected (HTTP 400). The UI can never browse above its configured roots.
+Every `path` is resolved with symlinks and `..` collapsed (`os.path.realpath`) and must land
+**inside one of the requesting server's `base_log_path` values** (or the `OLS_LOG_ROOT` fallback
+when it has none). A parent directory, another drive, a symlink pointing out, or a `..` segment
+is rejected (HTTP 400). Bare drive letters (`D:`) are coerced to their root (`D:/`) so trailing-
+slash normalisation on the client can't accidentally target the drive-current directory.
 
 ## Connecting the Angular UI
 
-In `src/app/shared/api-endpoints.ts` set:
-
-```ts
-export const API_BASE_URL = 'http://localhost:8000';
-export const USE_MOCK = false;
-```
-
-Then restart `ng serve`. The Log Analytics Hub will hit this backend and browse
-`D:/ALGO`, `D:/Material`, `D:/Website` in real time. (The other pages still call
-their `/api/...` endpoints — implement those here next as needed.)
+Already wired: `src/environments/environment.ts` has `apiBaseUrl: 'http://localhost:8000'`
+and `liveApiPrefixes: ['/api/log/']`, so Log Analytics hits this backend while the rest of
+the app stays on the mock. Just run this server and `ng serve`.

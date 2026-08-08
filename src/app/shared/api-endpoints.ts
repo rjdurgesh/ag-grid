@@ -61,7 +61,8 @@ export const API = {
     memoryTrend: `${API_BASE_URL}/api/dashboard/memory-trend`
   },
   log: {
-    servers: `${API_BASE_URL}/api/log/servers`,
+    /** Server catalogue (DB connection). `app_env` (LIVE→PROD) scopes it to the env. */
+    servers: () => `${API_BASE_URL}/api/log/servers?app_env=${encodeURIComponent(apiEnv())}`,
     /**
      * File tree for a server → `LogFilesResponse` `{ mode, paths?, roots? }`.
      * `mode:'full'` (or omitted) returns every path up front; `mode:'lazy'`

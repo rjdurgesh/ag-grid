@@ -14,6 +14,8 @@ export interface TreeNode {
   loaded?: boolean;
   /** Lazy mode: true while this folder's children are being fetched. */
   loading?: boolean;
+  /** Lazy mode: real child count when the folder was capped (0 = not capped). */
+  truncatedTotal?: number;
 }
 
 /**
@@ -165,9 +167,10 @@ export class FiletreeComponent {
   /**
    * Attach a lazily-loaded folder's children (called by the parent once the
    * `dir` API returns). Sub-folders start collapsed/unloaded so they load on
-   * their own expand.
+   * their own expand. `truncatedTotal` > 0 means the backend capped the folder;
+   * the tree shows a "showing N of M" note.
    */
-  applyChildren(path: string, entries: LazyChild[]): void {
+  applyChildren(path: string, entries: LazyChild[], truncatedTotal = 0): void {
     const node = findNode(this.treeState(), stripTrailingSep(path));
     if (!node) {
       return;
@@ -185,6 +188,7 @@ export class FiletreeComponent {
     node.loaded = true;
     node.loading = false;
     node.expanded = true;
+    node.truncatedTotal = truncatedTotal;
     this.rev.update((v) => v + 1);
   }
 

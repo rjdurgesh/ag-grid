@@ -113,6 +113,12 @@
 
     @if (node.type === 'folder' && node.expanded && node.children.length) {
       <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: node.children, depth: depth + 1 }" />
+      @if (node.truncatedTotal) {
+        <div class="filetree__truncated" [style.padding-inline-start.px]="26 + depth * 16"
+             [title]="'This folder has ' + node.truncatedTotal + ' items; only the first ' + node.children.length + ' are loaded. Use the filter to narrow down.'">
+          showing {{ node.children.length }} of {{ node.truncatedTotal }} — filter to narrow
+        </div>
+      }
     } @else if (node.type === 'folder' && node.expanded && node.loaded && !node.children.length) {
       <div class="filetree__empty" [style.padding-inline-start.px]="26 + depth * 16">empty</div>
     }

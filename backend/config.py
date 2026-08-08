@@ -15,19 +15,35 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from pathlib import Path
 
 from utils.fs_browser import to_posix
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read an int env var, falling back to `default` on unset/invalid."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class Settings:
     """Backend settings, overridable via environment variables."""
 
     def __init__(self) -> None:
-        # The jail ROOT — browsing can never escape above this. Default: D: drive.
+        # Default directory used ONLY when the catalogue returns no base path for a
+        # server. Not a hard jail — each request is confined to its own server's
+        # base paths (see dependencies.py). Override with OLS_LOG_ROOT.
         self.log_root: str = os.getenv("OLS_LOG_ROOT", "D:/")
-        # Optional JSON catalogue file for the /servers response.
-        self.servers_file: Optional[str] = os.getenv("OLS_SERVERS_FILE")
+        # JSON catalogue for the /servers response (the DB-connection stand-in).
+        # Defaults to servers.json next to this file; override with OLS_SERVERS_FILE.
+        self.servers_file: str = os.getenv(
+            "OLS_SERVERS_FILE", str(Path(__file__).with_name("servers.json"))
+        )
+        # Max entries returned per folder by /dir (anti-hang cap). 0 = unlimited.
+        # Override with OLS_DIR_LIMIT.
+        self.dir_limit: int = _int_env("OLS_DIR_LIMIT", 500)
 
 
 settings = Settings()

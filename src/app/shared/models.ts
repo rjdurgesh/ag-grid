@@ -54,6 +54,10 @@ export interface LogDirEntry {
 /** Response of `GET /api/log/dir` — the immediate children of one folder. */
 export interface LogDirResponse {
   entries: LogDirEntry[];
+  /** Real (uncapped) child count; `entries.length` may be smaller when capped. */
+  total?: number;
+  /** True when the folder held more than the per-folder cap and was truncated. */
+  truncated?: boolean;
 }
 
 /** Flattened, UI-friendly log server — one option in the server dropdown. */
