@@ -218,7 +218,7 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 | `GET /api/config/{scope}/tables?app_env=<DEV\|STG\|PROD>` | – | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`) |
 | `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
 | `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
-| `POST /api/config/{scope}/roll` | `{ rolled_by, tablespace, table_name, from, to }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ message, rolledRows }` |
+| `POST /api/config/{scope}/roll` | `{ rolled_by, tablespace, table_name, from, to }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, message }` — the UI shows `message` verbatim in the roll panel (falls back to a count line only if `message` is absent) |
 | `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
 | `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
 | `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |
@@ -379,7 +379,11 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 
 // GET /api/log/file?server=<key>&path=C:/my/cib/app/application.log   ← { content: string }
 // Backend must confirm the path sits inside one of the server's base paths
-// (and reject `..`) before reading — the jail check.
+// (and reject `..`) before reading — the jail check. Escape → 400; a path that
+// is inside a base but no longer exists (deleted since the tree loaded) → 404
+// "Path not found" (a clean error, never a hang). The UI clears the spinner and,
+// for a file, shows "This file no longer exists…"; for a folder it marks the node
+// as errored (retryable). Refreshing the tree reconciles it with disk.
 { "content": "2026-07-21 20:10:00 INFO  Loader started\n..." }
 
 // GET /api/log/file-properties?server=<key>&path=C:/my/cib/app/application.log   ← FileProperties
@@ -415,8 +419,8 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 // CLOB/BLOB/JSON/XMLTYPE→"…" token, else text. `rowid` rides in each row but is NOT
 // in `cols`, so it stays hidden; the grid uses it for update/delete.
 
-// POST /api/config/{scope}/roll        → { table_name, from, to }
-//                                       ← { success, rolledRows, message }
+// POST /api/config/{scope}/roll        → { rolled_by, tablespace, table_name, from, to }
+//                                       ← { status, message }   (UI shows `message`)
 
 // --- Insert / Update / Delete (table name in the URL) --------------------------
 // POST /api/config/{scope}/table/EMPLOYEE/rows   (INSERT)

@@ -363,7 +363,7 @@ export abstract class ConfigScopeBase implements OnInit {
   onRollData(event: RollDataEvent, grid: GridDataComponent): void {
     grid.setRollNotice('Processing roll…');
     this.api
-      .post<{ message?: string; rolledRows?: number }>(API.config.rollData(this.scope), {
+      .post<{ status?: string; message?: string; rolledRows?: number }>(API.config.rollData(this.scope), {
         rolled_by: this.actor,
         tablespace: this.scope === 'group' ? 'OLS_RPT32' : 'OLS',
         table_name: event.tableName,
@@ -371,8 +371,12 @@ export abstract class ConfigScopeBase implements OnInit {
         to: event.to
       })
       .subscribe({
-        next: (res) =>
-          grid.setRollNotice(res.message ?? `Rolled ${event.tableName} (${res.rolledRows ?? 0} rows).`),
+        // The API returns { status, message } — show `message` as plain text.
+        // Coerce defensively so a missing/odd body never renders as "[object Object]".
+        next: (res) => {
+          const msg = typeof res?.message === 'string' && res.message.trim() ? res.message : null;
+          grid.setRollNotice(msg ?? `Rolled ${event.tableName} (${res?.rolledRows ?? 0} rows).`);
+        },
         error: () => grid.setRollNotice('Roll failed. Please try again.')
       });
   }

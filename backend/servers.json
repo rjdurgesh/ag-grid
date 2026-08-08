@@ -1,8 +1,0 @@
-{
-  "OLSCIB_WEB_A_1_eur17": [
-    { "server_name": "eur17", "base_log_path": "C:/my/cib", "server_type": "WEB_A_1", "db_source": "OLSCIB" }
-  ],
-  "OLSGROUP_APP_1_eur12": [
-    { "server_name": "eur12", "base_log_path": "C:/apps/data", "server_type": "APP_1", "db_source": "OLSGROUP" }
-  ]
-}
