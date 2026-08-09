@@ -17,7 +17,7 @@ import {
   RowsUpdatedEvent
 } from '../../components/grid-data/grid-data.model';
 import { ApiDataService } from '../../shared/api-data.service';
-import { API, ConfigScope } from '../../shared/api-endpoints';
+import { API, ConfigScope, apiEnv } from '../../shared/api-endpoints';
 import { previousWeekdayIso } from '../../shared/date-utils';
 import { CellDataType, ColumnMeta, TableContent, TableContentResponse, TabularData } from '../../shared/models';
 
@@ -180,7 +180,12 @@ export abstract class ConfigScopeBase implements OnInit {
 
   private fetchTables(): void {
     this.loading.set(true);
-    this.api.get<TabularData>(API.config.tables(this.scope)).subscribe({
+    // POST so the environment + username travel in the BODY — username never lands
+    // in the URL/query string (or server access logs). `LIVE` is sent as `PROD`.
+    this.api.post<TabularData>(API.config.tables(this.scope), {
+      app_env: apiEnv(),
+      username: this.actor
+    }).subscribe({
       next: (data) => {
         const cols = data?.cols ?? [];
         this.tableNameKey = resolveKey(cols, TABLE_NAME_KEYS, 'TABLE_NAME');

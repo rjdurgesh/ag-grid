@@ -132,8 +132,10 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
 
   // --- Config Ops Console ---------------------------------------------------
+  // Catalogue is a POST now: { app_env, username } in the body (username stays out
+  // of the URL). The mock returns canned data regardless of the body.
   const tablesMatch = path.match(/^\/api\/config\/(cib|group|retail)\/tables$/);
-  if (tablesMatch) {
+  if (tablesMatch && req.method === 'POST') {
     return respond(mockConfigTables(tablesMatch[1] as ConfigScope));
   }
   // Column detail (down-arrow expand) — { cols, rows } for one table.

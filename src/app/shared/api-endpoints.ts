@@ -100,13 +100,12 @@ export const API = {
   },
   config: {
     /**
-     * Table catalogue for a scope — returns `TabularData` ({ cols, rows }).
-     * The running environment is sent as `?app_env=` so the backend returns the
-     * catalogue for this environment. `LIVE` is sent to the API as `PROD` (see
-     * {@link apiEnv}).
+     * Table catalogue for a scope — **POST** `{ app_env, username }` → `TabularData`
+     * `{ cols, rows }`. Sent in the body (not the URL) so `username` never appears in
+     * the query string / logs. `app_env` scopes the catalogue to this environment
+     * (`LIVE` is sent to the API as `PROD` — see {@link apiEnv}).
      */
-    tables: (scope: ConfigScope) =>
-      `${API_BASE_URL}/api/config/${scope}/tables?app_env=${encodeURIComponent(apiEnv())}`,
+    tables: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/tables`,
     /**
      * Column detail (down-arrow expand). POST { table_name } → `TabularData`
      * `{ cols, rows }`. The nested detail grid renders whatever comes back as-is.
