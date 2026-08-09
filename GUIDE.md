@@ -235,7 +235,7 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/config/{scope}/tables?app_env=<DEV\|STG\|PROD>` | – | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`) |
+| `POST /api/config/{scope}/tables` | `{ app_env, username }` | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`). Body (not query) so `username` stays out of the URL/logs. |
 | `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
 | `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
 | `POST /api/config/{scope}/roll` | `{ rolled_by, tablespace, table_name, from, to }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, message }` — the UI shows `message` verbatim in the roll panel (falls back to a count line only if `message` is absent) |
@@ -437,7 +437,7 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 
 **Config Ops Console** (`{scope}` = `cib` | `group` | `retail`)
 ```jsonc
-// GET /api/config/{scope}/tables           ← TabularData { cols, rows }
+// POST /api/config/{scope}/tables   body { app_env, username }  ← TabularData { cols, rows }
 // Columns come straight from the API — the grid renders whatever arrives.
 { "cols": ["APP_ENV", "TABLE_NAME", "IS_COBDT", "IS_ACTIVE"],
   "rows": [
