@@ -81,20 +81,8 @@ export const API = {
      * the URL. The tree loads one level per expand.
      */
     dir: `${API_BASE_URL}/api/log/dir`,
-    /**
-     * File content for the preview. POST body `{ server_id, base, path, offset?,
-     * length?, from_end? }`. Small file → `{ mode:'full', content, total_size }`;
-     * large file → `{ mode:'window', content, start, end, total_size, bof, eof }`
-     * (a line-aligned byte window the UI pages through). See {@link models.LogFileResponse}.
-     */
+    /** Content of a single log file. POST body `{ server_id, base, path }`. */
     fileContent: `${API_BASE_URL}/api/log/file`,
-    /**
-     * Streamed download of a whole file (any size) — a plain GET the browser
-     * navigates to; the server streams it to disk with a `Content-Disposition`
-     * filename, never buffering it in memory. `base`/`path` in the query.
-     */
-    fileDownload: (base: string, path: string) =>
-      `${API_BASE_URL}/api/log/file/download?base=${encodeURIComponent(base)}&path=${encodeURIComponent(path)}`,
     /** Metadata for a single file. POST body `{ server_id, base, path }`. */
     fileProperties: `${API_BASE_URL}/api/log/file-properties`
   },

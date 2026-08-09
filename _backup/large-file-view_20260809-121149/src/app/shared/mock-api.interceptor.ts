@@ -117,10 +117,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
     }
-    // Mock files are small → always the 'full' shape. The real backend switches to
-    // 'window' for large files (see log_analytics_api.get_file).
-    const content = mockFileContent(p);
-    return respond({ mode: 'full', content, total_size: content.length });
+    return respond({ content: mockFileContent(p) });
   }
   if (path === '/api/log/file-properties' && req.method === 'POST') {
     const body = (req.body ?? {}) as { base?: string; path?: string };

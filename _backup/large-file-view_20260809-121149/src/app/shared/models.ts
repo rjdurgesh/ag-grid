@@ -37,30 +37,6 @@ export interface LogDirResponse {
   truncated?: boolean;
 }
 
-/**
- * Response of `POST /api/log/file`. The backend picks the shape by file size:
- *
- * - `full` (size <= threshold) — the whole file; the UI paginates it by line.
- * - `window` (larger) — a line-aligned byte slice the UI pages through, so a
- *   multi-GB file never loads whole. `start`/`end` are byte offsets; `bof`/`eof`
- *   mark the ends of the file.
- */
-export interface LogFileFull {
-  mode: 'full';
-  content: string;
-  total_size: number;
-}
-export interface LogFileWindow {
-  mode: 'window';
-  content: string;
-  start: number;
-  end: number;
-  total_size: number;
-  bof: boolean;
-  eof: boolean;
-}
-export type LogFileResponse = LogFileFull | LogFileWindow;
-
 /** Flattened, UI-friendly log server — one option in the server dropdown. */
 export interface LogServer {
   /** Composite unique key from the API map, e.g. "OLSCIB_WEB_A_1_eur17". */

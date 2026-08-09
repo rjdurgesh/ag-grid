@@ -4,23 +4,7 @@ import { map, Observable } from 'rxjs';
 import { LazyChild } from '../../components/filetree/filetree.component';
 import { ApiDataService } from '../../shared/api-data.service';
 import { API } from '../../shared/api-endpoints';
-import {
-  FileProperties,
-  LogDirResponse,
-  LogFileResponse,
-  LogServer,
-  LogServersResponse
-} from '../../shared/models';
-
-/** Paging window for a large-file read (all optional; omitted for small files). */
-export interface FileWindowOpts {
-  /** Byte offset to start the window at. */
-  offset?: number;
-  /** Max bytes for this window (server clamps to a safe ceiling). */
-  length?: number;
-  /** Read the LAST `length` bytes instead — newest-first "tail". */
-  fromEnd?: boolean;
-}
+import { FileProperties, LogDirResponse, LogServer, LogServersResponse } from '../../shared/models';
 
 /** A folder's children plus the per-folder cap info from the backend. */
 export interface DirChildren {
@@ -75,28 +59,11 @@ export class LogAnalyticsService {
       );
   }
 
-  /**
-   * File content for the preview. Returns `{ mode:'full', … }` for a small file
-   * (whole content) or `{ mode:'window', … }` for a large one (a line-aligned byte
-   * window). Pass {@link FileWindowOpts} to page a large file; omit for the first read.
-   */
-  getFile(serverId: string, base: string, path: string, opts: FileWindowOpts = {}): Observable<LogFileResponse> {
-    const body: Record<string, unknown> = { server_id: serverId, base, path };
-    if (opts.offset != null) {
-      body['offset'] = opts.offset;
-    }
-    if (opts.length != null) {
-      body['length'] = opts.length;
-    }
-    if (opts.fromEnd) {
-      body['from_end'] = true;
-    }
-    return this.api.post<LogFileResponse>(API.log.fileContent, body);
-  }
-
-  /** URL for a streamed whole-file download (`base` = its server's base path). */
-  downloadUrl(base: string, path: string): string {
-    return API.log.fileDownload(base, path);
+  /** Content of a single log file (`base` = its server's base path). */
+  getFileContent(serverId: string, base: string, path: string): Observable<string> {
+    return this.api
+      .post<{ content: string }>(API.log.fileContent, { server_id: serverId, base, path })
+      .pipe(map((res) => res.content));
   }
 
   /** Metadata for a single file (Properties dialog; `base` = its server's base path). */

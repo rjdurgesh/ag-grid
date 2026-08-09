@@ -133,51 +133,26 @@
       </div>
 
       @if (selectedFile() && !loadingContent()) {
-        @if (fileMode() === 'full') {
-          <!-- Small file: whole content loaded, paginated by line. -->
-          <div class="la-preview__pager">
-            <div class="la-pager__left">
-              <span class="la-chip la-chip--server" [title]="'Selected server'">{{ selectedServerLabel() }}</span>
-              <span class="la-chip">Total Lines: {{ totalLines() | number }}</span>
-            </div>
-            <div class="la-pager__right">
-              <label class="la-pager__size-label" for="pageSize">Items per page</label>
-              <select id="pageSize" class="form-select form-select-sm la-pager__size" (change)="onPageSizeChange($event)">
-                @for (size of pageSizeOptions; track size) {
-                  <option [value]="size" [selected]="size === pageSize()">{{ size | number }}</option>
-                }
-              </select>
-              <span class="la-pager__info">
-                {{ (pageStart() + 1) | number }}–{{ pageEnd() | number }} of {{ totalLines() | number }}
-              </span>
-              <button type="button" class="la-pager__btn" (click)="prevPage()" [disabled]="currentPage() === 0" aria-label="Previous page">‹</button>
-              <span class="la-pager__page">Page {{ currentPage() + 1 }} / {{ totalPages() }}</span>
-              <button type="button" class="la-pager__btn" (click)="nextPage()" [disabled]="currentPage() >= totalPages() - 1" aria-label="Next page">›</button>
-            </div>
+        <div class="la-preview__pager">
+          <div class="la-pager__left">
+            <span class="la-chip la-chip--server" [title]="'Selected server'">{{ selectedServerLabel() }}</span>
+            <span class="la-chip">Total Lines: {{ totalLines() | number }}</span>
           </div>
-        } @else {
-          <!-- Large file: streamed one byte-window at a time (never loaded whole). -->
-          <div class="la-preview__pager">
-            <div class="la-pager__left">
-              <span class="la-chip la-chip--server" [title]="'Selected server'">{{ selectedServerLabel() }}</span>
-              <span class="la-chip la-chip--big" title="Large file — shown one window at a time so it never hangs">Large file · windowed</span>
-              <span class="la-chip">Lines here: {{ totalLines() | number }}</span>
-            </div>
-            <div class="la-pager__right">
-              <label class="la-pager__size-label" for="winSize">Window</label>
-              <select id="winSize" class="form-select form-select-sm la-pager__size" (change)="onWindowSizeChange($event)">
-                @for (opt of windowSizeOptions; track opt.bytes) {
-                  <option [value]="opt.bytes" [selected]="opt.bytes === windowBytes()">{{ opt.label }}</option>
-                }
-              </select>
-              <span class="la-pager__info">{{ windowRangeLabel() }}</span>
-              <button type="button" class="la-pager__btn" (click)="windowStart()" [disabled]="atBof()" title="Start of file" aria-label="Start of file">«</button>
-              <button type="button" class="la-pager__btn" (click)="windowPrev()" [disabled]="atBof()" title="Previous window (toward start)" aria-label="Previous window">‹</button>
-              <button type="button" class="la-pager__btn" (click)="windowNext()" [disabled]="atEof()" title="Next window (toward end)" aria-label="Next window">›</button>
-              <button type="button" class="la-pager__btn" (click)="windowEnd()" [disabled]="atEof()" title="End of file" aria-label="End of file">»</button>
-            </div>
+          <div class="la-pager__right">
+            <label class="la-pager__size-label" for="pageSize">Items per page</label>
+            <select id="pageSize" class="form-select form-select-sm la-pager__size" (change)="onPageSizeChange($event)">
+              @for (size of pageSizeOptions; track size) {
+                <option [value]="size" [selected]="size === pageSize()">{{ size | number }}</option>
+              }
+            </select>
+            <span class="la-pager__info">
+              {{ (pageStart() + 1) | number }}–{{ pageEnd() | number }} of {{ totalLines() | number }}
+            </span>
+            <button type="button" class="la-pager__btn" (click)="prevPage()" [disabled]="currentPage() === 0" aria-label="Previous page">‹</button>
+            <span class="la-pager__page">Page {{ currentPage() + 1 }} / {{ totalPages() }}</span>
+            <button type="button" class="la-pager__btn" (click)="nextPage()" [disabled]="currentPage() >= totalPages() - 1" aria-label="Next page">›</button>
           </div>
-        }
+        </div>
       }
     </div>
   </div>
