@@ -153,89 +153,15 @@ def list_dir(resolved: Path, requested: str, limit: int = 0) -> dict:
     return {"entries": entries, "total": total, "truncated": truncated}
 
 
-# --- file preview reads --------------------------------------------------------
-
-# Per-page window for the windowed (large-file) reader, and a hard ceiling so one
-# window can never return an unbounded amount over the wire.
-DEFAULT_WINDOW_BYTES = 1_000_000   # ~1 MB per page
-MAX_WINDOW_BYTES = 5_000_000       # never more than 5 MB in a single window
-
-
-def read_file_all(resolved: Path, max_bytes: int) -> str:
-    """Whole-file text — the small-file path (size <= threshold). Reads up to
-    `max_bytes`; appends a truncation note if the file is larger. Binary → placeholder."""
-    with resolved.open("rb") as fh:
-        data = fh.read(max_bytes + 1)
-    truncated = len(data) > max_bytes
-    data = data[:max_bytes]
+def read_file_text(resolved: Path) -> str:
+    """File content as text (capped). Binary files return a placeholder."""
+    data, truncated = _read_capped(resolved)
     if _looks_binary(data):
         return f"(binary file — preview not available: {resolved.name})"
     text = data.decode("utf-8", errors="replace")
     if truncated:
-        text += f"\n\n… [truncated at {max_bytes:,} bytes]"
+        text += f"\n\n… [truncated at {MAX_READ_BYTES:,} bytes]"
     return text
-
-
-def read_file_window(
-    resolved: Path,
-    offset: int = 0,
-    length: int = DEFAULT_WINDOW_BYTES,
-    from_end: bool = False,
-) -> dict:
-    """Read a bounded, line-aligned byte window of a (possibly huge) file WITHOUT
-    loading the whole thing — the large-file preview path.
-
-    - ``from_end=True`` → the LAST ``length`` bytes (newest-first "tail").
-    - otherwise         → ``length`` bytes starting at ``offset``.
-
-    A partial first line (unless at the very start) and a partial last line (unless
-    at EOF) are trimmed, so paging never splits a line across windows. Returns what
-    the UI needs to page: ``{ content, start, end, total_size, bof, eof }`` where
-    ``start``/``end`` are byte offsets into the file.
-    """
-    size = resolved.stat().st_size
-    length = max(1, min(int(length or DEFAULT_WINDOW_BYTES), MAX_WINDOW_BYTES))
-    if size == 0:
-        return {"content": "", "start": 0, "end": 0, "total_size": 0, "bof": True, "eof": True}
-
-    with resolved.open("rb") as fh:
-        if from_end:
-            start = max(0, size - length)
-            fh.seek(start)
-            data = fh.read()            # to EOF (<= length bytes)
-        else:
-            start = max(0, min(int(offset or 0), size))
-            fh.seek(start)
-            data = fh.read(length)
-    end = start + len(data)
-
-    if _looks_binary(data):
-        return {
-            "content": f"(binary file — preview not available: {resolved.name})",
-            "start": start, "end": end, "total_size": size,
-            "bof": start == 0, "eof": end >= size,
-        }
-
-    # Keep whole lines at the window edges.
-    if start > 0:
-        nl = data.find(b"\n")
-        if nl != -1:
-            start += nl + 1
-            data = data[nl + 1:]
-    if end < size:
-        nl = data.rfind(b"\n")
-        if nl != -1:
-            data = data[: nl + 1]
-            end = start + len(data)
-
-    return {
-        "content": data.decode("utf-8", errors="replace"),
-        "start": start,
-        "end": end,
-        "total_size": size,
-        "bof": start == 0,
-        "eof": end >= size,
-    }
 
 
 def file_properties(resolved: Path) -> dict:

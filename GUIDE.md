@@ -178,6 +178,20 @@ is expanded, the UI **POSTs** to `/api/log/dir` with body `{ server_id, base, pa
 
 `file` / `file-properties` POST the same `{ server_id, base, path }`.
 
+**Large-file preview (windowed).** `POST /file` picks its shape by file size
+(`OLS_FILE_WINDOW_THRESHOLD`, default 400 MB):
+
+- **small** (≤ threshold) → `{ mode:'full', content, total_size }` — the whole file;
+  the UI paginates it by line as before.
+- **large** (> threshold) → `{ mode:'window', content, start, end, total_size, bof,
+  eof }` — a **line-aligned byte window** the UI pages through, so a multi-GB file
+  never loads whole anywhere (no hang, no dropped connection). Request a window with
+  `{ offset, length, from_end }`: `from_end:true` = the newest-first **tail**;
+  otherwise `length` bytes from `offset`. The UI's window controls send `offset =
+  end` (next), `offset = start − length` (prev), `0` (start), `from_end` (end).
+- **Download** is separate: `GET /api/log/file/download` **streams** the whole file
+  to disk (1 MB chunks, never buffered in RAM) — works at any size.
+
 **Per-folder cap (anti-hang):** `/dir` returns at most `OLS_DIR_LIMIT` entries (default
 **500**) *per folder call*; when a folder holds more, `truncated: true` + the real `total`
 come back and the tree shows a "showing N of M — filter to narrow" note. The cap is
@@ -193,7 +207,8 @@ same for that server.
 |---|---|---|
 | `GET /api/log/servers?app_env=<DEV\|STG\|PROD>` | – | `LogServersResponse` (map key → **array** of rows, one per `base_log_path`); `app_env` scopes the DB query (`LIVE`→`PROD`). **The only DB-backed call.** |
 | `POST /api/log/dir` | `{ server_id?, base, path }` | `LogDirResponse` `{ entries: {name,type,path}[], total, truncated }` — immediate children of ONE folder, read from disk (jailed to `base`, **capped per folder** — `truncated`/`total` when the cap is hit) |
-| `POST /api/log/file` | `{ server_id?, base, path }` | `{ content: string }` (jailed to `base`) |
+| `POST /api/log/file` | `{ server_id?, base, path, offset?, length?, from_end? }` | small: `{ mode:'full', content, total_size }`; large: `{ mode:'window', content, start, end, total_size, bof, eof }` (line-aligned byte window; jailed to `base`) |
+| `GET /api/log/file/download?base=&path=` | – | streamed file download (`Content-Disposition` attachment; never buffered in RAM; jailed to `base`) |
 | `POST /api/log/file-properties` | `{ server_id?, base, path }` | `FileProperties` (jailed to `base`) |
 
 > **Jail:** `path` must resolve to inside `base`. Escape (`..`, another drive, symlink out)
@@ -389,13 +404,23 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 { "entries": [ { "name": "application.log", "type": "file", "path": "C:/my/cib/app/application.log" } ],
   "total": 1, "truncated": false }
 
-// POST /api/log/file  body {server_id, base, path}   ← { content: string }
+// Small file → POST /api/log/file  body {server_id, base, path}
+{ "mode": "full", "content": "2026-07-21 20:10:00 INFO  Loader started\n...", "total_size": 20480 }
+
+// Large file (> OLS_FILE_WINDOW_THRESHOLD) → windowed. First read asks for the tail:
+//   POST /api/log/file  body { …, "length": 1048576, "from_end": true }
+{ "mode": "window", "content": "…last ~1 MB, line-aligned…",
+  "start": 2146435072, "end": 2147483648, "total_size": 2147483648, "bof": false, "eof": true }
+// Page toward the start:  body { …, "offset": start - length, "length": 1048576 }
+// Page toward the end:    body { …, "offset": end,            "length": 1048576 }
+
 // Backend confirms `path` sits inside `base` (reject `..`) before reading — the jail.
 // Escape → 400; a path inside base that no longer exists (deleted since the tree
 // loaded) → 404 "Path not found" (clean error, never a hang). The UI clears the
 // spinner and, for a file, shows "This file no longer exists…"; for a folder it
 // marks the node errored (retryable). Refreshing the tree reconciles it with disk.
-{ "content": "2026-07-21 20:10:00 INFO  Loader started\n..." }
+
+// Whole-file download (any size) → GET /api/log/file/download?base=…&path=…  (streamed)
 
 // POST /api/log/file-properties  body {server_id, base, path}   ← FileProperties
 { "name": "application.log", "type": "Log File", "location": "C:/my/cib/app",

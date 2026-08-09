@@ -90,9 +90,6 @@ export class FiletreeComponent {
    */
   private readonly treeState = signal<TreeNode[]>([]);
 
-  /** Bumped whenever a node is mutated in place so `visibleNodes` recomputes. */
-  private readonly rev = signal(0);
-
   constructor() {
     // (Re)build the tree whenever the source inputs change. Lazy roots win, then
     // labelled roots, then a flat path list.
@@ -117,14 +114,12 @@ export class FiletreeComponent {
         next = buildTree(paths);
       }
       this.treeState.set(next);
-      this.rev.update((v) => v + 1);
     });
   }
 
   readonly fileCount = computed(() => {
     // Lazy mode can't know the total up front — report what's loaded so far.
     if (this.isLazy()) {
-      this.rev();
       return countFiles(this.treeState());
     }
     const roots = this.roots();
@@ -134,7 +129,6 @@ export class FiletreeComponent {
   });
 
   readonly visibleNodes = computed<TreeNode[]>(() => {
-    this.rev();
     const query = this.filterText().trim().toLowerCase();
     const nodes = this.treeState();
     return query ? pruneTree(nodes, query) : nodes;
@@ -156,12 +150,12 @@ export class FiletreeComponent {
     if (this.isLazy() && !node.loaded && !node.loading) {
       node.loading = true;
       node.expanded = true;
-      this.rev.update((v) => v + 1);
+      this.commit();
       this.folderLoad.emit({ path: node.path });
       return;
     }
     node.expanded = !node.expanded;
-    this.rev.update((v) => v + 1);
+    this.commit();
   }
 
   /**
@@ -189,7 +183,7 @@ export class FiletreeComponent {
     node.loading = false;
     node.expanded = true;
     node.truncatedTotal = truncatedTotal;
-    this.rev.update((v) => v + 1);
+    this.commit();
   }
 
   /** Mark a lazy folder's load as failed so it can be retried. */
@@ -199,19 +193,30 @@ export class FiletreeComponent {
       node.loading = false;
       node.loaded = false;
       node.expanded = false;
-      this.rev.update((v) => v + 1);
+      this.commit();
     }
   }
 
   expandAll(): void {
     // Only toggles already-loaded nodes; lazy mode never bulk-fetches.
     setExpanded(this.treeState(), true);
-    this.rev.update((v) => v + 1);
+    this.commit();
   }
 
   collapseAll(): void {
     setExpanded(this.treeState(), false);
-    this.rev.update((v) => v + 1);
+    this.commit();
+  }
+
+  /**
+   * Publish the tree after an in-place mutation. Re-emits `treeState` as a fresh
+   * forest (new object at every node) so the `treeState` signal genuinely changes
+   * and the WHOLE tree re-renders — reliably, at any depth. The old approach (a
+   * `rev` counter over a mutated-in-place, same-reference array) let deep updates
+   * slip past change detection in zoneless mode (spinner stuck until a 2nd click).
+   */
+  private commit(): void {
+    this.treeState.set(cloneForest(this.treeState()));
   }
 
   extension(name: string): string {
@@ -327,6 +332,17 @@ function buildRootedTree(roots: TreeRoot[]): TreeNode[] {
 /** Drop a trailing `/` or `\` so a base path matches its node's stored path. */
 function stripTrailingSep(path: string): string {
   return (path ?? '').replace(/[\\/]+$/, '');
+}
+
+/**
+ * Deep-clone the forest — a new object for every node (children recursively). Used
+ * after an in-place mutation so the published `treeState` is all-new references and
+ * change detection re-renders every level. Cheap here: the tree is lazy and each
+ * folder is capped, so only a few hundred small nodes are ever loaded at once.
+ * `track node.path` in the template keeps DOM/scroll stable across the reclone.
+ */
+function cloneForest(nodes: TreeNode[]): TreeNode[] {
+  return nodes.map((n) => ({ ...n, children: cloneForest(n.children) }));
 }
 
 /** Count file (non-folder) nodes currently in the tree. */
