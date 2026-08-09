@@ -37,7 +37,10 @@
     } @else if (!visibleNodes().length) {
       <div class="filetree__state">No files match.</div>
     } @else {
-      <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: visibleNodes(), depth: 0 }" />
+      <!-- Sizes to the widest row so long names/deep paths scroll horizontally instead of truncating. -->
+      <div class="filetree__scroll">
+        <ng-container *ngTemplateOutlet="nodeTpl; context: { $implicit: visibleNodes(), depth: 0 }" />
+      </div>
     }
   </div>
 </div>

@@ -157,8 +157,8 @@ def list_dir(resolved: Path, requested: str, limit: int = 0) -> dict:
 
 # Per-page window for the windowed (large-file) reader, and a hard ceiling so one
 # window can never return an unbounded amount over the wire.
-DEFAULT_WINDOW_BYTES = 1_000_000   # ~1 MB per page
-MAX_WINDOW_BYTES = 5_000_000       # never more than 5 MB in a single window
+DEFAULT_WINDOW_BYTES = 1_000_000       # ~1 MB per page
+MAX_WINDOW_BYTES = 8 * 1024 * 1024     # ceiling per window (headroom for the 5 MB option)
 
 
 def read_file_all(resolved: Path, max_bytes: int) -> str:

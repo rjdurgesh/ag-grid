@@ -29,7 +29,8 @@ const WINDOW_SIZE_OPTIONS = [
   { label: '256 KB', bytes: 256 * 1024 },
   { label: '512 KB', bytes: 512 * 1024 },
   { label: '1 MB', bytes: 1024 * 1024 },
-  { label: '2 MB', bytes: 2 * 1024 * 1024 }
+  { label: '2 MB', bytes: 2 * 1024 * 1024 },
+  { label: '5 MB', bytes: 5 * 1024 * 1024 }
 ];
 
 /** Forward-slash form, trailing slash stripped — matches how paths travel to the API. */
@@ -75,6 +76,8 @@ export class LogAnalyticsComponent implements OnInit {
   /** Lazy mode: root folders only; children fetched on expand. */
   readonly lazyRoots = signal<LazyRoot[]>([]);
   readonly loadingFiles = signal(false);
+  /** True while a left-panel refresh re-fetches open folders (spins the button; keeps the tree visible). */
+  readonly refreshing = signal(false);
 
   readonly selectedFile = signal<string | null>(null);
   readonly fileContent = signal<string>('');
@@ -98,6 +101,16 @@ export class LogAnalyticsComponent implements OnInit {
   readonly totalSize = signal(0);
   readonly atBof = signal(true);
   readonly atEof = signal(true);
+
+  /** 1-based page number in READING order (page 1 = the first window shown). */
+  readonly windowPage = signal(1);
+  /** Approx total windows — line-aligned windows run a touch under `windowBytes`, so it's a hint. */
+  readonly windowTotalPages = computed(() =>
+    Math.max(1, Math.ceil(this.totalSize() / this.windowBytes()))
+  );
+  /** Page 1 (reading order) is the tail in desc (newest-first), the head in asc. */
+  readonly atFirstPage = computed(() => (this.order() === 'desc' ? this.atEof() : this.atBof()));
+  readonly atLastPage = computed(() => (this.order() === 'desc' ? this.atBof() : this.atEof()));
 
   /**
    * Line order: `desc` = newest / last line first (default — logs read best
@@ -174,10 +187,39 @@ export class LogAnalyticsComponent implements OnInit {
    * happens on page open/refresh.)
    */
   refreshFiles(): void {
-    if (this.selectedServerInfo()) {
-      this.selectedFile.set(null);
-      this.fileContent.set('');
+    const server = this.selectedServerInfo();
+    if (!server) {
+      return;
+    }
+    // Reset the right preview to default (as before).
+    this.selectedFile.set(null);
+    this.fileContent.set('');
+
+    // Keep the tree OPEN: re-fetch every currently-expanded folder and merge the
+    // fresh listing in place (new files/dirs appear, deleted ones drop, open
+    // sub-folders stay open). If nothing is expanded, just re-seed the roots.
+    const open = this.filetree()?.expandedPaths() ?? [];
+    if (!open.length) {
       this.loadFiles();
+      return;
+    }
+    this.refreshing.set(true);
+    let pending = open.length;
+    const done = (): void => {
+      if (--pending <= 0) {
+        this.refreshing.set(false);
+      }
+    };
+    for (const path of open) {
+      this.svc
+        .getDirChildren(this.selectedServer(), this.ownerBase(path), path)
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({
+          next: (res) =>
+            this.filetree()?.applyChildren(path, res.entries, res.truncated ? res.total : 0),
+          error: () => done(),
+          complete: () => done()
+        });
     }
   }
 
@@ -229,10 +271,18 @@ export class LogAnalyticsComponent implements OnInit {
 
   onFileSelect(path: string): void {
     this.selectedFile.set(path);
-    // First read: newest-first (desc) asks for the tail. The backend returns the
-    // WHOLE file if it's small (mode:'full'), or the last byte WINDOW if it's large
-    // (mode:'window') — so a multi-GB file never loads whole and never hangs.
-    this.fetchFile(path, { fromEnd: this.order() === 'desc', length: this.windowBytes() });
+    this.windowPage.set(1);
+    // Page 1 = the first window in reading order (newest-first → the tail; oldest-first
+    // → the head). Small files come back whole ('full') and use the line pager; large
+    // files come back as one WINDOW ('window'), so a multi-GB file never loads whole.
+    this.fetchFile(path, this.pageOneOpts());
+  }
+
+  /** The window request for "page 1", given the current sort order. */
+  private pageOneOpts(): FileWindowOpts {
+    return this.order() === 'desc'
+      ? { fromEnd: true, length: this.windowBytes() }
+      : { offset: 0, length: this.windowBytes() };
   }
 
   /**
@@ -289,48 +339,73 @@ export class LogAnalyticsComponent implements OnInit {
       : this.fetchFile(path, { fromEnd: this.order() === 'desc', length: this.windowBytes() });
   }
 
-  // --- large-file window navigation -----------------------------------------
-  /** Jump to the start of the file (first bytes). */
-  windowStart(): void {
+  // --- large-file window navigation (in READING order, like the line pager) ---
+  /** First page — the newest window in desc, the oldest in asc. */
+  pageFirst(): void {
     const p = this.selectedFile();
     if (p) {
-      this.fetchFile(p, { offset: 0, length: this.windowBytes() });
+      this.windowPage.set(1);
+      this.fetchFile(p, this.pageOneOpts());
     }
   }
-  /** Jump to the end of the file (last bytes / newest). */
-  windowEnd(): void {
+  /** Next page — read further along (older in desc, later in asc). */
+  pageNext(): void {
+    const p = this.selectedFile();
+    if (!p || this.atLastPage()) {
+      return;
+    }
+    this.windowPage.update((n) => n + 1);
+    this.fetchFile(
+      p,
+      this.order() === 'desc'
+        ? { offset: Math.max(0, this.winStart() - this.windowBytes()), length: this.windowBytes() }
+        : { offset: this.winEnd(), length: this.windowBytes() }
+    );
+  }
+  /** Previous page — back toward page 1 (newer in desc, earlier in asc). */
+  pagePrev(): void {
+    const p = this.selectedFile();
+    if (!p || this.atFirstPage()) {
+      return;
+    }
+    this.windowPage.update((n) => Math.max(1, n - 1));
+    this.fetchFile(
+      p,
+      this.order() === 'desc'
+        ? { offset: this.winEnd(), length: this.windowBytes() }
+        : { offset: Math.max(0, this.winStart() - this.windowBytes()), length: this.windowBytes() }
+    );
+  }
+  /** Last page — the oldest window in desc, the newest in asc. */
+  pageLast(): void {
     const p = this.selectedFile();
     if (p) {
-      this.fetchFile(p, { fromEnd: true, length: this.windowBytes() });
+      this.windowPage.set(this.windowTotalPages());
+      this.fetchFile(
+        p,
+        this.order() === 'desc'
+          ? { offset: 0, length: this.windowBytes() }
+          : { fromEnd: true, length: this.windowBytes() }
+      );
     }
   }
-  /** Previous window — toward the start of the file. */
-  windowPrev(): void {
-    const p = this.selectedFile();
-    if (p && !this.atBof()) {
-      this.fetchFile(p, { offset: Math.max(0, this.winStart() - this.windowBytes()), length: this.windowBytes() });
-    }
-  }
-  /** Next window — toward the end of the file. */
-  windowNext(): void {
-    const p = this.selectedFile();
-    if (p && !this.atEof()) {
-      this.fetchFile(p, { offset: this.winEnd(), length: this.windowBytes() });
-    }
-  }
-  /** Window-size change — reload the current window at the new size. */
+  /** Window-size change — reload from page 1 at the new size (like items-per-page). */
   onWindowSizeChange(event: Event): void {
     this.windowBytes.set(Number((event.target as HTMLSelectElement).value));
-    const p = this.selectedFile();
-    if (p) {
-      this.fetchFile(p, { offset: this.winStart(), length: this.windowBytes() });
-    }
+    this.pageFirst();
   }
 
-  /** Flip line order: descending (newest first) ⇄ ascending (oldest first). */
+  /**
+   * Flip line order: descending (newest first) ⇄ ascending (oldest first). In
+   * window mode "page 1" flips to the other end of the file, so reload it to keep
+   * the pager consistent.
+   */
   toggleOrder(): void {
     this.order.update((o) => (o === 'desc' ? 'asc' : 'desc'));
     this.currentPage.set(0);
+    if (this.fileMode() === 'window') {
+      this.pageFirst();
+    }
   }
 
   /**
