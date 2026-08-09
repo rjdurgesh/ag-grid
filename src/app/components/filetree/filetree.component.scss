@@ -84,8 +84,16 @@
 .filetree__body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: auto; /* vertical + horizontal — the tree can scroll both ways */
   padding: 6px 0;
+}
+
+/* Inner track that grows to the widest row, so long file names / deep paths are
+   fully readable via a horizontal scrollbar instead of being ellipsised. Short
+   rows still fill the panel width (min-width: 100%). */
+.filetree__scroll {
+  width: max-content;
+  min-width: 100%;
 }
 
 .filetree__row {
@@ -198,9 +206,9 @@
 }
 
 .filetree__name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Show the full name (no ellipsis) — the panel scrolls horizontally instead. This
+     matters for same-name files that differ only by a date suffix. */
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 

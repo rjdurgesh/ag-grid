@@ -169,21 +169,50 @@ export class FiletreeComponent {
     if (!node) {
       return;
     }
-    node.children = entries.map((e) => ({
-      name: e.name,
-      path: e.path,
-      type: e.type,
-      children: [],
-      expanded: false,
-      loaded: e.type === 'file',
-      loading: false
-    }));
+    // Preserve the state of children that still exist (matched by path), so a
+    // REFRESH keeps already-open sub-folders open (and their loaded content) instead
+    // of collapsing everything. New entries appear collapsed; entries no longer on
+    // disk drop out. First-time expand has no previous children, so this is a no-op.
+    const prev = new Map(node.children.map((c) => [c.path, c]));
+    node.children = entries.map((e) => {
+      const existing = prev.get(e.path);
+      if (existing && existing.type === e.type) {
+        return existing;
+      }
+      return {
+        name: e.name,
+        path: e.path,
+        type: e.type,
+        children: [],
+        expanded: false,
+        loaded: e.type === 'file',
+        loading: false
+      };
+    });
     sortTree(node.children);
     node.loaded = true;
     node.loading = false;
     node.expanded = true;
     node.truncatedTotal = truncatedTotal;
     this.commit();
+  }
+
+  /**
+   * Paths of every currently-expanded folder, shallowest first. The host uses this
+   * to refresh the tree in place (re-fetch each open folder) without collapsing it.
+   */
+  expandedPaths(): string[] {
+    const out: string[] = [];
+    const walk = (nodes: TreeNode[]): void => {
+      for (const n of nodes) {
+        if (n.type === 'folder' && n.expanded) {
+          out.push(n.path);
+          walk(n.children);
+        }
+      }
+    };
+    walk(this.treeState());
+    return out;
   }
 
   /** Mark a lazy folder's load as failed so it can be retried. */

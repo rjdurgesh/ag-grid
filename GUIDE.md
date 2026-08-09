@@ -187,8 +187,12 @@ is expanded, the UI **POSTs** to `/api/log/dir` with body `{ server_id, base, pa
   eof }` — a **line-aligned byte window** the UI pages through, so a multi-GB file
   never loads whole anywhere (no hang, no dropped connection). Request a window with
   `{ offset, length, from_end }`: `from_end:true` = the newest-first **tail**;
-  otherwise `length` bytes from `offset`. The UI's window controls send `offset =
-  end` (next), `offset = start − length` (prev), `0` (start), `from_end` (end).
+  otherwise `length` bytes from `offset`. Window size is user-selectable
+  (**256 KB / 512 KB / 1 MB / 2 MB / 5 MB**; server clamps to an 8 MB ceiling).
+  The pager counts in **reading order** like the line pager: **Page 1 = the first
+  window shown** (the tail in newest-first / desc), First/Prev disabled there,
+  Next reads further (older). It sends `offset = start − length` to read on and
+  `offset = end` to go back (flipped for asc); `from_end` for page 1, `0` for last.
 - **Download** is separate: `GET /api/log/file/download` **streams** the whole file
   to disk (1 MB chunks, never buffered in RAM) — works at any size.
 
@@ -198,10 +202,13 @@ come back and the tree shows a "showing N of M — filter to narrow" note. The c
 per-folder, so going **deeper** is never limited — expanding a child triggers a fresh `/dir`
 that returns up to 500 of that child's own entries.
 
-**Left refresh button** re-seeds the **selected server's** tree from its base paths and
-**resets the right preview to default** — it never re-hits `/servers` (only page open/refresh
-does that) and never leaves the last-read file showing. Selecting a different server does the
-same for that server.
+**Left refresh button** re-fetches every **currently-expanded** folder (one `/dir` each)
+and **merges the fresh listing in place** — so the tree stays **open** at the same depth
+(new files/dirs appear, deleted ones drop, open sub-folders remain open) rather than
+collapsing. It also **resets the right preview to default**. It never re-hits `/servers`
+(only page open/refresh does that). Selecting a different server re-seeds that server's roots.
+The tree panel scrolls **horizontally** so long/deep names are read in full (no ellipsis) —
+important for same-name files that differ only by a date suffix.
 
 | Method & path | Request | Response |
 |---|---|---|

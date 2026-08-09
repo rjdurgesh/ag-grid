@@ -27,7 +27,7 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill="currentColor" opacity=".85"/></svg>
             File Explorer
           </span>
-          <button type="button" class="la-refresh" (click)="refreshFiles()" title="Refresh file tree" aria-label="Refresh file tree" [class.la-refresh--spin]="loadingFiles()">
+          <button type="button" class="la-refresh" (click)="refreshFiles()" title="Refresh file tree" aria-label="Refresh file tree" [class.la-refresh--spin]="loadingFiles() || refreshing()">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
               <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
               <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -171,10 +171,11 @@
                 }
               </select>
               <span class="la-pager__info">{{ windowRangeLabel() }}</span>
-              <button type="button" class="la-pager__btn" (click)="windowStart()" [disabled]="atBof()" title="Start of file" aria-label="Start of file">«</button>
-              <button type="button" class="la-pager__btn" (click)="windowPrev()" [disabled]="atBof()" title="Previous window (toward start)" aria-label="Previous window">‹</button>
-              <button type="button" class="la-pager__btn" (click)="windowNext()" [disabled]="atEof()" title="Next window (toward end)" aria-label="Next window">›</button>
-              <button type="button" class="la-pager__btn" (click)="windowEnd()" [disabled]="atEof()" title="End of file" aria-label="End of file">»</button>
+              <button type="button" class="la-pager__btn" (click)="pageFirst()" [disabled]="atFirstPage()" title="First page" aria-label="First page">«</button>
+              <button type="button" class="la-pager__btn" (click)="pagePrev()" [disabled]="atFirstPage()" title="Previous page" aria-label="Previous page">‹</button>
+              <span class="la-pager__page">Page {{ windowPage() }} of ~{{ windowTotalPages() }}</span>
+              <button type="button" class="la-pager__btn" (click)="pageNext()" [disabled]="atLastPage()" title="Next page" aria-label="Next page">›</button>
+              <button type="button" class="la-pager__btn" (click)="pageLast()" [disabled]="atLastPage()" title="Last page" aria-label="Last page">»</button>
             </div>
           </div>
         }
