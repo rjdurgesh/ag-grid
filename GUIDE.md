@@ -105,12 +105,18 @@ Key files: `auth/auth.service.ts` (facade), `auth/sso-auth.service.ts` (OIDC eng
 
 ## 3b. RBAC — roles & permissions
 
-Access is driven by the user's role flags from your user table, fetched once after
-login: `GET /api/auth/roles` → `{ is_admin, is_read, is_salt }` (any combination).
+Access is driven by the user's access level from your user table, fetched once after
+login: **`POST /api/auth/roles` `{ username }`** → a single-entry **`{ ACCESS: ROLE }`**
+map, e.g. `{ "ADMIN": "OMT-BOTH" }`. The **key** is the access level (`ADMIN` / `READ` /
+`SALT`) which maps to the internal `is_admin` / `is_read` / `is_salt` flags that gate the
+app; the **value** is the role label shown on the profile card as **`ACCESS | ROLE`**
+("ADMIN | OMT-BOTH"). `username` goes in the body (not the URL). Parsing + the
+access→flag mapping live in [`rbac.service.ts`](src/app/auth/rbac.service.ts) (`parseRoles`).
 
 **Local testing** (while `USE_MOCK = true`): flip `DEV_ROLES` in
-[`api-endpoints.ts`](src/app/shared/api-endpoints.ts) to preview each level — the
-mock returns it. Ignored once the real endpoint answers.
+[`api-endpoints.ts`](src/app/shared/api-endpoints.ts) to preview each level — the mock
+maps the flags to the `{ ACCESS: ROLE }` shape (`ADMIN`→`OMT-BOTH`, `READ`→`OMT-READ`,
+`SALT`→`OMT-SALT`). Ignored once the real endpoint answers.
 
 **Rules:**
 | Flag | Sees | Can act |
@@ -347,8 +353,11 @@ real backend can match it field-for-field. (Infra bodies are in section 5.)
   "user": { "username": "OPS-10432", "displayName": "Alex Morgan",
             "email": "alex.morgan@ols.local", "role": "Ops Admin" } }
 
-// GET /api/auth/roles   (RBAC — see section 3b)   ← response
-{ "is_admin": true, "is_read": false, "is_salt": false }
+// POST /api/auth/roles   (RBAC — see section 3b)
+// → request
+{ "username": "OPS-10432" }
+// ← response  (single entry { ACCESS: ROLE }; key drives gating, value is the profile label)
+{ "ADMIN": "OMT-BOTH" }
 
 // POST /api/auth/logout   ← response
 { "success": true }

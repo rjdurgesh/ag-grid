@@ -5,7 +5,7 @@
     </span>
     <span class="up__meta">
       <span class="up__name">{{ user()?.displayName ?? 'Account' }}</span>
-      <span class="up__role">{{ user()?.role ?? 'Operator' }}</span>
+      <span class="up__role">{{ roleLabel() }}</span>
     </span>
     <svg class="up__chev" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
       <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -17,7 +17,7 @@
       <span class="up__avatar up__avatar--lg" [style.--up-hue]="hue()">{{ initials() }}</span>
       <div class="up__hero-info">
         <div class="up__hero-name">{{ user()?.displayName ?? 'Account' }}</div>
-        <div class="up__hero-role"><span class="up__role-dot"></span>{{ user()?.role ?? 'Operator' }}</div>
+        <div class="up__hero-role"><span class="up__role-dot"></span>{{ roleLabel() }}</div>
       </div>
     </div>
 

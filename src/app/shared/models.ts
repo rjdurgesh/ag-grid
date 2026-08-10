@@ -161,6 +161,14 @@ export interface UserRoles {
   is_salt: boolean;
 }
 
+/**
+ * Response of `POST /api/auth/roles` `{ username }`: a single-entry map of
+ * **{ ACCESS: ROLE }**, e.g. `{ "ADMIN": "OMT-BOTH" }`. The key is the access level
+ * (ADMIN / READ / SALT — drives RBAC gating), the value is the role label shown on the
+ * profile card ("ADMIN | OMT-BOTH").
+ */
+export type AccessRoleResponse = Record<string, string>;
+
 /** Authenticated user profile. From OpenID: username = UID (sub), displayName = full name. */
 export interface AuthUser {
   /** Unique user id (OpenID `sub`). */

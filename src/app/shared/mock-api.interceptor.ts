@@ -77,7 +77,19 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond({ success: true });
   }
   if (path === '/api/auth/roles') {
-    return respond({ ...environment.devRoles });
+    // New contract: POST { username } → single-entry { ACCESS: ROLE }. Mapped from
+    // devRoles so flipping the dev flags still exercises each access level.
+    const dr = environment.devRoles;
+    if (dr.is_admin) {
+      return respond({ ADMIN: 'OMT-BOTH' });
+    }
+    if (dr.is_read) {
+      return respond({ READ: 'OMT-READ' });
+    }
+    if (dr.is_salt) {
+      return respond({ SALT: 'OMT-SALT' });
+    }
+    return respond({ NONE: '' });
   }
 
   // --- System / dashboard ---------------------------------------------------

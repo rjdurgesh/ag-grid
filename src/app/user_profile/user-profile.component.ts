@@ -8,6 +8,7 @@ import {
 } from '@coreui/angular';
 
 import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { formatDateTime } from '../shared/date-utils';
 
 /**
@@ -23,9 +24,14 @@ import { formatDateTime } from '../shared/date-utils';
 })
 export class UserProfileComponent {
   private readonly auth = inject(AuthService);
+  private readonly rbac = inject(RbacService);
   private readonly router = inject(Router);
 
   readonly user = this.auth.user;
+
+  /** "ACCESS | ROLE" from the roles API (e.g. "ADMIN | OMT-BOTH"); falls back to the
+   *  login role while the RBAC call is still resolving. */
+  readonly roleLabel = computed(() => this.rbac.roleLabel() || this.user()?.role || 'Operator');
 
   /** Ticks every 30s so the "signed in … ago" stays fresh. */
   private readonly now = signal(Date.now());
