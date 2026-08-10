@@ -47,7 +47,11 @@ export const API = {
   auth: {
     login: `${API_BASE_URL}/api/auth/login`,
     logout: `${API_BASE_URL}/api/auth/logout`,
-    /** Role flags for the signed-in user (RBAC). */
+    /**
+     * Access + role for the signed-in user (RBAC). **POST** `{ username }` (in the body,
+     * not the URL) → a single-entry `{ ACCESS: ROLE }` map, e.g. `{ "ADMIN": "OMT-BOTH" }`
+     * — key = access level (drives gating), value = role label shown on the profile card.
+     */
     roles: `${API_BASE_URL}/api/auth/roles`
   },
   system: {
