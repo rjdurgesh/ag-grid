@@ -316,12 +316,21 @@ clears whatever was pending. *Add and Duplicate are both INSERT.*
   the ticked drafts in Insert mode, or the ticked edited rows in Update mode.
 
 ### Infrastructure Pulse — see section 5 for the full flow
+
+**Infrastructure Health** (new contract — every call POST under `/api/infra_health`, so the
+browser never sees the per-server agent URLs):
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/infra_health` | `{ app_env, username }` | `{ status, data: ServerHealthRow[] }` — config catalogue (DB). Body, not query, so nothing sensitive is in the URL. |
+| `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. |
+| `POST /api/infra_health/share` | `{ host_address, app_name }` | `ShareSpaceResponse` `{ used, total, unit }` — computed directly (no agent). |
+
+**Service Console** (unchanged; migrates to the new contract later):
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/infra/config?env=<DEV\|STG\|PROD>` | – | `HealthServerConfigRow[]` |
 | `POST /api/infra/agent/collect` | `{ hostname, host_platform, host_address, agent_listen_port, monitor_config }` | `AgentCollectResponse` |
 | `POST /api/infra/agent/action` | `{ hostname, host_address, agent_listen_port, service, script, action }` | `AgentActionResponse` |
-| `GET /api/infra/share?app=<app>&name=<share>` | – | `ShareSpaceResponse` `{ used, total, unit }` |
 
 ### 4a. Concrete JSON — what each endpoint expects & returns
 
@@ -497,14 +506,27 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 Both pages (Infrastructure Health + Service Console) are driven by your
 `health_Server_Details` table plus the on-server agents. **No hardcoded servers.**
 
-**On each page load / refresh:**
-1. **One config call** → `GET /api/infra/config?env=DEV` returns the rows of
-   `health_Server_Details` for `APP_ENV`. (The four app sections share this single
-   fetch via a cached observable.)
-2. **One agent call per SERVER row** (fan-out) →
-   `POST /api/infra/agent/collect` with that server's `monitor_config`. The agent
-   returns live disk / infra / service readings.
-3. **Share drives skip the agent** → `GET /api/infra/share` (computed directly).
+**Infrastructure Health — on each page load / refresh (new `/api/infra_health` contract):**
+1. **One config call** → `POST /api/infra_health` `{app_env, username}` returns
+   `{status, data:[ServerHealthRow]}` for `APP_ENV` (the four app sections share this
+   one fetch via a cached observable).
+2. **One metrics call per SERVER** (fan-out) → `POST /api/infra_health/metrics` with the
+   server's identity + `monitoring_config`. The **backend** forms
+   `http://{host}.xmp.net.intra:{port}/system-metrics`, POSTs the config to the agent, and
+   returns cpu/ram/disk — the dynamic agent URL never appears in the browser network tab.
+3. **Share drives skip the agent** → `POST /api/infra_health/share` (backend computes the
+   path's free space directly).
+
+Backend: `backend/infrastructure_health_api.py` — `retrieve_server_health_details` is the DB
+boundary (swap for the real query); `call_agent` / `read_share_space` are stand-ins (swap for
+a real `httpx` call to the agent and a real `shutil.disk_usage`). Wired live via
+`liveApiPrefixes: ['…','/api/infra_health']`. Units: RAM is **bytes** (→ GB), disk values are
+**"NN.NN GB" strings** (parsed), and the bars use the agent-supplied `percent`.
+
+**Service Console** (unchanged, still mock): `GET /api/infra/config` (one call) + one
+`POST /api/infra/agent/collect` per server (service states) + `POST /api/infra/agent/action`
+to start/stop. It'll move to the `/api/infra_health` style once its agent (service-state)
+contract is defined.
 
 ### `HealthServerConfigRow` (matches your table columns 1:1)
 ```

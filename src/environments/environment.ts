@@ -49,7 +49,8 @@ export const environment: AppEnvironment = {
   name: 'Alex Morgan',
   isSsoEnabled: false,
   devRoles: { is_admin: true, is_read: false, is_salt: false },
-  // Log Analytics is served by the real FastAPI backend; everything else is
-  // still mocked. Add more prefixes here as you implement real endpoints.
-  liveApiPrefixes: ['/api/log/'],
+  // Log Analytics + Infrastructure Health are served by the real FastAPI backend;
+  // everything else (incl. the Service Console's /api/infra/*) is still mocked.
+  // Add more prefixes here as you implement real endpoints.
+  liveApiPrefixes: ['/api/log/', '/api/infra_health'],
 };
