@@ -13,6 +13,7 @@ Run (from the ``backend/`` directory)::
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from system_api import router as system_router
 from utils.logging import configure_logging, get_logger
@@ -60,6 +61,7 @@ app.add_middleware(
 
 app.include_router(log_analytics_router)
 app.include_router(system_router)
+app.include_router(infra_health_router)
 
 
 @app.get("/health", tags=["meta"])

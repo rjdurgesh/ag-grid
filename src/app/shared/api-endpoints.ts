@@ -144,10 +144,26 @@ export const API = {
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`
   },
   infra: {
+    // --- Infrastructure Health (new contract) -------------------------------
+    // Everything is POST under /api/infra_health, so the browser only ever sees
+    // these clean URLs — the per-server agent URLs are formed + called server-side
+    // and never appear in the network tab.
+    /** Config catalogue. POST `{ app_env, username }` → `{ status, data:[rows] }`. */
+    healthConfig: `${API_BASE_URL}/api/infra_health`,
+    /**
+     * Per-server live metrics. POST `{ host_name, agent_listen_port, host_platform,
+     * monitoring_config }` → the backend builds `http://{host}:{port}/system-metrics`,
+     * calls the agent, and returns its cpu/ram/disk reading. One call per server.
+     */
+    healthMetrics: `${API_BASE_URL}/api/infra_health/metrics`,
+    /** Per-share free space (no agent). POST `{ host_address, app_name }` → `{ used, total, unit }`. */
+    healthShare: `${API_BASE_URL}/api/infra_health/share`,
+
+    // --- Service Console (unchanged; migrates to the new contract later) -----
     /**
      * Configuration rows from `health_Server_Details` for an environment — one
-     * call per page load. Returns which servers/shares to monitor and each
-     * server's `monitor_config` (disk / infra / services).
+     * call per page load. Returns which servers to monitor and each server's
+     * `monitor_config` (disk / infra / services).
      */
     config: (env: AppEnv) => `${API_BASE_URL}/api/infra/config?env=${encodeURIComponent(apiEnv(env))}`,
     /**
@@ -160,9 +176,6 @@ export const API = {
      * Start/stop a service through the agent. POST
      * { hostname, host_address, agent_listen_port, service, script, action }.
      */
-    agentAction: `${API_BASE_URL}/api/infra/agent/action`,
-    /** Free space for a share drive (no agent — computed directly). */
-    shareSpace: (app: InfraApp, name: string) =>
-      `${API_BASE_URL}/api/infra/share?app=${app}&name=${encodeURIComponent(name)}`
+    agentAction: `${API_BASE_URL}/api/infra/agent/action`
   }
 } as const;

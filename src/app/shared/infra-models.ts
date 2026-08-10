@@ -115,6 +115,82 @@ export interface ShareSpaceResponse {
   unit: string;
 }
 
+// ---------------------------------------------------------------------------
+// Infrastructure Health — new contract (POST /api/infra_health*)
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of the health config catalogue (`POST /api/infra_health` → `data[]`).
+ * Field names are the DB's UPPERCASE columns; `MONITORING_CONFIG` is a real object
+ * (not a CLOB string). Shares have `MONITORING_CONFIG: null`.
+ */
+export interface ServerHealthRow {
+  APP_ENV: string;
+  RESOURCE_CATEGORY: 'SERVER' | 'SHARE_DRIVE';
+  HOST_PLATFORM: 'WINDOWS' | 'LINUX' | 'SHARE_DRIVE';
+  HOST_NAME: string;
+  HOST_ADDRESS: string;
+  AGENT_LISTEN_PORT: number;
+  APP_NAME: InfraApp;
+  MONITORING_CONFIG: { infra?: string[]; disk?: string[]; services?: Record<string, string | null>[] } | null;
+  IS_ACTIVE: 'Y' | 'N';
+  COMMENTS: string;
+  LAST_UPDATED_BY?: string;
+  LAST_UPDATED_ON?: string;
+}
+
+/** Envelope of the config call. */
+export interface ServerHealthConfigResponse {
+  status: string;
+  data: ServerHealthRow[];
+}
+
+/** One disk/mount entry in the agent's `/system-metrics` response (values are strings like "79.35 GB"). */
+export interface AgentDiskEntry {
+  drive: string;
+  used: string;
+  free: string;
+  total: string;
+  percent: number;
+}
+
+/**
+ * Response from a server agent's `/system-metrics` (via `POST /api/infra_health/metrics`).
+ * RAM is in **bytes** (+ `percent`); disk values are **strings with units**, keyed by
+ * drive. OS-specific extras (buffers/cached/…) are ignored — only total/used/percent used.
+ */
+export interface AgentMetricsResponse {
+  HOST_NAME?: string;
+  AGENT_LISTEN_PORT?: number;
+  os?: string;
+  cpu_percent?: number;
+  load_avg?: number[];
+  ram?: { total?: number; used?: number; available?: number; free?: number; percent?: number };
+  disk_storage?: Record<string, AgentDiskEntry>;
+}
+
+/** Bytes → GB (2 dp). */
+export function bytesToGb(bytes: number): number {
+  return +(bytes / 1024 ** 3).toFixed(2);
+}
+
+/** Parse a size string like "79.35 GB" → GB number (handles B/KB/MB/GB/TB). */
+export function parseSizeToGb(value: string | number | null | undefined): number {
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (!value) {
+    return 0;
+  }
+  const m = /([\d.]+)\s*([KMGT]?B)?/i.exec(value.trim());
+  if (!m) {
+    return 0;
+  }
+  const n = parseFloat(m[1]);
+  const toGb: Record<string, number> = { B: 1 / 1024 ** 3, KB: 1 / 1024 ** 2, MB: 1 / 1024, GB: 1, TB: 1024 };
+  return +(n * (toGb[(m[2] || 'GB').toUpperCase()] ?? 1)).toFixed(2);
+}
+
 /** Traffic-light status shared by health targets and their individual metrics. */
 export type HealthStatus = 'ok' | 'warn' | 'crit';
 
