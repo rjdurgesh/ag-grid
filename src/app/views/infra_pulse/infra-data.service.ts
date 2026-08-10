@@ -1,6 +1,6 @@
 import { inject, Injectable } from '@angular/core';
 import { forkJoin, Observable, of, throwError } from 'rxjs';
-import { map, shareReplay, switchMap } from 'rxjs/operators';
+import { catchError, map, shareReplay, switchMap, timeout } from 'rxjs/operators';
 
 import { ApiDataService } from '../../shared/api-data.service';
 import { API, INFRA_APP_LABELS, InfraApp, apiEnv } from '../../shared/api-endpoints';
@@ -43,6 +43,14 @@ import {
  * **Service Console** still uses the older `/api/infra/*` flow (config + agent collect +
  * agent action); it moves to the new contract when that screen is wired for real.
  */
+/**
+ * Client-side ceiling for a single server/share call. The backend already caps the
+ * agent request (~8 s) and returns `reachable:false` on failure; this is defence in
+ * depth so a network/proxy stall can't hold the whole panel's `forkJoin` open — it
+ * becomes a `TimeoutError`, caught into one "unreachable" card.
+ */
+const HEALTH_CALL_TIMEOUT_MS = 15_000;
+
 @Injectable({ providedIn: 'root' })
 export class InfraDataService {
   private readonly api = inject(ApiDataService);
@@ -102,10 +110,17 @@ export class InfraDataService {
   }
 
   private collectHealth(row: ServerHealthRow): Observable<HealthTarget> {
+    // Each server/share is independently error-handled: an unreachable agent (or a
+    // hard HTTP error) yields a single "unreachable" card, so one dead server never
+    // fails the whole panel.
     if (row.RESOURCE_CATEGORY === 'SHARE_DRIVE') {
       return this.api
         .post<ShareSpaceResponse>(API.infra.healthShare, { host_address: row.HOST_ADDRESS, app_name: row.APP_NAME })
-        .pipe(map((res) => shareTarget(row, res)));
+        .pipe(
+          timeout(HEALTH_CALL_TIMEOUT_MS),
+          map((res) => (res?.reachable === false ? unreachableTarget(row) : shareTarget(row, res))),
+          catchError(() => of(unreachableTarget(row)))
+        );
     }
     return this.api
       .post<AgentMetricsResponse>(API.infra.healthMetrics, {
@@ -114,7 +129,11 @@ export class InfraDataService {
         host_platform: row.HOST_PLATFORM,
         monitoring_config: row.MONITORING_CONFIG
       })
-      .pipe(map((res) => serverTarget(row, res)));
+      .pipe(
+        timeout(HEALTH_CALL_TIMEOUT_MS),
+        map((res) => (res?.reachable === false ? unreachableTarget(row) : serverTarget(row, res))),
+        catchError(() => of(unreachableTarget(row)))
+      );
   }
 
   // ===========================================================================
@@ -256,6 +275,23 @@ function shareTarget(row: ServerHealthRow, res: ShareSpaceResponse): HealthTarge
 
 /** Card order within a panel: all Windows, then all Linux, then share drives. */
 const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
+
+/** A card for a server/share whose agent (or share path) couldn't be reached. */
+function unreachableTarget(row: ServerHealthRow): HealthTarget {
+  return {
+    id: row.HOST_NAME,
+    name: row.HOST_NAME,
+    kind: row.RESOURCE_CATEGORY === 'SHARE_DRIVE' ? 'share' : 'server',
+    os: osOfHealth(row),
+    host: row.HOST_ADDRESS,
+    environment: row.APP_ENV,
+    note: row.COMMENTS,
+    metrics: [],
+    lastUpdated: new Date().toISOString(),
+    status: 'crit',
+    unreachable: true
+  };
+}
 
 function assembleHealth(app: InfraApp, targets: HealthTarget[]): AppHealth {
   // Group by OS (Windows → Linux → Share), then by name — never a random mix.

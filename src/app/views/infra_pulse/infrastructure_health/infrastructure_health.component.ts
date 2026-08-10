@@ -3,7 +3,7 @@ import { Component, OnDestroy, OnInit, WritableSignal, inject, signal } from '@a
 import { LoaderComponent } from '../../../components/loader/loader.component';
 import { INFRA_APPS, INFRA_APP_LABELS, InfraApp } from '../../../shared/api-endpoints';
 import { formatDateTime, timeAgo } from '../../../shared/date-utils';
-import { AppHealth, HealthMetric, HealthStatus, HealthTarget } from '../../../shared/infra-models';
+import { AppHealth, HealthMetric, HealthStatus, HealthTarget, TargetOs } from '../../../shared/infra-models';
 import { InfraDataService } from '../infra-data.service';
 import { HealthCardComponent } from './health-card.component';
 
@@ -37,6 +37,9 @@ interface AggTarget {
 
 /** Auto-refresh choices (minutes); 30 is the default. */
 const REFRESH_INTERVALS = [5, 10, 15, 30] as const;
+
+/** Card order: Windows → Linux → Share, matching the By-Application view. */
+const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
 
 /**
  * Infrastructure Health. Two groupings:
@@ -198,6 +201,10 @@ export class InfrastructureHealthComponent implements OnInit, OnDestroy {
         }
       }
     }
+    // Match the By-Application ordering: all Windows, then Linux, then Share.
+    out.sort(
+      (a, b) => OS_RANK[a.target.os] - OS_RANK[b.target.os] || a.target.name.localeCompare(b.target.name)
+    );
     return out;
   }
 

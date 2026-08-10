@@ -1,12 +1,12 @@
 /* ============================================================================
-   AI-powered 3D sign-in — deep-space backdrop, neural motif, extruded brand,
+   Login — 3D sign-in: deep-space backdrop, neural motif, extruded brand,
    tactile 3D SSO button. Self-contained dark theme.
    ========================================================================== */
 :host {
   display: block;
 }
 
-.ai-login {
+.login-page {
   position: relative;
   min-height: 100vh;
   overflow: hidden;
@@ -18,25 +18,25 @@
 }
 
 /* ---- Backdrop ------------------------------------------------------------- */
-.ai-login__bg {
+.login-page__bg {
   position: absolute;
   inset: 0;
   pointer-events: none;
 }
 
-.ai-orb {
+.login-orb {
   position: absolute;
   border-radius: 50%;
   filter: blur(72px);
   opacity: 0.55;
   will-change: transform;
 
-  &--1 { width: 540px; height: 540px; left: -150px; top: -130px; background: radial-gradient(circle at 30% 30%, #4d5dfb, transparent 70%); animation: ai-float-1 16s ease-in-out infinite; }
-  &--2 { width: 470px; height: 470px; right: -130px; top: 30px; background: radial-gradient(circle at 40% 40%, #23d3a3, transparent 70%); animation: ai-float-2 19s ease-in-out infinite; }
-  &--3 { width: 540px; height: 540px; left: 28%; bottom: -240px; background: radial-gradient(circle at 50% 50%, #a855f7, transparent 70%); animation: ai-float-3 22s ease-in-out infinite; }
+  &--1 { width: 540px; height: 540px; left: -150px; top: -130px; background: radial-gradient(circle at 30% 30%, #4d5dfb, transparent 70%); animation: login-float-1 16s ease-in-out infinite; }
+  &--2 { width: 470px; height: 470px; right: -130px; top: 30px; background: radial-gradient(circle at 40% 40%, #23d3a3, transparent 70%); animation: login-float-2 19s ease-in-out infinite; }
+  &--3 { width: 540px; height: 540px; left: 28%; bottom: -240px; background: radial-gradient(circle at 50% 50%, #a855f7, transparent 70%); animation: login-float-3 22s ease-in-out infinite; }
 }
 
-.ai-grid {
+.login-grid {
   position: absolute;
   inset: 42% -20% -30% -20%;
   background-image:
@@ -46,10 +46,10 @@
   transform: rotateX(74deg);
   transform-origin: center top;
   mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
-  animation: ai-grid-scroll 6s linear infinite;
+  animation: login-grid-scroll 6s linear infinite;
 }
 
-.ai-beam {
+.login-beam {
   position: absolute;
   width: 2px;
   height: 150%;
@@ -57,32 +57,32 @@
   background: linear-gradient(transparent, rgba(120, 140, 255, 0.5), transparent);
   filter: blur(1px);
 
-  &--1 { left: 32%; transform: rotate(16deg); animation: ai-beam 7s ease-in-out infinite; }
-  &--2 { right: 28%; transform: rotate(-13deg); animation: ai-beam 9s ease-in-out infinite reverse; }
+  &--1 { left: 32%; transform: rotate(16deg); animation: login-beam 7s ease-in-out infinite; }
+  &--2 { right: 28%; transform: rotate(-13deg); animation: login-beam 9s ease-in-out infinite reverse; }
 }
 
-.ai-net {
+.login-net {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   opacity: 0.5;
 
-  &__lines line { stroke: rgba(130, 150, 255, 0.35); stroke-width: 1; stroke-dasharray: 6 8; animation: ai-dash 5s linear infinite; }
-  &__nodes circle { fill: #6b78ff; animation: ai-node 3.2s ease-in-out infinite; }
+  &__lines line { stroke: rgba(130, 150, 255, 0.35); stroke-width: 1; stroke-dasharray: 6 8; animation: login-dash 5s linear infinite; }
+  &__nodes circle { fill: #6b78ff; animation: login-node 3.2s ease-in-out infinite; }
   &__nodes circle:nth-child(2n) { fill: #23d3a3; animation-delay: 0.8s; }
   &__nodes circle:nth-child(3n) { fill: #a855f7; animation-delay: 1.6s; }
 }
 
 /* ---- 3D card ------------------------------------------------------------- */
-.ai-login__stage {
+.login-page__stage {
   position: relative;
   z-index: 1;
   transform-style: preserve-3d;
-  animation: ai-stage-float 8s ease-in-out infinite;
+  animation: login-stage-float 8s ease-in-out infinite;
 }
 
-.ai-card {
+.login-card {
   position: relative;
   width: min(92vw, 400px);
   padding: 34px 32px 24px;
@@ -98,7 +98,7 @@
   overflow: hidden;
   transform: rotateX(8deg);
   transform-style: preserve-3d;
-  animation: ai-card-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: login-card-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
 
   &::before {
     content: "";
@@ -115,7 +115,7 @@
   }
 }
 
-.ai-card__sheen {
+.login-card__sheen {
   position: absolute;
   top: -60%;
   left: -30%;
@@ -123,11 +123,11 @@
   height: 220%;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09), transparent);
   transform: rotate(18deg);
-  animation: ai-sheen 6s ease-in-out infinite;
+  animation: login-sheen 6s ease-in-out infinite;
 }
 
-/* ---- AI core ------------------------------------------------------------- */
-.ai-core {
+/* ---- Login core ---------------------------------------------------------- */
+.login-core {
   position: relative;
   width: 100px;
   height: 100px;
@@ -135,24 +135,24 @@
   transform: translateZ(40px);
 }
 
-.ai-core__ring {
+.login-core__ring {
   position: absolute;
   inset: 0;
   border-radius: 50%;
   border: 2px solid transparent;
 
-  &--1 { border-top-color: #6b78ff; border-right-color: rgba(107, 120, 255, 0.3); animation: ai-spin 3s linear infinite; }
-  &--2 { inset: 13px; border-bottom-color: #23d3a3; border-left-color: rgba(35, 211, 163, 0.3); animation: ai-spin 2.2s linear infinite reverse; }
-  &--3 { inset: 26px; border-top-color: #a855f7; border-right-color: rgba(168, 85, 247, 0.3); animation: ai-spin 1.6s linear infinite; }
+  &--1 { border-top-color: #6b78ff; border-right-color: rgba(107, 120, 255, 0.3); animation: login-spin 3s linear infinite; }
+  &--2 { inset: 13px; border-bottom-color: #23d3a3; border-left-color: rgba(35, 211, 163, 0.3); animation: login-spin 2.2s linear infinite reverse; }
+  &--3 { inset: 26px; border-top-color: #a855f7; border-right-color: rgba(168, 85, 247, 0.3); animation: login-spin 1.6s linear infinite; }
 }
 
-.ai-core__orbit {
+.login-core__orbit {
   position: absolute;
   inset: -7px;
   border-radius: 50%;
-  animation: ai-spin 6s linear infinite;
+  animation: login-spin 6s linear infinite;
 
-  .ai-core__sat {
+  .login-core__sat {
     position: absolute;
     top: -4px;
     left: 50%;
@@ -165,17 +165,17 @@
   }
 }
 
-.ai-core__dot {
+.login-core__dot {
   position: absolute;
   inset: 40px;
   border-radius: 50%;
   background: radial-gradient(circle at 40% 35%, #cfe0ff, #4d5dfb 70%);
   box-shadow: 0 0 26px rgba(107, 120, 255, 0.85);
-  animation: ai-pulse 2s ease-in-out infinite;
+  animation: login-pulse 2s ease-in-out infinite;
 }
 
 /* ---- Extruded 3D brand + logo ------------------------------------------- */
-.ai-brand {
+.login-brand {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -184,14 +184,14 @@
   transform-style: preserve-3d;
 }
 
-.ai-brand__logo {
+.login-brand__logo {
   height: clamp(2.6rem, 9vw, 3.6rem);
   width: auto;
   filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 18px rgba(107, 120, 255, 0.55));
-  animation: ai-brand-float 5s ease-in-out infinite;
+  animation: login-brand-float 5s ease-in-out infinite;
 }
 
-.ai-brand3d {
+.login-brand3d {
   margin: 0;
   font-size: clamp(3rem, 12vw, 4.4rem);
   font-weight: 900;
@@ -208,11 +208,11 @@
     0 6px 0 #56659f,
     0 9px 14px rgba(0, 0, 0, 0.55),
     0 0 34px rgba(107, 120, 255, 0.6);
-  animation: ai-brand-float 5s ease-in-out infinite;
+  animation: login-brand-float 5s ease-in-out infinite;
 }
 
 /* ---- 3D SSO button ------------------------------------------------------- */
-.ai-sso {
+.login-sso {
   position: relative;
   width: 100%;
   border: 0;
@@ -228,7 +228,7 @@
     background: linear-gradient(135deg, #6b78ff, #23d3a3);
     filter: blur(16px);
     opacity: 0.45;
-    animation: ai-pulse 3s ease-in-out infinite;
+    animation: login-pulse 3s ease-in-out infinite;
   }
 
   &__inner {
@@ -253,7 +253,7 @@
     transition: transform 0.12s ease, box-shadow 0.12s ease;
   }
 
-  &:hover:not(:disabled) .ai-sso__inner {
+  &:hover:not(:disabled) .login-sso__inner {
     transform: translateY(-2px);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.45),
@@ -262,7 +262,7 @@
       0 22px 42px rgba(77, 93, 251, 0.6);
   }
 
-  &:active:not(:disabled) .ai-sso__inner {
+  &:active:not(:disabled) .login-sso__inner {
     transform: translateY(7px);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.35),
@@ -273,11 +273,11 @@
 
   &:disabled {
     cursor: progress;
-    .ai-sso__inner { opacity: 0.8; }
+    .login-sso__inner { opacity: 0.8; }
   }
 }
 
-.ai-note {
+.login-note {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -285,10 +285,10 @@
   font-size: 12px;
   color: #8b95b3;
 
-  &__dot { width: 7px; height: 7px; border-radius: 50%; background: #23d3a3; box-shadow: 0 0 10px #23d3a3; animation: ai-pulse 1.8s ease-in-out infinite; }
+  &__dot { width: 7px; height: 7px; border-radius: 50%; background: #23d3a3; box-shadow: 0 0 10px #23d3a3; animation: login-pulse 1.8s ease-in-out infinite; }
 }
 
-.ai-error {
+.login-error {
   margin: 14px 0 0;
   font-size: 13px;
   color: #ff8f8f;
@@ -298,7 +298,7 @@
   padding: 9px 12px;
 }
 
-.ai-foot {
+.login-foot {
   margin-top: 22px;
   padding-top: 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -316,7 +316,7 @@
     border-radius: 50%;
     background: #39ffb0;
     box-shadow: 0 0 8px #39ffb0, 0 0 16px rgba(57, 255, 176, 0.7);
-    animation: ai-fluoro 1.8s ease-in-out infinite;
+    animation: login-fluoro 1.8s ease-in-out infinite;
 
     &::after {
       content: "";
@@ -324,35 +324,35 @@
       inset: -3px;
       border-radius: 50%;
       border: 1px solid rgba(57, 255, 176, 0.6);
-      animation: ai-ripple 1.8s ease-out infinite;
+      animation: login-ripple 1.8s ease-out infinite;
     }
   }
 }
 
-@keyframes ai-fluoro {
+@keyframes login-fluoro {
   0%, 100% { transform: scale(1); box-shadow: 0 0 8px #39ffb0, 0 0 16px rgba(57, 255, 176, 0.7); }
   50% { transform: scale(1.25); box-shadow: 0 0 12px #39ffb0, 0 0 28px rgba(57, 255, 176, 0.95); }
 }
 
-@keyframes ai-ripple {
+@keyframes login-ripple {
   0% { transform: scale(1); opacity: 0.8; }
   100% { transform: scale(2.8); opacity: 0; }
 }
 
 /* ---- Keyframes ----------------------------------------------------------- */
-@keyframes ai-spin { to { transform: rotate(360deg); } }
-@keyframes ai-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.15); opacity: 0.75; } }
-@keyframes ai-sheen { 0%, 100% { left: -40%; } 50% { left: 120%; } }
-@keyframes ai-card-in { from { opacity: 0; transform: rotateX(8deg) translateY(28px) scale(0.97); } to { opacity: 1; transform: rotateX(8deg) translateY(0) scale(1); } }
-@keyframes ai-stage-float { 0%, 100% { transform: translateY(0) rotateY(-3deg); } 50% { transform: translateY(-10px) rotateY(3deg); } }
-@keyframes ai-brand-float { 0%, 100% { transform: translateZ(60px) rotateX(14deg) translateY(0); } 50% { transform: translateZ(60px) rotateX(14deg) translateY(-6px); } }
-@keyframes ai-dash { to { stroke-dashoffset: -140; } }
-@keyframes ai-node { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
-@keyframes ai-grid-scroll { to { background-position: 0 46px; } }
-@keyframes ai-beam { 0%, 100% { opacity: 0.2; transform: translateY(0) rotate(16deg); } 50% { opacity: 0.7; transform: translateY(30px) rotate(16deg); } }
-@keyframes ai-float-1 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(40px, 30px); } }
-@keyframes ai-float-2 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-36px, 40px); } }
-@keyframes ai-float-3 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(30px, -34px); } }
+@keyframes login-spin { to { transform: rotate(360deg); } }
+@keyframes login-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.15); opacity: 0.75; } }
+@keyframes login-sheen { 0%, 100% { left: -40%; } 50% { left: 120%; } }
+@keyframes login-card-in { from { opacity: 0; transform: rotateX(8deg) translateY(28px) scale(0.97); } to { opacity: 1; transform: rotateX(8deg) translateY(0) scale(1); } }
+@keyframes login-stage-float { 0%, 100% { transform: translateY(0) rotateY(-3deg); } 50% { transform: translateY(-10px) rotateY(3deg); } }
+@keyframes login-brand-float { 0%, 100% { transform: translateZ(60px) rotateX(14deg) translateY(0); } 50% { transform: translateZ(60px) rotateX(14deg) translateY(-6px); } }
+@keyframes login-dash { to { stroke-dashoffset: -140; } }
+@keyframes login-node { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes login-grid-scroll { to { background-position: 0 46px; } }
+@keyframes login-beam { 0%, 100% { opacity: 0.2; transform: translateY(0) rotate(16deg); } 50% { opacity: 0.7; transform: translateY(30px) rotate(16deg); } }
+@keyframes login-float-1 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(40px, 30px); } }
+@keyframes login-float-2 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-36px, 40px); } }
+@keyframes login-float-3 { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(30px, -34px); } }
 
 /* ----------------------------------------------------------------------------
    Reduced-motion / no-animation fallback.
@@ -361,31 +361,32 @@
    "reduce motion" setting ON — Windows: Settings › Accessibility › Visual
    effects › "Animation effects" = Off, or the "Adjust for best performance"
    system option. Edge/Chrome then report `prefers-reduced-motion: reduce` and
-   suppress every CSS animation. Because the AI-core rings are drawn as partial
-   arcs (only one border edge is coloured) they look "half-broken" once frozen.
+   suppress every CSS animation. Because the login-core rings are drawn as
+   partial arcs (only one border edge is coloured) they look "half-broken" once
+   frozen.
 
    So we don't just stop the animations here — we also give the core an
    intentional STATIC state: full-circle rings, no lone orbiting satellite, a
    solid centre dot. It reads as a clean emblem even with motion disabled.
    -------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
-  .ai-orb, .ai-grid, .ai-beam, .ai-net__lines line, .ai-net__nodes circle,
-  .ai-card__sheen, .ai-core__ring, .ai-core__orbit, .ai-core__dot,
-  .ai-brand3d, .ai-brand__logo, .ai-sso__glow, .ai-foot__pulse, .ai-foot__pulse::after,
-  .ai-card, .ai-login__stage {
+  .login-orb, .login-grid, .login-beam, .login-net__lines line, .login-net__nodes circle,
+  .login-card__sheen, .login-core__ring, .login-core__orbit, .login-core__dot,
+  .login-brand3d, .login-brand__logo, .login-sso__glow, .login-foot__pulse, .login-foot__pulse::after,
+  .login-card, .login-page__stage {
     animation: none !important;
   }
 
   /* Complete, evenly-coloured rings instead of frozen partial arcs. */
-  .ai-core__ring { border-color: rgba(107, 120, 255, 0.5); }
-  .ai-core__ring--2 { border-color: rgba(35, 211, 163, 0.5); }
-  .ai-core__ring--3 { border-color: rgba(168, 85, 247, 0.5); }
+  .login-core__ring { border-color: rgba(107, 120, 255, 0.5); }
+  .login-core__ring--2 { border-color: rgba(35, 211, 163, 0.5); }
+  .login-core__ring--3 { border-color: rgba(168, 85, 247, 0.5); }
 
   /* The orbit only makes sense while spinning; hide the stranded satellite. */
-  .ai-core__orbit { display: none; }
-  .ai-card__sheen { display: none; }
+  .login-core__orbit { display: none; }
+  .login-card__sheen { display: none; }
 
   /* Ensure the entered/settled state is visible (no fade-in to rely on). */
-  .ai-core__dot { opacity: 1; }
-  .ai-card { opacity: 1; }
+  .login-core__dot { opacity: 1; }
+  .login-card { opacity: 1; }
 }

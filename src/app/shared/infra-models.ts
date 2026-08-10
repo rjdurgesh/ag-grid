@@ -113,6 +113,8 @@ export interface ShareSpaceResponse {
   used: number;
   total: number;
   unit: string;
+  /** False when the share path could not be reached/read. */
+  reachable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +164,8 @@ export interface AgentDiskEntry {
 export interface AgentMetricsResponse {
   HOST_NAME?: string;
   AGENT_LISTEN_PORT?: number;
+  /** False when the agent could not be reached (down / timed out). */
+  reachable?: boolean;
   os?: string;
   cpu_percent?: number;
   load_avg?: number[];
@@ -259,6 +263,8 @@ export interface HealthTarget {
   lastUpdated: string;
   /** Worst of {@link metrics} — the card's overall colour. */
   status: HealthStatus;
+  /** True when the agent/share couldn't be reached — card shows a red "unreachable" state. */
+  unreachable?: boolean;
 }
 
 /** Health payload for one application (returned by API.infra.health). */

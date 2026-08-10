@@ -73,21 +73,35 @@
     <span class="ipcard__app">{{ appLabel() }}</span>
   }
 
-  <div class="ipcard__metrics">
-    @for (m of target().metrics; track trackMetric($index, m)) {
-      <div class="ipm">
-        <div class="ipm__row">
-          <span class="ipm__label">{{ m.label }}</span>
-          <span class="ipm__value">{{ metricValue(m) }}</span>
+  @if (target().unreachable) {
+    <div class="ipcard__unreachable">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+        <path d="M12 3 1 21h22L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        <path d="M12 10v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+        <circle cx="12" cy="17" r="1.1" fill="currentColor" />
+      </svg>
+      <span class="ipcard__unreachable-body">
+        <span class="ipcard__unreachable-msg">{{ target().kind === 'share' ? 'Share path unreachable — data unavailable' : 'Server not responding — data unavailable' }}</span>
+        <a class="ipcard__unreachable-help" [href]="'mailto:' + supportEmail">Please reach out to OLS Team on {{ supportEmail }}</a>
+      </span>
+    </div>
+  } @else {
+    <div class="ipcard__metrics">
+      @for (m of target().metrics; track trackMetric($index, m)) {
+        <div class="ipm">
+          <div class="ipm__row">
+            <span class="ipm__label">{{ m.label }}</span>
+            <span class="ipm__value">{{ metricValue(m) }}</span>
+          </div>
+          <div class="ipm__track">
+            <i class="ipm__tick ipm__tick--warn" [style.left.%]="warnAt"></i>
+            <i class="ipm__tick ipm__tick--crit" [style.left.%]="critAt"></i>
+            <span class="ipm__fill" [class]="'ipm__fill--' + m.status" [style.width.%]="m.percent"></span>
+          </div>
         </div>
-        <div class="ipm__track">
-          <i class="ipm__tick ipm__tick--warn" [style.left.%]="warnAt"></i>
-          <i class="ipm__tick ipm__tick--crit" [style.left.%]="critAt"></i>
-          <span class="ipm__fill" [class]="'ipm__fill--' + m.status" [style.width.%]="m.percent"></span>
-        </div>
-      </div>
-    }
-  </div>
+      }
+    </div>
+  }
 
   @if (target().path) {
     <p class="ipcard__path" [title]="target().path">{{ target().path }}</p>
@@ -95,7 +109,7 @@
 
   <footer class="ipcard__foot">
     <span class="ipcard__status" [class]="'ipcard__status--' + target().status">
-      <span class="ipcard__status-dot"></span>{{ statusText(target().status) }}
+      <span class="ipcard__status-dot"></span>{{ target().unreachable ? 'Unreachable' : statusText(target().status) }}
     </span>
     <span class="ipcard__updated">Last Updated = {{ formatDateTime(target().lastUpdated) }}</span>
   </footer>

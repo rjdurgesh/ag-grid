@@ -150,6 +150,48 @@
   gap: 11px;
 }
 
+/* Shown in place of metrics when the server / share is unreachable. */
+.ipcard__unreachable {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px 12px;
+  border-radius: 8px;
+  color: var(--ip-crit);
+  background: color-mix(in srgb, var(--ip-crit) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ip-crit) 35%, transparent);
+
+  svg {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+}
+
+.ipcard__unreachable-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ipcard__unreachable-msg {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* Small support line under the message. */
+.ipcard__unreachable-help {
+  font-size: 11px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--ip-crit) 72%, #cdd6e6);
+  text-decoration: none;
+  word-break: break-word;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
 .ipm__row {
   display: flex;
   align-items: baseline;

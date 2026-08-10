@@ -1,14 +1,14 @@
-<div class="ai-login">
+<div class="login-page">
   <!-- Animated 3D backdrop -->
-  <div class="ai-login__bg" aria-hidden="true">
-    <span class="ai-orb ai-orb--1"></span>
-    <span class="ai-orb ai-orb--2"></span>
-    <span class="ai-orb ai-orb--3"></span>
-    <div class="ai-grid"></div>
-    <div class="ai-beam ai-beam--1"></div>
-    <div class="ai-beam ai-beam--2"></div>
-    <svg class="ai-net" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
-      <g class="ai-net__lines">
+  <div class="login-page__bg" aria-hidden="true">
+    <span class="login-orb login-orb--1"></span>
+    <span class="login-orb login-orb--2"></span>
+    <span class="login-orb login-orb--3"></span>
+    <div class="login-grid"></div>
+    <div class="login-beam login-beam--1"></div>
+    <div class="login-beam login-beam--2"></div>
+    <svg class="login-net" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
+      <g class="login-net__lines">
         <line x1="120" y1="140" x2="360" y2="300" />
         <line x1="360" y1="300" x2="220" y2="560" />
         <line x1="360" y1="300" x2="640" y2="220" />
@@ -18,7 +18,7 @@
         <line x1="640" y1="220" x2="560" y2="520" />
         <line x1="220" y1="560" x2="560" y2="520" />
       </g>
-      <g class="ai-net__nodes">
+      <g class="login-net__nodes">
         <circle cx="120" cy="140" r="4" /><circle cx="360" cy="300" r="5" />
         <circle cx="220" cy="560" r="4" /><circle cx="640" cy="220" r="6" />
         <circle cx="900" cy="380" r="5" /><circle cx="1080" cy="180" r="4" />
@@ -28,26 +28,26 @@
   </div>
 
   <!-- 3D sign-in card -->
-  <div class="ai-login__stage">
-    <div class="ai-card">
-      <div class="ai-card__sheen" aria-hidden="true"></div>
+  <div class="login-page__stage">
+    <div class="login-card">
+      <div class="login-card__sheen" aria-hidden="true"></div>
 
-      <div class="ai-core" aria-hidden="true">
-        <span class="ai-core__ring ai-core__ring--1"></span>
-        <span class="ai-core__ring ai-core__ring--2"></span>
-        <span class="ai-core__ring ai-core__ring--3"></span>
-        <span class="ai-core__orbit"><span class="ai-core__sat"></span></span>
-        <span class="ai-core__dot"></span>
+      <div class="login-core" aria-hidden="true">
+        <span class="login-core__ring login-core__ring--1"></span>
+        <span class="login-core__ring login-core__ring--2"></span>
+        <span class="login-core__ring login-core__ring--3"></span>
+        <span class="login-core__orbit"><span class="login-core__sat"></span></span>
+        <span class="login-core__dot"></span>
       </div>
 
-      <div class="ai-brand">
-        <img class="ai-brand__logo" src="assets/ols.ico" alt="OLS logo" />
-        <h1 class="ai-brand3d">OLS</h1>
+      <div class="login-brand">
+        <img class="login-brand__logo" src="assets/ols.ico" alt="OLS logo" />
+        <h1 class="login-brand3d">OLS</h1>
       </div>
 
-      <button type="button" class="ai-sso" [disabled]="loading()" (click)="signIn()">
-        <span class="ai-sso__glow" aria-hidden="true"></span>
-        <span class="ai-sso__inner">
+      <button type="button" class="login-sso" [disabled]="loading()" (click)="signIn()">
+        <span class="login-sso__glow" aria-hidden="true"></span>
+        <span class="login-sso__inner">
           <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
             <path d="M12 2 4 5v6c0 4.5 3.2 8.4 8 9.9 4.8-1.5 8-5.4 8-9.9V5l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
             <path d="m8.5 12 2.4 2.4L15.8 9.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
@@ -57,10 +57,10 @@
       </button>
 
       @if (error()) {
-        <p class="ai-error">{{ error() }}</p>
+        <p class="login-error">{{ error() }}</p>
       }
 
-      <div class="ai-foot"><span class="ai-foot__pulse"></span> OLS Operations Dashboard · secure session</div>
+      <div class="login-foot"><span class="login-foot__pulse"></span> OLS Operations Dashboard · secure session</div>
     </div>
   </div>
 </div>

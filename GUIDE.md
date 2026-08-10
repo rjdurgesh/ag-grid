@@ -322,8 +322,8 @@ browser never sees the per-server agent URLs):
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/infra_health` | `{ app_env, username }` | `{ status, data: ServerHealthRow[] }` — config catalogue (DB). Body, not query, so nothing sensitive is in the URL. |
-| `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. |
-| `POST /api/infra_health/share` | `{ host_address, app_name }` | `ShareSpaceResponse` `{ used, total, unit }` — computed directly (no agent). |
+| `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ reachable, cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. **Always HTTP 200**: a dead/500/timed-out agent returns `{ reachable: false }` (never an error status), so one bad server = one red card, not a whole-panel failure. |
+| `POST /api/infra_health/share` | `{ host_address, app_name }` | `ShareSpaceResponse` `{ used, total, unit, reachable }` — computed directly (no agent). `reachable: false` when the path can't be read → the card shows a red "Share path unreachable" state instead of a misleading `0.00/0.00 GB`. |
 
 **Service Console** (unchanged; migrates to the new contract later):
 | Method & path | Request | Response |
@@ -517,11 +517,34 @@ Both pages (Infrastructure Health + Service Console) are driven by your
 3. **Share drives skip the agent** → `POST /api/infra_health/share` (backend computes the
    path's free space directly).
 
+**Resilience — one dead server never breaks the screen.** Each server/share is fetched and
+error-handled independently (`collectHealth` in `infra-data.service.ts`): if the agent is down /
+returns 500 / times out — or the share path is unreachable — that card alone renders in a red
+**"Unreachable"** state ("Server not responding" / "Share path unreachable", plus a small
+"reach out to the OLS Team on <supportEmail>" line pulled from `environment.supportEmail`), while
+every other card renders normally. Two layers make this true: the **backend** always answers 200 with
+`{ reachable: false }` (never an error status), and the **frontend** wraps each call in
+`catchError` **and** a 15 s `timeout` — so even a network/proxy *stall* (which never errors and
+would otherwise hold the whole `forkJoin` open) degrades to a single unreachable card. A share
+that can't be read shows red instead of a misleading green `0.00/0.00 GB`.
+
+**Card ordering.** Both **By Application** (`assembleHealth`) and **By Status** (`statusTargets`)
+sort cards **Windows → Linux → Share**, then by name — so the sequence is identical in both views.
+
+**Performance at scale.** `HealthCardComponent` is `ChangeDetectionStrategy.OnPush`, so a page of
+N cards only re-renders the one card whose `target` input actually changed — not all N on every
+global tick (the header's live memory SSE ticks every ~2 s). Verified smooth at 35 servers; the
+backend fan-out for 35 servers completes in well under a second.
+
 Backend: `backend/infrastructure_health_api.py` — `retrieve_server_health_details` is the DB
 boundary (swap for the real query); `call_agent` / `read_share_space` are stand-ins (swap for
-a real `httpx` call to the agent and a real `shutil.disk_usage`). Wired live via
-`liveApiPrefixes: ['…','/api/infra_health']`. Units: RAM is **bytes** (→ GB), disk values are
-**"NN.NN GB" strings** (parsed), and the bars use the agent-supplied `percent`.
+a real `httpx` call to the agent and a real `shutil.disk_usage`). `call_agent` already wraps the
+reading in try/except → `{ reachable: false }`; the ready-to-use **production function
+`_agent_over_http`** (builds `http://{host}.xmp.net.intra:{port}/system-metrics` and POSTs with an
+8 s timeout) sits right below it, commented out — going live is a **one-line switch** inside
+`call_agent` (`_synthetic_agent(...)` → `_agent_over_http(...)`) plus uncommenting that function and
+`pip install httpx`. Wired live via `liveApiPrefixes: ['…','/api/infra_health']`. Units: RAM is **bytes** (→ GB),
+disk values are **"NN.NN GB" strings** (parsed), and the bars use the agent-supplied `percent`.
 
 **Service Console** (unchanged, still mock): `GET /api/infra/config` (one call) + one
 `POST /api/infra/agent/collect` per server (service states) + `POST /api/infra/agent/action`
