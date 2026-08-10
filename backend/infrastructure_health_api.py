@@ -101,29 +101,78 @@ def retrieve_server_health_details(group_db_config: Any, app_env: str | None) ->
 
 # --- agent metrics (stand-in for the on-server agent) ------------------------
 
+_GB = 1024 ** 3   # bytes in one gigabyte (1024³ = 1,073,741,824) — for byte↔GB conversions
+
+
 def _gb_str(gb: float) -> str:
     return f"{gb:.2f} GB"
 
 
 def call_agent(host_name: str, agent_listen_port: int, host_platform: str | None,
                monitoring_config: dict | None) -> dict:
-    """Collect live metrics from a server's agent.
+    """Collect live metrics from one server's agent.
 
-    PRODUCTION: build the URL and POST the monitoring_config, e.g.::
+    Today this returns **synthetic** data (no agent runs on this dev box). To go live,
+    flip the ONE marked line in the body from ``_synthetic_agent(...)`` to
+    ``_agent_over_http(...)`` — the production function is written out (commented) right
+    below. Nothing else in the app changes: same fields, same ``reachable`` flag.
 
-        url = f"http://{host_name}.xmp.net.intra:{agent_listen_port}/system-metrics"
-        resp = httpx.post(url, json=monitoring_config, timeout=10)
-        return resp.json()
-
-    The URL is formed HERE (server-side), so it never reaches the browser. This
-    stand-in returns a response in the agent's exact shape so the screen fills.
+    Whichever path runs, this always returns HTTP 200 with a ``reachable`` flag and never
+    raises to the caller — so one dead/slow agent renders as a single red "unreachable"
+    card, not a whole-panel error. The per-server agent URL is built server-side (inside
+    ``_agent_over_http``), so it never reaches the browser's network tab.
     """
+    try:
+        # ─── DUMMY ↔ REAL SWITCH — change these two lines to go live ─────────────
+        # DUMMY (synthetic data, no agent needed) — ACTIVE:
+        return _synthetic_agent(host_name, agent_listen_port, host_platform, monitoring_config)
+        # PRODUCTION (call the real on-server agent) — comment the line above, then
+        # uncomment the next line AND the `_agent_over_http` function further down:
+        # return _agent_over_http(host_name, agent_listen_port, monitoring_config)
+        # ────────────────────────────────────────────────────────────────────────
+    except Exception as exc:  # final safety net (also covers the real HTTP path)
+        logger.warning("agent unreachable %s:%s — %s", host_name, agent_listen_port, exc)
+        return {"HOST_NAME": host_name, "reachable": False, "error": str(exc)}
+
+
+# ─── PRODUCTION agent call — uncomment this whole function to talk to real agents ───
+# Requires httpx:  pip install httpx   (and add `httpx` to backend/requirements.txt)
+#
+# def _agent_over_http(host_name: str, agent_listen_port: int,
+#                      monitoring_config: dict | None) -> dict:
+#     """Call the on-server agent's /system-metrics endpoint and return its reading.
+#
+#     The dynamic URL is built HERE (server-side) from the config row's host_name +
+#     agent_listen_port — so it NEVER reaches the browser. The agent is expected to
+#     return the same shape `_synthetic_agent` produces (os, cpu_percent, load_avg,
+#     ram{bytes,percent}, disk_storage{drive → {used, free, total, percent}}); we just
+#     stamp `reachable=True`. A slow/dead agent fails fast on the timeout and comes back
+#     as `reachable=False` instead of stalling the screen.
+#     """
+#     import httpx
+#     url = f"http://{host_name}.xmp.net.intra:{agent_listen_port}/system-metrics"
+#     try:
+#         resp = httpx.post(url, json=monitoring_config, timeout=8.0)
+#         resp.raise_for_status()
+#         data = resp.json()
+#         data["reachable"] = True
+#         return data
+#     except Exception as exc:
+#         logger.warning("agent unreachable at %s — %s", url, exc)
+#         return {"HOST_NAME": host_name, "reachable": False, "error": str(exc)}
+# ───────────────────────────────────────────────────────────────────────────────────
+
+
+def _synthetic_agent(host_name: str, agent_listen_port: int, host_platform: str | None,
+                     monitoring_config: dict | None) -> dict:
+    """Stand-in agent reading — deterministic synthetic data. See `_agent_over_http`
+    (above, commented out) for the real call this replaces."""
     cfg = monitoring_config or {}
     rnd = random.Random(host_name)  # deterministic per host so values are stable
     is_windows = (host_platform or "").upper().startswith("WIN")
 
-    # RAM in bytes (like the real agent).
-    total_ram = (16 if is_windows else 8) * 1024 ** 3
+    # RAM in bytes (like the real agent): fake 16 GB on Windows, 8 GB on Linux.
+    total_ram = (16 if is_windows else 8) * _GB
     ram_percent = round(rnd.uniform(18, 72), 1)
     used_ram = int(total_ram * ram_percent / 100)
     ram = {"total": total_ram, "used": used_ram, "available": total_ram - used_ram,
@@ -142,15 +191,13 @@ def call_agent(host_name: str, agent_listen_port: int, host_platform: str | None
     return {
         "AGENT_LISTEN_PORT": agent_listen_port,
         "HOST_NAME": host_name,
+        "reachable": True,
         "os": "Windows" if is_windows else "Linux",
         "cpu_percent": round(rnd.uniform(0, 95), 1),
         "load_avg": [round(rnd.uniform(0, 2), 2) for _ in range(3)],
         "ram": ram,
         "disk_storage": disk_storage,
     }
-
-
-_GB = 1024 ** 3
 
 
 def read_share_space(host_address: str) -> dict:
