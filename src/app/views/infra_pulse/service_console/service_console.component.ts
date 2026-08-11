@@ -194,14 +194,19 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
   /**
    * Aggregate colour for a panel's left rail (matches Infra Health):
-   * any stopped → 'down' (red), else any unaccessible → 'unacc' (amber), else 'up' (green).
+   * any stopped service OR any unreachable server → 'down' (red), else any unaccessible
+   * → 'unaccessible' (amber), else 'up' (green).
    */
   panelStatus(panel: ServicePanel): ServiceCategory {
-    const c = panel.data()?.counts;
-    if (!c) {
+    const data = panel.data();
+    if (!data) {
       return 'up';
     }
-    return c.down > 0 ? 'down' : c.unaccessible > 0 ? 'unaccessible' : 'up';
+    const anyUnreachable = data.servers.some((s) => s.unreachable);
+    if (data.counts.down > 0 || anyUnreachable) {
+      return 'down';
+    }
+    return data.counts.unaccessible > 0 ? 'unaccessible' : 'up';
   }
 
   serverCount(panel: ServicePanel): number {
@@ -302,8 +307,14 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
     this.infra.serviceAction(app, server.serverId, service.id, action).subscribe({
       next: (res) => {
-        const verb = action === 'start' ? 'Start' : 'Stop';
-        this.notify(res.success, res.message || `${verb} ${res.success ? 'succeeded' : 'failed'} for "${service.name}".`);
+        const verb = action === 'start' ? 'Starting' : 'Stopping';
+        if (res.success) {
+          // Show the SERVICE NAME, never the underlying script path.
+          this.notify(true, `${verb} ${service.name} service…`);
+        } else {
+          // Action reached the agent but failed — surface the reason so the user knows.
+          this.notify(false, res.message ? `${service.name}: ${res.message}` : `Could not ${action} ${service.name} service.`);
+        }
         // The action reply only says success/message — re-fetch this server's live status
         // so the badges reflect the real, settled state.
         this.infra.serverServices(app, server.serverId).subscribe({
