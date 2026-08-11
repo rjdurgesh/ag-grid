@@ -52,5 +52,5 @@ export const environment: AppEnvironment = {
   // Log Analytics + Infrastructure Health are served by the real FastAPI backend;
   // everything else (incl. the Service Console's /api/infra/*) is still mocked.
   // Add more prefixes here as you implement real endpoints.
-  liveApiPrefixes: ['/api/log/', '/api/infra_health'],
+  liveApiPrefixes: ['/api/log/', '/api/infra_health', '/api/service_console'],
 };

@@ -6,24 +6,25 @@ import { ApiDataService } from '../../shared/api-data.service';
 import { API, INFRA_APP_LABELS, InfraApp, apiEnv } from '../../shared/api-endpoints';
 import { environment } from '../../../environments/environment';
 import {
-  AgentCollectResponse,
   AgentMetricsResponse,
   AppHealth,
   AppServices,
   HealthMetric,
-  HealthServerConfigRow,
   HealthTarget,
+  MonitoredService,
   ServerHealthConfigResponse,
   ServerHealthRow,
   ServerServices,
+  ServiceActionResponse,
   ServiceActionResult,
-  ServiceState,
+  ServiceStatusEntry,
+  ServiceStatusResponse,
   ShareSpaceResponse,
   TargetOs,
   bytesToGb,
-  parseMonitorConfig,
   parseSizeToGb,
   serviceCategory,
+  serviceStateFrom,
   statusForPercent,
   worstStatus
 } from '../../shared/infra-models';
@@ -40,14 +41,15 @@ import {
  *     The dynamic agent URL never reaches the browser.
  *  3. **One share call per share** (`POST /api/infra_health/share`) → computed directly.
  *
- * **Service Console** still uses the older `/api/infra/*` flow (config + agent collect +
- * agent action); it moves to the new contract when that screen is wired for real.
+ * **Service Console** shares the SAME `/api/infra_health` catalogue (filtered to SERVER rows
+ * that have services), then fans out one `POST /api/service_console/service-manage` per server
+ * for status, and one per start/stop/status action. The dynamic agent URL stays server-side.
  */
 /**
- * Client-side ceiling for a single server/share call. The backend already caps the
- * agent request (~8 s) and returns `reachable:false` on failure; this is defence in
- * depth so a network/proxy stall can't hold the whole panel's `forkJoin` open — it
- * becomes a `TimeoutError`, caught into one "unreachable" card.
+ * Client-side ceiling for a single server/share/agent call. The backend already caps the
+ * agent request (~8 s) and returns `reachable:false` on failure; this is defence in depth so
+ * a network/proxy stall can't hold the whole panel's `forkJoin` open — it becomes a
+ * `TimeoutError`, caught into one "unreachable" card/row.
  */
 const HEALTH_CALL_TIMEOUT_MS = 15_000;
 
@@ -56,12 +58,10 @@ export class InfraDataService {
   private readonly api = inject(ApiDataService);
 
   private healthConfig$?: Observable<ServerHealthRow[]>;
-  private config$?: Observable<HealthServerConfigRow[]>;
 
-  /** Force the next config access to re-fetch (health + services). Call at a full refresh. */
+  /** Force the next config access to re-fetch (shared by both Infra screens). Call at a full refresh. */
   reloadConfig(): void {
     this.healthConfig$ = undefined;
-    this.config$ = undefined;
   }
 
   // ===========================================================================
@@ -137,76 +137,86 @@ export class InfraDataService {
   }
 
   // ===========================================================================
-  // Service Console (unchanged — older /api/infra/* flow)
+  // Service Console (new contract — shares the /api/infra_health catalogue)
   // ===========================================================================
 
-  private serverConfigs(): Observable<HealthServerConfigRow[]> {
-    if (!this.config$) {
-      this.config$ = this.api
-        .get<HealthServerConfigRow[]>(API.infra.config(environment.appEnv))
-        .pipe(shareReplay(1));
-    }
-    return this.config$;
-  }
-
-  private rowsForApp(app: InfraApp): Observable<HealthServerConfigRow[]> {
-    return this.serverConfigs().pipe(
-      map((rows) => rows.filter((r) => r.app_name === app && r.is_active === 'Y'))
+  /** SERVER rows for `app` that are active AND have at least one configured service. */
+  private serviceRowsForApp(app: InfraApp): Observable<ServerHealthRow[]> {
+    return this.healthConfigs().pipe(
+      map((rows) =>
+        rows.filter(
+          (r) =>
+            r.APP_NAME === app &&
+            r.IS_ACTIVE === 'Y' &&
+            r.RESOURCE_CATEGORY === 'SERVER' &&
+            servicesOf(r).length > 0
+        )
+      )
     );
   }
 
   services(app: InfraApp): Observable<AppServices> {
-    return this.rowsForApp(app).pipe(
-      switchMap((rows) => {
-        const serverRows = rows.filter(
-          (r) => r.resource_category === 'SERVER' && parseMonitorConfig(r.monitor_config).services.length > 0
-        );
-        return serverRows.length
-          ? forkJoin(serverRows.map((r) => this.collectServices(r))).pipe(map((servers) => assembleServices(app, servers)))
-          : of(emptyServices(app));
-      })
+    return this.serviceRowsForApp(app).pipe(
+      switchMap((rows) =>
+        rows.length
+          ? forkJoin(rows.map((r) => this.collectServiceStatus(r))).pipe(map((servers) => assembleServices(app, servers)))
+          : of(emptyServices(app))
+      )
     );
   }
 
   serverServices(app: InfraApp, serverId: string): Observable<ServerServices> {
-    return this.rowsForApp(app).pipe(
+    return this.serviceRowsForApp(app).pipe(
       switchMap((rows) => {
-        const row = rows.find((r) => r.hostname === serverId);
-        return row ? this.collectServices(row) : throwError(() => new Error(`Unknown server ${serverId}`));
+        const row = rows.find((r) => r.HOST_NAME === serverId);
+        return row ? this.collectServiceStatus(row) : throwError(() => new Error(`Unknown server ${serverId}`));
       })
     );
   }
 
-  private collectServices(row: HealthServerConfigRow): Observable<ServerServices> {
+  /** Bulk status for one server. A dead/slow agent → one "Unreachable" server, not a panel error. */
+  private collectServiceStatus(row: ServerHealthRow): Observable<ServerServices> {
+    const cfg = servicesOf(row);
     return this.api
-      .post<AgentCollectResponse>(API.infra.agentCollect, agentPayload(row))
-      .pipe(map((res) => serverServices(row, res)));
+      .post<ServiceStatusResponse>(API.infra.serviceManage, {
+        host_name: row.HOST_NAME,
+        agent_listen_port: row.AGENT_LISTEN_PORT,
+        host_platform: row.HOST_PLATFORM,
+        services: cfg.map((s) => s.name)
+      })
+      .pipe(
+        timeout(HEALTH_CALL_TIMEOUT_MS),
+        map((res) => (res?.['reachable'] === false ? unreachableServer(row, cfg) : serverServicesFrom(row, cfg, res))),
+        catchError(() => of(unreachableServer(row, cfg)))
+      );
   }
 
   serviceAction(
     app: InfraApp,
     serverId: string,
     serviceId: string,
-    action: 'start' | 'stop'
+    action: 'start' | 'stop' | 'status'
   ): Observable<ServiceActionResult> {
-    return this.rowsForApp(app).pipe(
+    return this.serviceRowsForApp(app).pipe(
       switchMap((rows) => {
-        const row = rows.find((r) => r.hostname === serverId);
+        const row = rows.find((r) => r.HOST_NAME === serverId);
         if (!row) {
           return throwError(() => new Error(`Unknown server ${serverId}`));
         }
-        const svc = parseMonitorConfig(row.monitor_config).services.find((s) => s.name === serviceId);
+        // Identify the service by its script (Linux) or, when there is none (Windows), its name.
+        const svc = servicesOf(row).find((s) => s.name === serviceId);
+        const serviceRef = svc?.script ?? serviceId;
         return this.api
-          .post<{ service: string; state: ServiceState; lastHeartbeat: string }>(API.infra.agentAction, {
-            hostname: row.hostname,
-            host_address: row.host_address,
-            agent_listen_port: row.agent_listen_port,
-            service: serviceId,
-            script: svc?.script ?? null,
+          .post<ServiceActionResponse>(API.infra.serviceManage, {
+            host_name: row.HOST_NAME,
+            agent_listen_port: row.AGENT_LISTEN_PORT,
+            host_platform: row.HOST_PLATFORM,
+            service: serviceRef,
             action
           })
           .pipe(
-            map((res) => ({ success: true, serverId, serviceId, state: res.state, lastHeartbeat: res.lastHeartbeat }))
+            timeout(HEALTH_CALL_TIMEOUT_MS),
+            map((res) => ({ success: !!res?.success, message: res?.message ?? '', serverId, serviceId }))
           );
       })
     );
@@ -316,43 +326,70 @@ function emptyHealth(app: InfraApp): AppHealth {
 }
 
 // ---------------------------------------------------------------------------
-// Service Console mapping (unchanged — older config row + agent collect)
+// Service Console mapping (new config row + agent /service-manage)
 // ---------------------------------------------------------------------------
 
-/** Payload sent to a server's agent (targets host_address:agent_listen_port in prod). */
-function agentPayload(row: HealthServerConfigRow): Record<string, unknown> {
+/**
+ * Flatten `MONITORING_CONFIG.services` (array of `{ name: script }` objects) into
+ * `{ name, script }[]`. A `"null"` (string) or null script means the agent manages the
+ * service by name (e.g. a Windows service).
+ */
+function servicesOf(row: ServerHealthRow): MonitoredService[] {
+  const list = row.MONITORING_CONFIG?.services ?? [];
+  return list.flatMap((obj) =>
+    Object.entries(obj).map(([name, script]) => ({
+      name,
+      script: script && script !== 'null' ? script : null
+    }))
+  );
+}
+
+/** Info fields shared by the reachable + unreachable mappers (shown in the info dialog). */
+function serverInfoOf(row: ServerHealthRow): Pick<ServerServices, 'serverId' | 'serverName' | 'os' | 'host' | 'environment' | 'note'> {
   return {
-    hostname: row.hostname,
-    host_platform: row.host_platform,
-    host_address: row.host_address,
-    agent_listen_port: row.agent_listen_port,
-    monitor_config: row.monitor_config
+    serverId: row.HOST_NAME,
+    serverName: row.HOST_NAME,
+    os: osOfHealth(row),
+    host: row.HOST_ADDRESS,
+    environment: row.APP_ENV,
+    note: row.COMMENTS
   };
 }
 
-function osOf(row: HealthServerConfigRow): TargetOs {
-  return row.host_platform === 'WINDOW' ? 'windows' : row.host_platform === 'LINUX' ? 'linux' : 'share';
+/** Map a bulk-status agent response onto the server's configured services. */
+function serverServicesFrom(row: ServerHealthRow, cfg: MonitoredService[], res: ServiceStatusResponse): ServerServices {
+  const now = new Date().toISOString();
+  return {
+    ...serverInfoOf(row),
+    services: cfg.map((s) => {
+      // A service missing from the response reads "Unknown" — only THAT service is
+      // affected, never the whole server (which only goes red when the agent is down).
+      const entry = res?.[s.name];
+      const status = entry && typeof entry === 'object' ? (entry as ServiceStatusEntry).status : undefined;
+      return { id: s.name, name: s.name, state: serviceStateFrom(status), lastHeartbeat: now };
+    })
+  };
 }
 
-function serverServices(row: HealthServerConfigRow, res: AgentCollectResponse): ServerServices {
+/** A server whose agent couldn't be reached — its row shows a red "Unreachable" state. */
+function unreachableServer(row: ServerHealthRow, cfg: MonitoredService[]): ServerServices {
+  const now = new Date().toISOString();
   return {
-    serverId: row.hostname,
-    serverName: row.hostname,
-    os: osOf(row),
-    services: res.services.map((s) => ({
-      id: s.name,
-      name: s.name,
-      state: s.state,
-      lastHeartbeat: s.lastHeartbeat
-    }))
+    ...serverInfoOf(row),
+    unreachable: true,
+    services: cfg.map((s) => ({ id: s.name, name: s.name, state: serviceStateFrom(undefined), lastHeartbeat: now }))
   };
 }
 
 function assembleServices(app: InfraApp, servers: ServerServices[]): AppServices {
+  // Order servers Windows → Linux → Share (then name), matching Infra Health.
+  const ordered = [...servers].sort(
+    (a, b) => OS_RANK[a.os] - OS_RANK[b.os] || a.serverName.localeCompare(b.serverName)
+  );
   let running = 0;
   let down = 0;
   let unaccessible = 0;
-  for (const server of servers) {
+  for (const server of ordered) {
     for (const svc of server.services) {
       const cat = serviceCategory(svc.state);
       cat === 'up' ? running++ : cat === 'unaccessible' ? unaccessible++ : down++;
@@ -363,7 +400,7 @@ function assembleServices(app: InfraApp, servers: ServerServices[]): AppServices
     label: INFRA_APP_LABELS[app],
     generatedAt: new Date().toISOString(),
     counts: { running, down, unaccessible },
-    servers
+    servers: ordered
   };
 }
 

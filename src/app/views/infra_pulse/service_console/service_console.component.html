@@ -53,7 +53,11 @@
     <!-- ============================ BY APPLICATION ============================ -->
     @for (panel of panels; track trackPanel($index, panel)) {
       <section class="isc-sec" [class.isc-sec--open]="panel.expanded()">
-        <div class="isc-sec__bar" [class.isc-sec__bar--down]="count(panel, 'down') > 0" (click)="toggle(panel)">
+        <div class="isc-sec__bar"
+          [class.isc-sec__bar--ok]="panelStatus(panel) === 'up'"
+          [class.isc-sec__bar--warn]="panelStatus(panel) === 'unaccessible'"
+          [class.isc-sec__bar--down]="panelStatus(panel) === 'down'"
+          (click)="toggle(panel)">
           <span class="isc-sec__appicon">
             <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
               <circle cx="12" cy="5" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7" />
@@ -116,9 +120,10 @@
                 @for (server of servers; track trackServer($index, server)) {
                   <div class="isc-srv" [class.isc-srv--open]="isServerExpanded(panel, server.serverId)">
                     <div class="isc-srv__bar"
-                      [class.isc-srv__bar--down]="serverDown(server) > 0"
-                      [class.isc-srv__bar--unacc]="serverDown(server) === 0 && serverUnaccessible(server) > 0"
-                      [class.isc-srv__bar--up]="serverDown(server) === 0 && serverUnaccessible(server) === 0"
+                      [class.isc-srv__bar--unreachable]="server.unreachable"
+                      [class.isc-srv__bar--down]="!server.unreachable && serverDown(server) > 0"
+                      [class.isc-srv__bar--unacc]="!server.unreachable && serverDown(server) === 0 && serverUnaccessible(server) > 0"
+                      [class.isc-srv__bar--up]="!server.unreachable && serverDown(server) === 0 && serverUnaccessible(server) === 0"
                       (click)="toggleServer(panel, server.serverId)">
                       <span class="isc-srv__os" [attr.data-os]="server.os">
                         @switch (server.os) {
@@ -144,14 +149,32 @@
                       </span>
                       <span class="isc-srv__name">{{ server.serverName }}</span>
 
-                      @if (serverDown(server) > 0) {
-                        <span class="isc-badge isc-badge--down">{{ serverDown(server) }} Stopped</span>
-                      }
-                      @if (serverUnaccessible(server) > 0) {
-                        <span class="isc-badge isc-badge--unacc">{{ serverUnaccessible(server) }} Unaccessible</span>
+                      @if (server.unreachable) {
+                        <span class="isc-badge isc-badge--down">Unreachable</span>
+                      } @else {
+                        @if (serverDown(server) > 0) {
+                          <span class="isc-badge isc-badge--down">{{ serverDown(server) }} Stopped</span>
+                        }
+                        @if (serverUnaccessible(server) > 0) {
+                          <span class="isc-badge isc-badge--unacc">{{ serverUnaccessible(server) }} Unaccessible</span>
+                        }
                       }
 
                       <span class="isc-sec__spacer"></span>
+
+                      <button
+                        type="button"
+                        class="isc-srv__info"
+                        title="Server details"
+                        aria-label="Server details"
+                        (click)="openServerInfo(panel.label, server); $event.stopPropagation()"
+                      >
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" />
+                          <circle cx="12" cy="8" r="1.15" fill="currentColor" />
+                          <path d="M12 11v6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+                        </svg>
+                      </button>
 
                       <button
                         type="button"
@@ -177,6 +200,20 @@
 
                     @if (isServerExpanded(panel, server.serverId)) {
                       <div class="isc-srv__body">
+                        @if (server.unreachable) {
+                          <div class="isc-unreachable">
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                              <path d="M12 3 1 21h22L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+                              <path d="M12 10v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+                              <circle cx="12" cy="17" r="1.1" fill="currentColor" />
+                            </svg>
+                            <span>
+                              Server not responding accurately — service status unavailable.
+                              Please reach out to OLS Team on
+                              <a class="isc-unreachable__mail" [href]="'mailto:' + supportEmail">{{ supportEmail }}</a>.
+                            </span>
+                          </div>
+                        } @else {
                         <div class="isc-table" role="table">
                           <div class="isc-table__head isc-table__head--srv" role="row">
                             <span role="columnheader">Service</span>
@@ -211,6 +248,7 @@
                             </div>
                           }
                         </div>
+                        }
                       </div>
                     }
                   </div>
@@ -268,12 +306,12 @@
                     </span>
                     <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
                       <button type="button" class="isc-btn isc-btn--start"
-                        [disabled]="isUp(item.service) || isPending(item.service)" (click)="start(item.app, item.server, item.service)">
+                        [disabled]="isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="start(item.app, item.server, item.service)">
                         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
                         Start
                       </button>
                       <button type="button" class="isc-btn isc-btn--stop"
-                        [disabled]="!isUp(item.service) || isPending(item.service)" (click)="stop(item.app, item.server, item.service)">
+                        [disabled]="!isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="stop(item.app, item.server, item.service)">
                         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
                         Stop
                       </button>
@@ -286,5 +324,54 @@
         }
       </section>
     }
+  }
+
+  @if (infoServer(); as info) {
+    <div class="isc-info-backdrop" (click)="closeServerInfo()"></div>
+    <div class="isc-info" role="dialog" aria-modal="true" aria-labelledby="iscInfoTitle">
+      <header class="isc-info__head">
+        <h5 id="iscInfoTitle" class="isc-info__title">{{ osLabel(info.server) }} / {{ info.server.serverName }}</h5>
+        <button type="button" class="isc-info__close" aria-label="Close" (click)="closeServerInfo()">×</button>
+      </header>
+
+      @if (info.server.unreachable) {
+        <span class="isc-info__badge">Unreachable</span>
+      }
+
+      @if (info.server.note) {
+        <p class="isc-info__note">{{ info.server.note }}</p>
+      }
+
+      <dl class="isc-info__grid">
+        <div><dt>Application</dt><dd>{{ info.appLabel }}</dd></div>
+        <div><dt>Platform</dt><dd>{{ osLabel(info.server) }}</dd></div>
+        <div class="isc-info__wide"><dt>Host</dt><dd>{{ info.server.host || '—' }}</dd></div>
+        <div><dt>Environment</dt><dd>{{ info.server.environment || '—' }}</dd></div>
+        <div><dt>Services</dt><dd>{{ info.server.services.length }}</dd></div>
+      </dl>
+
+      <div class="isc-info__svcs">
+        @for (svc of info.server.services; track trackService($index, svc)) {
+          <div class="isc-info__svc">
+            <span class="isc-info__svc-name" [title]="svc.name">{{ svc.name }}</span>
+            <span class="isc-chip" [class]="'isc-chip--' + category(svc.state)"><span class="isc-chip__dot"></span>{{ stateText(svc.state) }}</span>
+          </div>
+        }
+      </div>
+    </div>
+  }
+
+  @if (toast(); as t) {
+    <div class="isc-toast" [class.isc-toast--ok]="t.ok" [class.isc-toast--err]="!t.ok" role="status">
+      <span class="isc-toast__icon" aria-hidden="true">
+        @if (t.ok) {
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="m5 13 4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        } @else {
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" /></svg>
+        }
+      </span>
+      <span class="isc-toast__text">{{ t.text }}</span>
+      <button type="button" class="isc-toast__close" (click)="dismissToast()" aria-label="Dismiss">×</button>
+    </div>
   }
 </section>

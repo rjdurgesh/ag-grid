@@ -48,6 +48,13 @@ real API (visible in DevTools → Network) while everything else stays on the mo
   sub-path, set `<base href="/subpath/">` and provide `APP_BASE_HREF` accordingly.
 - Route table: [`src/app/app.routes.ts`](src/app/app.routes.ts). Nav items:
   [`src/app/layout/default-layout/_nav.ts`](src/app/layout/default-layout/_nav.ts).
+- **API docs (Swagger):** FastAPI serves interactive Swagger UI at `{apiBaseUrl}/docs`
+  (ReDoc at `/redoc`, raw schema at `/openapi.json`) — it lists the real backend routes
+  and lets you exercise each GET/POST with "Try it out". A convenience route
+  **`/swagger/docs`** ([`src/app/swagger_docs/`](src/app/swagger_docs)) redirects the current
+  tab straight to it; the URL is derived from `environment.apiBaseUrl`, so it follows the
+  configured backend. (Endpoints still answered by the Angular mock don't appear in Swagger until
+  they're implemented as real FastAPI routes.)
 
 ---
 
@@ -331,12 +338,12 @@ browser never sees the per-server agent URLs):
 | `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ reachable, cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. **Always HTTP 200**: a dead/500/timed-out agent returns `{ reachable: false }` (never an error status), so one bad server = one red card, not a whole-panel failure. |
 | `POST /api/infra_health/share` | `{ host_address, app_name }` | `ShareSpaceResponse` `{ used, total, unit, reachable }` — computed directly (no agent). `reachable: false` when the path can't be read → the card shows a red "Share path unreachable" state instead of a misleading `0.00/0.00 GB`. |
 
-**Service Console** (unchanged; migrates to the new contract later):
+**Service Console** (new contract — reuses the `POST /api/infra_health` catalogue for the
+server list, then one agent proxy for status + actions):
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/infra/config?env=<DEV\|STG\|PROD>` | – | `HealthServerConfigRow[]` |
-| `POST /api/infra/agent/collect` | `{ hostname, host_platform, host_address, agent_listen_port, monitor_config }` | `AgentCollectResponse` |
-| `POST /api/infra/agent/action` | `{ hostname, host_address, agent_listen_port, service, script, action }` | `AgentActionResponse` |
+| `POST /api/service_console/service-manage` (bulk status) | `{ host_name, agent_listen_port, host_platform, services: [names] }` | `{ HOST_NAME, <name>: { service, status }, …, reachable }`. Backend forms `http://{host}:{port}/service-manage` and calls it — **URL never reaches the browser**. `reachable: false` → the server shows a red "Unreachable" state. |
+| `POST /api/service_console/service-manage` (action) | `{ host_name, agent_listen_port, host_platform, service, action }` (`action` = start\|stop\|status; `service` = script path, or the name for a script-less Windows service) | `{ action, message, service, success }`. The UI shows the message as a toast, then re-fetches status. |
 
 ### 4a. Concrete JSON — what each endpoint expects & returns
 
@@ -555,10 +562,29 @@ reading in try/except → `{ reachable: false }`; the ready-to-use **production 
 `pip install httpx`. Wired live via `liveApiPrefixes: ['…','/api/infra_health']`. Units: RAM is **bytes** (→ GB),
 disk values are **"NN.NN GB" strings** (parsed), and the bars use the agent-supplied `percent`.
 
-**Service Console** (unchanged, still mock): `GET /api/infra/config` (one call) + one
-`POST /api/infra/agent/collect` per server (service states) + `POST /api/infra/agent/action`
-to start/stop. It'll move to the `/api/infra_health` style once its agent (service-state)
-contract is defined.
+**Service Console** (new contract — `backend/service_console_api.py`): reuses the **same
+`POST /api/infra_health` catalogue** (one shared, cached fetch), filtered to `SERVER` rows
+that are `IS_ACTIVE = 'Y'` **and** have services. Then per server:
+1. **Bulk status** → `POST /api/service_console/service-manage` `{host_name, agent_listen_port,
+   host_platform, services:[names]}` → status per service. Resilient like Infra Health: a
+   dead/slow agent (or timeout) → that server renders red **"Unreachable"**, others are fine.
+2. **Start/Stop** (behind a confirm dialog) → same endpoint with `{service, action}` → the
+   agent runs it and returns `{success, message}`; the UI shows a toast, then **re-fetches**
+   the server's status so the badges settle. `service` is the script path, or the service
+   **name** when there's no script (e.g. Windows services the agent manages by name).
+
+The backend forms the dynamic `…/service-manage` agent URL server-side; the browser only sees
+`/api/service_console/service-manage`. Single endpoint, two payloads (branches on `action`);
+dummy today with a commented `_service_agent_over_http` for going live (same switch pattern as
+Infra Health). Wired via `liveApiPrefixes: ['…','/api/service_console']`.
+
+Servers are ordered **Windows → Linux → Share** in both By-Application and By-Status (matching
+Infra Health). Each server bar has an **ⓘ info** button (host, environment, platform, service
+count, and the config **comments**). Both the **app panel** (OLS GROUP…) and each **server
+sub-panel** carry an Infra-Health-style coloured left rail: **green** when all services run,
+**amber** when a service is unaccessible/unreachable, **red** when any is stopped. **Partial status is per-service**: a service missing from
+the agent's status response renders **"Unknown"** on its own row — the other services and the
+server are unaffected; only a truly unreachable *agent* turns the whole server red.
 
 ### `HealthServerConfigRow` (matches your table columns 1:1)
 ```

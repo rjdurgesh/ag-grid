@@ -1,26 +1,20 @@
 import { HttpErrorResponse, HttpInterceptorFn, HttpResponse } from '@angular/common/http';
 import { delay, Observable, of, throwError } from 'rxjs';
 
-import { ApiEnv, ConfigScope } from './api-endpoints';
+import { ConfigScope } from './api-endpoints';
 import { environment } from '../../environments/environment';
 import { LoginResponse } from './models';
 import {
-  AgentActionPayload,
-  AgentCollectPayload,
   MOCK_ACTIVITY,
   MOCK_DASHBOARD_STATS,
   MOCK_LOG_SERVERS,
   MOCK_MEMORY_TREND,
-  mockAgentAction,
-  mockAgentCollect,
   mockColumnRetrieve,
   mockConfigTables,
   mockDirEntries,
   mockFileContent,
   mockFileProperties,
-  mockInfraConfig,
   mockMemory,
-  mockShareSpace,
   mockTableData,
   isLogPathAllowed
 } from './mock-data';
@@ -39,7 +33,6 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
 
   const url = new URL(req.url);
   const path = url.pathname;
-  const q = url.searchParams;
 
   // Config-driven passthrough: while mocking, requests whose path starts with a
   // `liveApiPrefixes` entry go to the REAL backend (wire endpoints one prefix at
@@ -225,31 +218,8 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond({ success: true, deleted: body.rowids?.length ?? 0 });
   }
 
-  // --- Infrastructure Pulse -------------------------------------------------
-  // Config table (health_Server_Details) for the running environment.
-  if (path === '/api/infra/config') {
-    return respond(mockInfraConfig((q.get('env') as ApiEnv) ?? 'DEV'));
-  }
-  // Agent collect — live disk / infra / service readings for one server.
-  if (path === '/api/infra/agent/collect' && req.method === 'POST') {
-    const body = (req.body ?? {}) as Partial<AgentCollectPayload>;
-    if (!body.hostname || !body.host_platform) {
-      return respondError(400, 'hostname and host_platform are required');
-    }
-    return respond(mockAgentCollect(body as AgentCollectPayload));
-  }
-  // Agent action — start / stop a service.
-  if (path === '/api/infra/agent/action' && req.method === 'POST') {
-    const body = (req.body ?? {}) as Partial<AgentActionPayload>;
-    if (!body.hostname || !body.service || !body.action) {
-      return respondError(400, 'hostname, service and action are required');
-    }
-    return respond(mockAgentAction(body as AgentActionPayload));
-  }
-  // Share drive free space (no agent).
-  if (path === '/api/infra/share') {
-    return respond(mockShareSpace(q.get('name') ?? ''));
-  }
+  // Infrastructure Pulse (Infra Health + Service Console) is served by the real
+  // FastAPI backend — see `liveApiPrefixes` (/api/infra_health, /api/service_console).
 
   // Unknown mock route.
   return respondError(404, `No mock handler for ${req.method} ${path}`);

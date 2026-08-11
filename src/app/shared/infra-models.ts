@@ -1,111 +1,21 @@
 /** Data-model contracts for Infrastructure Pulse (health + services). */
 
-import { ApiEnv, InfraApp } from './api-endpoints';
+import { InfraApp } from './api-endpoints';
 
 // ---------------------------------------------------------------------------
-// Configuration — health_Server_Details table
+// Configuration
 // ---------------------------------------------------------------------------
 
 /**
- * One row of the `health_Server_Details` table — the monitoring configuration
- * for a single server or share within an application/environment. This is the
- * exact shape the config API returns (one call per page load).
+ * A monitored service (name + optional start/stop script) parsed from a config row's
+ * `MONITORING_CONFIG.services` (see {@link ServerHealthRow}). Services arrive as an array
+ * of single-key objects (`[{"apache":"/x.sh"}]`, or `{"WinSvc": null}` for a script-less
+ * Windows service).
  */
-export interface HealthServerConfigRow {
-  /** Env as the backend labels it (DEV/STG/PROD — the UI's LIVE is PROD here). */
-  app_env: ApiEnv;
-  /** 'SERVER' (agent-monitored) or 'share_drive' (computed directly). */
-  resource_category: 'SERVER' | 'share_drive';
-  /** 'LINUX' | 'WINDOW' | 'share_drive'. */
-  host_platform: 'LINUX' | 'WINDOW' | 'share_drive';
-  hostname: string;
-  /** IP / FQDN for a server, or UNC path for a share. */
-  host_address: string;
-  agent_listen_port: number;
-  app_name: InfraApp;
-  /** CLOB: JSON string like {"disk":["c","d"],"infra":["ram","cpu"],"services":[{"apache":"/x.sh"}]}. Null for shares. */
-  monitor_config: string | null;
-  is_active: 'Y' | 'N';
-  comments: string;
-}
-
-/** A monitored service parsed out of {@link HealthServerConfigRow.monitor_config}. */
 export interface MonitoredService {
   name: string;
-  /** Action script the agent runs to start/stop it (may be null). */
+  /** Action script the agent runs to start/stop it (null → agent manages by name, e.g. Windows). */
   script: string | null;
-}
-
-/** Parsed form of the `monitor_config` CLOB. */
-export interface MonitorConfig {
-  /** Disk / mount names to monitor, e.g. ["c","d"] or ["apps","data"]. */
-  disk: string[];
-  /** Infra metrics to monitor, e.g. ["ram","cpu"]. */
-  infra: string[];
-  services: MonitoredService[];
-}
-
-/**
- * Parse the `monitor_config` CLOB. Services arrive as an array of single-key
- * objects (`[{"apache":"/x.sh"}]`); they are flattened to {name, script}.
- * Malformed / empty config yields empty lists (never throws).
- */
-export function parseMonitorConfig(clob: string | null | undefined): MonitorConfig {
-  if (!clob) {
-    return { disk: [], infra: [], services: [] };
-  }
-  try {
-    const raw = JSON.parse(clob) as {
-      disk?: string[];
-      infra?: string[];
-      services?: Record<string, string | null>[];
-    };
-    const services = (raw.services ?? []).flatMap((obj) =>
-      Object.entries(obj).map(([name, script]) => ({ name, script: script ?? null }))
-    );
-    return { disk: raw.disk ?? [], infra: raw.infra ?? [], services };
-  } catch {
-    return { disk: [], infra: [], services: [] };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Agent responses (what an on-server agent returns for a collect call)
-// ---------------------------------------------------------------------------
-
-/** One disk/mount reading from the agent. */
-export interface AgentDiskReading {
-  name: string;
-  used: number;
-  total: number;
-  unit: string;
-}
-
-/** One service reading from the agent. */
-export interface AgentServiceReading {
-  name: string;
-  state: ServiceState;
-  lastHeartbeat: string;
-}
-
-/** Full reading returned by a server's agent for a collect call. */
-export interface AgentCollectResponse {
-  hostname: string;
-  /** False when the agent could not be reached. */
-  reachable: boolean;
-  /** CPU utilisation percent (present when 'cpu' is in the config). */
-  cpu?: number;
-  /** RAM usage in GB (present when 'ram' is in the config). */
-  ram?: { used: number; total: number };
-  disks: AgentDiskReading[];
-  services: AgentServiceReading[];
-}
-
-/** Result of an agent start/stop action. */
-export interface AgentActionResponse {
-  service: string;
-  state: ServiceState;
-  lastHeartbeat: string;
 }
 
 /** Free space of a share drive (computed directly, no agent). */
@@ -306,6 +216,50 @@ export function isServiceUp(state: ServiceState): boolean {
   return state === 'Running';
 }
 
+/** Map an agent-reported status string (e.g. "Running"/"Stopped") to a {@link ServiceState}. */
+export function serviceStateFrom(status: string | null | undefined): ServiceState {
+  switch ((status ?? '').trim().toLowerCase()) {
+    case 'running':
+      return 'Running';
+    case 'stopped':
+      return 'Stopped';
+    case 'starting':
+      return 'Starting';
+    case 'stopping':
+      return 'Stopping';
+    case 'faulted':
+    case 'failed':
+      return 'Faulted';
+    default:
+      return 'Unknown';
+  }
+}
+
+// --- Service Console agent responses (POST /api/service_console/service-manage) ---
+
+/** One service's status in the bulk-status response. */
+export interface ServiceStatusEntry {
+  service: string;
+  status: string;
+}
+
+/**
+ * Bulk status response: `HOST_NAME` + `reachable` plus one entry per service name
+ * (`{ service, status }`). Keyed dynamically by service name, so look entries up by the
+ * names you asked for. `reachable: false` → the agent could not be reached.
+ */
+export type ServiceStatusResponse = Record<string, ServiceStatusEntry | string | boolean | null | undefined>;
+
+/** Result of a start/stop/status action on one service. */
+export interface ServiceActionResponse {
+  action?: string;
+  service?: string;
+  message?: string;
+  success?: boolean;
+  /** False when the agent could not be reached. */
+  reachable?: boolean;
+}
+
 /** A single configured service on a server. */
 export interface ServiceInfo {
   id: string;
@@ -323,6 +277,14 @@ export interface ServerServices {
   serverName: string;
   os: TargetOs;
   services: ServiceInfo[];
+  /** True when the server's agent couldn't be reached — the row shows a red "Unreachable" state. */
+  unreachable?: boolean;
+  /** IP / FQDN — shown in the server info dialog. */
+  host?: string;
+  /** Deployment environment (APP_ENV) — shown in the info dialog. */
+  environment?: string;
+  /** Free-text comments from the config row — shown in the info dialog. */
+  note?: string;
 }
 
 /** Service payload for one application (returned by API.infra.services). */
@@ -334,11 +296,11 @@ export interface AppServices {
   servers: ServerServices[];
 }
 
-/** Result of a start/stop action. */
+/** Outcome of a start/stop action (the new state is fetched separately afterwards). */
 export interface ServiceActionResult {
   success: boolean;
+  /** Message from the agent, shown as a toast. */
+  message: string;
   serverId: string;
   serviceId: string;
-  state: ServiceState;
-  lastHeartbeat: string;
 }

@@ -1,0 +1,26 @@
+<div class="swg">
+  <div class="swg__card">
+    <div class="swg__icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="30" height="30">
+        <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H15l5 5v9.5A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5v-13Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        <path d="M14 4v5h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        <path d="M8 13h6M8 16h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+    </div>
+
+    <h1 class="swg__title">API Docs — Swagger UI</h1>
+    <p class="swg__msg">Redirecting to the interactive API documentation…</p>
+
+    <a class="swg__link" [href]="docsUrl">
+      Open Swagger UI
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+        <path d="M14 5h5v5M19 5l-8 8M18 14v4a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 18V7.5A1.5 1.5 0 0 1 6.5 6H10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </a>
+
+    <p class="swg__hint">If the page didn’t redirect automatically, use the button above.</p>
+    <p class="swg__url">{{ docsUrl }}</p>
+
+    <a class="swg__home" routerLink="/home">← Back to dashboard</a>
+  </div>
+</div>
