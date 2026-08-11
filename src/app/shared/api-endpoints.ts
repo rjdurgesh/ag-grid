@@ -163,23 +163,17 @@ export const API = {
     /** Per-share free space (no agent). POST `{ host_address, app_name }` → `{ used, total, unit }`. */
     healthShare: `${API_BASE_URL}/api/infra_health/share`,
 
-    // --- Service Console (unchanged; migrates to the new contract later) -----
+    // --- Service Console (new contract; shares the /api/infra_health catalogue) ----
     /**
-     * Configuration rows from `health_Server_Details` for an environment — one
-     * call per page load. Returns which servers to monitor and each server's
-     * `monitor_config` (disk / infra / services).
+     * Manage the services on ONE server via its agent — a single endpoint whose payload
+     * decides the operation (the backend forms `http://{host}:{port}/service-manage` and
+     * calls it, so the agent URL never reaches the browser):
+     *  - **bulk status**: POST `{ host_name, agent_listen_port, host_platform, services: [names] }`
+     *    → `{ HOST_NAME, <name>: { service, status }, ... }`.
+     *  - **action**: POST `{ host_name, agent_listen_port, host_platform, service, action }`
+     *    (`action` = start | stop | status) → `{ action, message, service, success }`.
+     * Server list + each server's services come from the shared `healthConfig` catalogue.
      */
-    config: (env: AppEnv) => `${API_BASE_URL}/api/infra/config?env=${encodeURIComponent(apiEnv(env))}`,
-    /**
-     * Collect live readings from a server's agent. POST
-     * { hostname, host_platform, host_address, agent_listen_port, monitor_config }.
-     * In production this call targets the agent at `host_address:agent_listen_port`.
-     */
-    agentCollect: `${API_BASE_URL}/api/infra/agent/collect`,
-    /**
-     * Start/stop a service through the agent. POST
-     * { hostname, host_address, agent_listen_port, service, script, action }.
-     */
-    agentAction: `${API_BASE_URL}/api/infra/agent/action`
+    serviceManage: `${API_BASE_URL}/api/service_console/service-manage`
   }
 } as const;

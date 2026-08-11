@@ -3,6 +3,7 @@ import { Component, OnDestroy, OnInit, WritableSignal, computed, inject, signal 
 import { CanWriteDirective } from '../../../auth/can-write.directive';
 import { ConfirmService } from '../../../components/confirm/confirm.service';
 import { LoaderComponent } from '../../../components/loader/loader.component';
+import { environment } from '../../../../environments/environment';
 import { INFRA_APPS, INFRA_APP_LABELS, InfraApp } from '../../../shared/api-endpoints';
 import { formatDateTime, timeAgo } from '../../../shared/date-utils';
 import {
@@ -11,6 +12,7 @@ import {
   ServiceCategory,
   ServiceInfo,
   ServiceState,
+  TargetOs,
   serviceCategory
 } from '../../../shared/infra-models';
 import { InfraDataService } from '../infra-data.service';
@@ -45,6 +47,9 @@ interface AggService {
 }
 
 const REFRESH_INTERVALS = [5, 10, 15, 30] as const;
+
+/** Server order: Windows → Linux → Share, matching Infra Health (By App + By Status). */
+const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
 
 /**
  * Service Console. Two groupings:
@@ -93,6 +98,16 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   private readonly pendingServices = signal(new Set<string>());
   private readonly refreshingServers = signal(new Set<string>());
 
+  /** Support contact shown on an unreachable server. */
+  readonly supportEmail = environment.supportEmail;
+
+  /** Transient result banner after a start/stop. */
+  readonly toast = signal<{ ok: boolean; text: string } | null>(null);
+  private toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Server shown in the info dialog (null = closed). */
+  readonly infoServer = signal<{ appLabel: string; server: ServerServices } | null>(null);
+
   readonly anyExpanded = computed(() => this.panels.some((p) => p.expanded()));
 
   ngOnInit(): void {
@@ -102,6 +117,9 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.clearTimer();
+    if (this.toastTimer) {
+      clearTimeout(this.toastTimer);
+    }
   }
 
   // --- Toolbar --------------------------------------------------------------
@@ -172,6 +190,18 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
   count(panel: ServicePanel, key: 'running' | 'down' | 'unaccessible'): number {
     return panel.data()?.counts[key] ?? 0;
+  }
+
+  /**
+   * Aggregate colour for a panel's left rail (matches Infra Health):
+   * any stopped → 'down' (red), else any unaccessible → 'unacc' (amber), else 'up' (green).
+   */
+  panelStatus(panel: ServicePanel): ServiceCategory {
+    const c = panel.data()?.counts;
+    if (!c) {
+      return 'up';
+    }
+    return c.down > 0 ? 'down' : c.unaccessible > 0 ? 'unaccessible' : 'up';
   }
 
   serverCount(panel: ServicePanel): number {
@@ -264,6 +294,7 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
     service: ServiceInfo,
     action: 'start' | 'stop'
   ): void {
+    // Optimistic transitional state while the agent works.
     this.patchService(app, server.serverId, service.id, {
       state: action === 'start' ? 'Starting' : 'Stopping'
     });
@@ -271,14 +302,20 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
     this.infra.serviceAction(app, server.serverId, service.id, action).subscribe({
       next: (res) => {
-        this.patchService(app, server.serverId, service.id, {
-          state: res.state,
-          lastHeartbeat: res.lastHeartbeat
+        const verb = action === 'start' ? 'Start' : 'Stop';
+        this.notify(res.success, res.message || `${verb} ${res.success ? 'succeeded' : 'failed'} for "${service.name}".`);
+        // The action reply only says success/message — re-fetch this server's live status
+        // so the badges reflect the real, settled state.
+        this.infra.serverServices(app, server.serverId).subscribe({
+          next: (fresh) => {
+            this.patchServer(app, fresh);
+            this.markService(service.id, false);
+          },
+          error: () => this.markService(service.id, false)
         });
-        this.recount(app);
-        this.markService(service.id, false);
       },
       error: () => {
+        this.notify(false, `Could not ${action} "${service.name}" on ${server.serverName}.`);
         this.patchService(app, server.serverId, service.id, {
           state: action === 'start' ? 'Stopped' : 'Running'
         });
@@ -286,6 +323,31 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
         this.markService(service.id, false);
       }
     });
+  }
+
+  /** Show a transient success/failure banner (auto-dismisses). */
+  private notify(ok: boolean, text: string): void {
+    this.toast.set({ ok, text });
+    if (this.toastTimer) {
+      clearTimeout(this.toastTimer);
+    }
+    this.toastTimer = setTimeout(() => this.toast.set(null), 4500);
+  }
+
+  dismissToast(): void {
+    this.toast.set(null);
+    if (this.toastTimer) {
+      clearTimeout(this.toastTimer);
+    }
+  }
+
+  // --- Server info dialog ---------------------------------------------------
+  openServerInfo(appLabel: string, server: ServerServices): void {
+    this.infoServer.set({ appLabel, server });
+  }
+
+  closeServerInfo(): void {
+    this.infoServer.set(null);
   }
 
   // --- By Status ------------------------------------------------------------
@@ -312,6 +374,13 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
         }
       }
     }
+    // Group by server OS (Windows → Linux → Share), then server, then service name.
+    out.sort(
+      (a, b) =>
+        OS_RANK[a.server.os] - OS_RANK[b.server.os] ||
+        a.server.serverName.localeCompare(b.server.serverName) ||
+        a.service.name.localeCompare(b.service.name)
+    );
     return out;
   }
 

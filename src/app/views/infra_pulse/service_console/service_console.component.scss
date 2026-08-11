@@ -2,6 +2,9 @@
   --isc-up: #22c55e;
   --isc-down: #ef4444;
   --isc-unacc: #94a3b8;
+  /* Amber "warning" for panel/server rails (matches Infra Health) when a resource is
+     unaccessible/unreachable but nothing is outright stopped. */
+  --isc-warn: #f59e0b;
   display: block;
 }
 
@@ -181,6 +184,14 @@
     background: color-mix(in srgb, var(--cui-primary) 5%, transparent);
   }
 
+  &--ok {
+    border-left-color: var(--isc-up);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-up) 8%, transparent), transparent 34%);
+  }
+  &--warn {
+    border-left-color: var(--isc-warn);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-warn) 12%, transparent), transparent 34%);
+  }
   &--down {
     border-left-color: var(--isc-down);
     background: linear-gradient(90deg, color-mix(in srgb, var(--isc-down) 9%, transparent), transparent 34%);
@@ -351,20 +362,29 @@
   padding: 10px 13px;
   cursor: pointer;
   user-select: none;
+  border-left: 4px solid var(--isc-up);
   transition: background 0.14s;
 
   &:hover {
     background: color-mix(in srgb, var(--cui-primary) 4%, transparent);
   }
 
+  /* Left rail (green / amber / red) mirrors the app panel + Infra Health. */
   &--up {
-    box-shadow: inset 3px 0 0 var(--isc-up);
+    border-left-color: var(--isc-up);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-up) 7%, transparent), transparent 30%);
   }
   &--unacc {
-    box-shadow: inset 3px 0 0 var(--isc-unacc);
+    border-left-color: var(--isc-warn);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-warn) 11%, transparent), transparent 30%);
   }
   &--down {
-    box-shadow: inset 3px 0 0 var(--isc-down);
+    border-left-color: var(--isc-down);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-down) 10%, transparent), transparent 30%);
+  }
+  &--unreachable {
+    border-left-color: var(--isc-down);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--isc-down) 12%, transparent), transparent 34%);
   }
 }
 
@@ -414,6 +434,7 @@
   }
 }
 
+.isc-srv__info,
 .isc-srv__refresh {
   display: inline-flex;
   align-items: center;
@@ -431,9 +452,10 @@
     color: var(--cui-primary);
     border-color: var(--cui-primary);
   }
-  &.is-spinning svg {
-    animation: isc-spin 0.9s linear infinite;
-  }
+}
+
+.isc-srv__refresh.is-spinning svg {
+  animation: isc-spin 0.9s linear infinite;
 }
 
 .isc-srv__chev {
@@ -698,4 +720,212 @@
   .isc-chip--unaccessible { color: #c3ccdb; }
   .isc-btn--start { color: #34d399; }
   .isc-btn--stop { color: #f87171; }
+}
+
+/* ---- Unreachable server (agent down) ------------------------------------- */
+.isc-unreachable {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--isc-down);
+  background: color-mix(in srgb, var(--isc-down) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--isc-down) 32%, transparent);
+
+  svg {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  &__mail {
+    color: inherit;
+    font-weight: 700;
+    text-decoration: underline;
+  }
+}
+
+/* ---- Action result toast ------------------------------------------------- */
+.isc-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1090;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(90vw, 420px);
+  padding: 11px 12px 11px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #fff;
+  box-shadow: 0 14px 34px rgba(6, 10, 20, 0.35);
+  animation: isc-toast-in 0.2s ease-out;
+
+  &--ok {
+    background: linear-gradient(135deg, #16a34a, #22c55e);
+  }
+  &--err {
+    background: linear-gradient(135deg, #b91c1c, #ef4444);
+  }
+
+  &__icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+  &__text {
+    flex: 1 1 auto;
+    line-height: 1.35;
+  }
+  &__close {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover {
+      color: #fff;
+    }
+  }
+}
+
+@keyframes isc-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .isc-toast {
+    animation: none;
+  }
+}
+
+/* ---- Server info dialog -------------------------------------------------- */
+.isc-info-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1080;
+  background: rgba(6, 10, 20, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.isc-info {
+  position: fixed;
+  z-index: 1081;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(94vw, 460px);
+  max-height: 86vh;
+  overflow: auto;
+  padding: 18px 20px 20px;
+  border-radius: 14px;
+  background: var(--cui-body-bg);
+  border: 1px solid var(--cui-border-color);
+  box-shadow: 0 30px 70px rgba(6, 10, 20, 0.4);
+  color: var(--cui-body-color);
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  &__title {
+    margin: 0;
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  &__close {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: var(--cui-secondary-color);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--cui-body-color);
+    }
+  }
+
+  &__badge {
+    display: inline-block;
+    margin-bottom: 10px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--isc-down);
+  }
+
+  &__note {
+    margin: 0 0 14px;
+    font-size: 13px;
+    color: var(--cui-secondary-color);
+  }
+
+  &__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+    margin: 0 0 14px;
+
+    dt {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--cui-secondary-color);
+    }
+    dd {
+      margin: 2px 0 0;
+      font-size: 13px;
+      word-break: break-word;
+    }
+  }
+
+  &__wide {
+    grid-column: 1 / -1;
+  }
+
+  &__svcs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px solid var(--cui-border-color);
+    padding-top: 12px;
+  }
+
+  &__svc {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  &__svc-name {
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 12.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

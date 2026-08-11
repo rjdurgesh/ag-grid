@@ -51,6 +51,15 @@ export const routes: Routes = [
     }
   },
   {
+    // Utility: opens the backend's Swagger UI ({apiBaseUrl}/docs) in a new tab.
+    // Top-level (no shell / no auth guard) so the URL always resolves.
+    path: 'swagger/docs',
+    loadComponent: () => import('./swagger_docs/swagger-docs.component').then((m) => m.SwaggerDocsComponent),
+    data: {
+      title: 'API Docs'
+    }
+  },
+  {
     // OpenID Connect redirect landing (used only when IS_SSO_ENABLED).
     path: 'auth/callback',
     loadComponent: () => import('./auth/sso-callback.component').then((m) => m.SsoCallbackComponent),
