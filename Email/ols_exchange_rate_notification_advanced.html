@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>OLS - Daily Exchange Rate Notification</title>
+
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <![endif]-->
+
+  <style>
+    :root {
+      color-scheme: light dark;
+      supported-color-schemes: light dark;
+    }
+
+    body,
+    table,
+    td,
+    th,
+    p,
+    a {
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }
+
+    table,
+    td,
+    th {
+      mso-table-lspace: 0pt;
+      mso-table-rspace: 0pt;
+    }
+
+    table {
+      border-collapse: collapse;
+    }
+
+    body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      background-color: #eef2f6;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .preheader {
+      display: none !important;
+      visibility: hidden;
+      opacity: 0;
+      color: transparent;
+      height: 0;
+      width: 0;
+      max-height: 0;
+      max-width: 0;
+      overflow: hidden;
+      mso-hide: all;
+      font-size: 1px;
+      line-height: 1px;
+    }
+
+    .container {
+      width: 700px;
+      max-width: 700px;
+    }
+
+    .card {
+      background-color: #ffffff;
+      border: 1px solid #d8e1ea;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(18, 53, 91, 0.12);
+    }
+
+    .brand-bg {
+      background-color: #12355b;
+    }
+
+    .body-text {
+      color: #263238;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 15px;
+      line-height: 24px;
+      margin: 0;
+    }
+
+    .muted-text {
+      color: #607d8b;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      line-height: 18px;
+      margin: 0;
+    }
+
+    .section-label {
+      color: #12355b;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.7px;
+      line-height: 16px;
+      text-transform: uppercase;
+    }
+
+    .summary-label {
+      color: #78909c;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.7px;
+      line-height: 15px;
+      text-transform: uppercase;
+    }
+
+    .summary-value {
+      color: #12355b;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 20px;
+    }
+
+    .rate-table th {
+      background-color: #12355b;
+      border: 1px solid #12355b;
+      color: #ffffff;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 17px;
+      padding: 13px 12px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .rate-table td {
+      border: 1px solid #dce4eb;
+      color: #455a64;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      line-height: 19px;
+      padding: 13px 12px;
+    }
+
+    .rate-table .currency {
+      color: #12355b;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .rate-table .number {
+      color: #263238;
+      font-family: Consolas, "Courier New", monospace;
+      font-weight: 700;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    @media screen and (max-width: 720px) {
+      .container {
+        width: 100% !important;
+        max-width: 100% !important;
+      }
+
+      .mobile-padding {
+        padding-left: 18px !important;
+        padding-right: 18px !important;
+      }
+
+      .mobile-stack {
+        display: block !important;
+        width: 100% !important;
+      }
+
+      .mobile-text-left {
+        text-align: left !important;
+      }
+
+      .mobile-top-gap {
+        padding-top: 12px !important;
+      }
+
+      .rate-table th,
+      .rate-table td {
+        font-size: 12px !important;
+        line-height: 18px !important;
+        padding: 10px 8px !important;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body,
+      .email-bg {
+        background-color: #111827 !important;
+      }
+
+      .card {
+        background-color: #172033 !important;
+        border-color: #344054 !important;
+        box-shadow: none !important;
+      }
+
+      .body-text,
+      .rate-table td {
+        color: #d0d5dd !important;
+      }
+
+      .muted-text {
+        color: #98a2b3 !important;
+      }
+
+      .section-label,
+      .summary-value,
+      .rate-table .currency,
+      .rate-table .number {
+        color: #f8fafc !important;
+      }
+
+      .summary-label {
+        color: #b8c2cc !important;
+      }
+    }
+  </style>
+</head>
+
+<body style="margin:0; padding:0; background-color:#eef2f6;">
+  <div class="preheader">
+    Daily exchange rates effective 17-Jun-2026 have been revised and loaded into OLS on 20-Jun-2026.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-bg" style="width:100%; background-color:#eef2f6;">
+    <tr>
+      <td align="center" style="padding:32px 14px;">
+        <!--[if mso]>
+        <table role="presentation" width="700" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td>
+        <![endif]-->
+
+        <table role="presentation" width="700" cellpadding="0" cellspacing="0" border="0" class="container card" style="width:700px; max-width:700px; background-color:#ffffff; border:1px solid #d8e1ea; border-radius:8px; overflow:hidden;">
+          <tr>
+            <td class="brand-bg" style="background-color:#12355b;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td class="mobile-stack mobile-padding" width="58%" style="width:58%; padding:26px 30px; vertical-align:middle;">
+                    <div style="font-family:Arial, Helvetica, sans-serif; font-size:28px; line-height:32px; font-weight:700; color:#ffffff; letter-spacing:1px;">
+                      OLS
+                    </div>
+                    <div style="margin-top:5px; font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:17px; color:#c8d7e7; letter-spacing:1px; text-transform:uppercase;">
+                      One Liquidity System
+                    </div>
+                  </td>
+                  <td class="mobile-stack mobile-padding mobile-text-left mobile-top-gap" width="42%" align="right" style="width:42%; padding:26px 30px; vertical-align:middle;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="right">
+                      <tr>
+                        <td style="padding:8px 12px; border:1px solid #7897b5; background-color:#1b4775; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:14px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; white-space:nowrap;">
+                          Automated Notification
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="mobile-padding" style="padding:22px 30px 0 30px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f3faf5; border:1px solid #cce5d5;">
+                <tr>
+                  <td width="5" style="width:5px; background-color:#2e9d59; font-size:1px; line-height:1px;">&nbsp;</td>
+                  <td width="42" align="center" style="width:42px; padding:13px 0 13px 8px; vertical-align:middle;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td align="center" valign="middle" style="width:24px; height:24px; background-color:#2e9d59; border-radius:50%; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:24px; font-weight:700;">
+                          &#10003;
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                  <td style="padding:12px 15px 12px 8px; vertical-align:middle;">
+                    <div style="font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:18px; font-weight:700; color:#1b5e20;">
+                      Exchange Rate Update Completed Successfully
+                    </div>
+                    <div style="margin-top:2px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#55705d;">
+                      No action is required &mdash; the revised exchange rates have been loaded into OLS.
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="mobile-padding" style="padding:28px 30px 30px 30px;">
+              <p class="body-text" style="margin:0 0 18px 0; color:#546e7a; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:22px;">
+                Dear All,
+              </p>
+
+              <p class="body-text" style="margin:0 0 16px 0; color:#263238; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:24px;">
+                This is an automated notification from <strong style="color:#12355b;">OLS</strong>. Please do not reply to this email.
+              </p>
+
+              <p class="body-text" style="margin:0 0 24px 0; color:#263238; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:24px;">
+                The daily exchange rates effective <strong style="color:#12355b;">17-June-2026</strong> have been revised and successfully loaded into <strong style="color:#12355b;">OLS</strong> on <strong style="color:#12355b;">20-June-2026</strong>. Please find the revised exchange-rate details below for your reference.
+              </p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:25px;">
+                <tr>
+                  <td class="mobile-stack" width="32%" style="width:32%; padding-right:8px; vertical-align:top;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8fafc; border:1px solid #dce4eb;">
+                      <tr>
+                        <td style="padding:14px;">
+                          <div class="summary-label" style="color:#78909c; font-family:Arial, Helvetica, sans-serif; font-size:10px; font-weight:700; letter-spacing:0.7px; line-height:15px; text-transform:uppercase;">
+                            Fixing Date
+                          </div>
+                          <div class="summary-value" style="margin-top:5px; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:15px; font-weight:700; line-height:20px;">
+                            17-Jun-2026
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+
+                  <td class="mobile-stack mobile-top-gap" width="34%" style="width:34%; padding-left:4px; padding-right:4px; vertical-align:top;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8fafc; border:1px solid #dce4eb;">
+                      <tr>
+                        <td style="padding:14px;">
+                          <div class="summary-label" style="color:#78909c; font-family:Arial, Helvetica, sans-serif; font-size:10px; font-weight:700; letter-spacing:0.7px; line-height:15px; text-transform:uppercase;">
+                            Loaded Date
+                          </div>
+                          <div class="summary-value" style="margin-top:5px; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:15px; font-weight:700; line-height:20px;">
+                            20-Jun-2026
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+
+                  <td class="mobile-stack mobile-top-gap" width="34%" style="width:34%; padding-left:8px; vertical-align:top;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8fafc; border:1px solid #dce4eb;">
+                      <tr>
+                        <td style="padding:14px;">
+                          <div class="summary-label" style="color:#78909c; font-family:Arial, Helvetica, sans-serif; font-size:10px; font-weight:700; letter-spacing:0.7px; line-height:15px; text-transform:uppercase;">
+                            Rate Source
+                          </div>
+                          <div class="summary-value" style="margin-top:5px; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:15px; font-weight:700; line-height:20px;">
+                            DLCR = DLCRI
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:14px; background-color:#f7f9fb; border:1px solid #dce4eb;">
+                <tr>
+                  <td style="padding:11px 14px; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#546e7a;">
+                    <strong style="color:#37474f;">Exchange Rate Source:</strong>
+                    <span style="color:#12355b; font-weight:700;">DLCR = DLCRI</span>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="table" aria-label="Exchange rates DLCR equals DLCRI" width="100%" cellpadding="0" cellspacing="0" border="0" class="rate-table" style="width:100%; border-collapse:collapse; border:1px solid #d6dee5;">
+                <tr>
+                  <th scope="col" align="left" style="padding:13px 12px; background-color:#12355b; border:1px solid #12355b; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:17px; font-weight:700; text-align:left; white-space:nowrap;">
+                    Frequency
+                  </th>
+                  <th scope="col" align="left" style="padding:13px 12px; background-color:#12355b; border:1px solid #12355b; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:17px; font-weight:700; text-align:left; white-space:nowrap;">
+                    Fixing Date
+                  </th>
+                  <th scope="col" align="left" style="padding:13px 12px; background-color:#12355b; border:1px solid #12355b; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:17px; font-weight:700; text-align:left; white-space:nowrap;">
+                    Currency Code
+                  </th>
+                  <th scope="col" align="right" style="padding:13px 12px; background-color:#12355b; border:1px solid #12355b; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:17px; font-weight:700; text-align:right; white-space:nowrap;">
+                    Exchange Rate EUR
+                  </th>
+                </tr>
+
+                <tr>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px;">Daily</td>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; white-space:nowrap;">17-Jun-2026</td>
+                  <td class="currency" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; font-weight:700; white-space:nowrap;">MTL</td>
+                  <td class="number" align="right" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#263238; font-family:Consolas, 'Courier New', monospace; font-size:13px; line-height:19px; font-weight:700; text-align:right; white-space:nowrap;">.4293</td>
+                </tr>
+
+                <tr>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#f8fafc; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px;">Daily</td>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#f8fafc; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; white-space:nowrap;">17-Jun-2026</td>
+                  <td class="currency" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#f8fafc; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; font-weight:700; white-space:nowrap;">MUR</td>
+                  <td class="number" align="right" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#f8fafc; color:#263238; font-family:Consolas, 'Courier New', monospace; font-size:13px; line-height:19px; font-weight:700; text-align:right; white-space:nowrap;">57.57462</td>
+                </tr>
+
+                <tr>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px;">Daily</td>
+                  <td style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; white-space:nowrap;">17-Jun-2026</td>
+                  <td class="currency" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:13px; line-height:19px; font-weight:700; white-space:nowrap;">MVR</td>
+                  <td class="number" align="right" style="padding:13px 12px; border:1px solid #dce4eb; background-color:#ffffff; color:#263238; font-family:Consolas, 'Courier New', monospace; font-size:13px; line-height:19px; font-weight:700; text-align:right; white-space:nowrap;">17.837752</td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:28px;">
+                <tr>
+                  <td style="border-top:1px solid #e1e7ec; padding-top:20px;">
+                    <p class="body-text" style="margin:0; color:#455a64; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:21px;">
+                      Regards,
+                    </p>
+                    <p style="margin:4px 0 0 0; color:#12355b; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:21px; font-weight:700;">
+                      OLS Team
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="mobile-padding" style="padding:18px 30px; background-color:#f5f7f9; border-top:1px solid #dce4eb;">
+              <p class="muted-text" style="margin:0; color:#78909c; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:16px;">
+                This email was generated automatically by <strong>One Liquidity System (OLS)</strong>. Please do not reply to this message.
+              </p>
+              <p class="muted-text" style="margin:7px 0 0 0; color:#90a4ae; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:16px;">
+                This notification is intended for authorized OLS users and system recipients.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!--[if mso]>
+            </td>
+          </tr>
+        </table>
+        <![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
