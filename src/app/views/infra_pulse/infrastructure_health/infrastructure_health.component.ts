@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit, WritableSignal, inject, signal } from '@angular/core';
 
 import { LoaderComponent } from '../../../components/loader/loader.component';
+import { environment } from '../../../../environments/environment';
 import { INFRA_APPS, INFRA_APP_LABELS, InfraApp } from '../../../shared/api-endpoints';
 import { formatDateTime, timeAgo } from '../../../shared/date-utils';
 import { AppHealth, HealthMetric, HealthStatus, HealthTarget, TargetOs } from '../../../shared/infra-models';
@@ -63,7 +64,8 @@ export class InfrastructureHealthComponent implements OnInit, OnDestroy {
   readonly view = signal<ViewMode>('app');
 
   readonly intervals = REFRESH_INTERVALS;
-  readonly refreshEveryMin = signal(30);
+  /** Default auto-refresh cadence (minutes) — configured in environment.ts. */
+  readonly refreshEveryMin = signal(environment.infraHealthRefreshMinutes);
   private timer: ReturnType<typeof setInterval> | undefined;
 
   readonly panels: HealthPanel[] = INFRA_APPS.map((app) => ({

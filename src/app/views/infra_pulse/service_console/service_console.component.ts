@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, WritableSignal, computed, inject, signal 
 
 import { CanWriteDirective } from '../../../auth/can-write.directive';
 import { ConfirmService } from '../../../components/confirm/confirm.service';
+import { ErrorReportService } from '../../../components/error-report/error-report.service';
 import { LoaderComponent } from '../../../components/loader/loader.component';
 import { environment } from '../../../../environments/environment';
 import { INFRA_APPS, INFRA_APP_LABELS, InfraApp } from '../../../shared/api-endpoints';
@@ -69,10 +70,12 @@ const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
 export class ServiceConsoleComponent implements OnInit, OnDestroy {
   private readonly infra = inject(InfraDataService);
   private readonly confirm = inject(ConfirmService);
+  private readonly errorReport = inject(ErrorReportService);
 
   readonly view = signal<ViewMode>('app');
   readonly intervals = REFRESH_INTERVALS;
-  readonly refreshEveryMin = signal(30);
+  /** Default auto-refresh cadence (minutes) — configured in environment.ts. */
+  readonly refreshEveryMin = signal(environment.serviceConsoleRefreshMinutes);
   private timer: ReturnType<typeof setInterval> | undefined;
 
   /** Server-hostname search. */
@@ -307,13 +310,12 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
     this.infra.serviceAction(app, server.serverId, service.id, action).subscribe({
       next: (res) => {
-        const verb = action === 'start' ? 'Starting' : 'Stopping';
         if (res.success) {
-          // Show the SERVICE NAME, never the underlying script path.
-          this.notify(true, `${verb} ${service.name} service…`);
+          // Success is fine as a transient toast; show the SERVICE NAME, never the script path.
+          this.notify(true, `${action === 'start' ? 'Starting' : 'Stopping'} ${service.name} service…`);
         } else {
-          // Action reached the agent but failed — surface the reason so the user knows.
-          this.notify(false, res.message ? `${service.name}: ${res.message}` : `Could not ${action} ${service.name} service.`);
+          // Failure → a persistent popup (with Copy / Email) so the user can read & report it.
+          this.showActionError(action, server, service, res.message || `Could not ${action} the service.`);
         }
         // The action reply only says success/message — re-fetch this server's live status
         // so the badges reflect the real, settled state.
@@ -326,13 +328,22 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
         });
       },
       error: () => {
-        this.notify(false, `Could not ${action} "${service.name}" on ${server.serverName}.`);
+        this.showActionError(action, server, service, 'The request could not be completed — the agent may be unreachable.');
         this.patchService(app, server.serverId, service.id, {
           state: action === 'start' ? 'Stopped' : 'Running'
         });
         this.recount(app);
         this.markService(service.id, false);
       }
+    });
+  }
+
+  /** Persistent error popup for a failed start/stop (Copy / Email / OK). */
+  private showActionError(action: 'start' | 'stop', server: ServerServices, service: ServiceInfo, detail: string): void {
+    this.errorReport.show({
+      title: `${action === 'start' ? 'Start' : 'Stop'} service failed`,
+      message: `${service.name} on ${server.serverName}: ${detail}\n\nPlease reach out to OLS Team on ${this.supportEmail}.`,
+      userId: environment.username
     });
   }
 
