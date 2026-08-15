@@ -22,6 +22,10 @@ export interface AppEnvironment {
   appEnv: AppEnv;
   /** Where the error-popup "Email" button sends reports. */
   supportEmail: string;
+  /** Default auto-refresh cadence (minutes) for the Infrastructure Health screen. */
+  infraHealthRefreshMinutes: number;
+  /** Default auto-refresh cadence (minutes) for the Service Console screen. */
+  serviceConsoleRefreshMinutes: number;
   /** Demo identity for the direct (non-SSO) login / dev mode. Real SSO overrides it. */
   username: string;
   name: string;
@@ -45,6 +49,10 @@ export const environment: AppEnvironment = {
   apiBaseUrl: 'http://localhost:8000',
   appEnv: 'DEV',
   supportEmail: 'abc@gmail.com',
+  // Auto-refresh cadence (minutes) for the two monitoring screens. Must be one of the
+  // dropdown options offered on each page (5 / 10 / 15 / 30).
+  infraHealthRefreshMinutes: 30,
+  serviceConsoleRefreshMinutes: 30,
   username: 'OPS-10432',
   name: 'Alex Morgan',
   isSsoEnabled: false,

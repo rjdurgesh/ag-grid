@@ -22,6 +22,7 @@ URLs only and reads `apiBaseUrl` from here).
 | `liveApiPrefixes` | While `useMock` is true, request paths starting with any of these go to the **real** backend (the rest stay mocked). Wire endpoints one area at a time. | e.g. `['/api/log/']` (Log Analytics is live), add `'/api/config/'` etc. as you go |
 | `appEnv` | Environment (`DEV` \| `STG` \| `LIVE`). Header pill + sent to env-aware APIs (Config `tables`, Infra `config`). **`LIVE` is sent to the backend as `PROD`** via `apiEnv()`. | The env this instance runs in |
 | `supportEmail` | Address the error-popup "Email" button reports to. | Your support inbox |
+| `infraHealthRefreshMinutes` / `serviceConsoleRefreshMinutes` | Default auto-refresh cadence (minutes) for the Infrastructure Health / Service Console screens. Must be one of each page's dropdown options (5 / 10 / 15 / 30). | Your preferred default (e.g. `5`) |
 | `username` / `name` | Demo identity for the direct (non-SSO) login / dev mode (real SSO overrides it). | Your dev user |
 | `isSsoEnabled` | `true` = OpenID Connect (`src/app/auth/sso.config.ts`); `false` = direct login form. | `true` once `SSO_CONFIG` is filled in |
 | `devRoles` | Preview role flags while `GET /api/auth/roles` is mocked. | — |
