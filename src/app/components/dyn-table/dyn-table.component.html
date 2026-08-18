@@ -1,0 +1,78 @@
+@if (filterable()) {
+  <div class="dt-filter">
+    <svg class="dt-filter__ic" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M10.5 10.5 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+    <input type="text" class="dt-filter__in" [value]="filterText()"
+      (input)="filterText.set($any($event.target).value)" [placeholder]="filterPlaceholder()"
+      aria-label="Filter rows" />
+    @if (filterText()) {
+      <span class="dt-filter__count">{{ visibleRowCount() }} of {{ totalRowCount() }}</span>
+      <button type="button" class="dt-filter__clear" (click)="filterText.set('')" aria-label="Clear filter">×</button>
+    }
+  </div>
+}
+<div class="dt-scroll" [style.max-height.px]="maxHeightPx()">
+  <table class="dt">
+    <thead>
+      <tr>
+        @for (c of model().columns; track trackCol($index, c)) {
+          <th [class.num]="isNumeric(c)">{{ c.label }}</th>
+        }
+        @if (hasActions()) {
+          <th class="dt-actions-h">Actions</th>
+        }
+      </tr>
+    </thead>
+    <tbody>
+      @for (f of flat(); track trackRow($index, f)) {
+        <tr [class]="f.row['__sev'] ? 'dt-row--' + f.row['__sev'] : ''">
+          @for (c of model().columns; track trackCol($index, c); let first = $first) {
+            @if (first) {
+              <td class="dt-first" [style.padding-left.px]="indentPx(f.level)">
+                @if (f.hasChildren) {
+                  <button type="button" class="dt-caret" [class.open]="isExpanded(f.id)" (click)="toggle(f.id)" aria-label="Expand / collapse">
+                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                } @else {
+                  <span class="dt-caret dt-caret--spacer"></span>
+                }
+                <span class="dt-mono">{{ text(f.row, c) }}</span>
+              </td>
+            } @else {
+              @switch (c.type) {
+                @case ('pct') {
+                  <td>
+                    <span class="dt-barwrap">
+                      <span class="dt-bar"><i [class]="'dt-bar--' + pctSev(+text(f.row, c), c)" [style.width.%]="+text(f.row, c)"></i></span>
+                      <span [class]="'dt-chip dt-chip--' + pctSev(+text(f.row, c), c)">{{ text(f.row, c) }}%</span>
+                    </span>
+                  </td>
+                }
+                @case ('chip') {
+                  <td><span [class]="'dt-chip dt-chip--' + chipSev(f.row, c)"><span class="dt-dot"></span>{{ text(f.row, c) }}</span></td>
+                }
+                @case ('num') { <td class="num">{{ fmt(f.row[c.key]) }}</td> }
+                @case ('gb') { <td class="num">{{ fmt(f.row[c.key]) }}</td> }
+                @case ('mono') { <td class="dt-mono">{{ text(f.row, c) }}</td> }
+                @default { <td>{{ text(f.row, c) }}</td> }
+              }
+            }
+          }
+          @if (hasActions()) {
+            <td class="dt-actions">
+              @for (a of actionsFor(f.row); track trackAct($index, a)) {
+                <button type="button" [class]="'dt-act dt-act--' + (a.tone || 'primary')"
+                  [title]="a.title || a.label" (click)="onAction(a.key, f.row, $event)">{{ a.label }}</button>
+              }
+            </td>
+          }
+        </tr>
+      }
+      @if (!flat().length) {
+        <tr><td [attr.colspan]="colCount()" class="dt-empty">Nothing to show.</td></tr>
+      }
+    </tbody>
+  </table>
+</div>

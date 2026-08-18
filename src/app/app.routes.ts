@@ -40,6 +40,12 @@ export const routes: Routes = [
       {
         path: 'infra_pulse',
         loadChildren: () => import('./views/infra_pulse/route').then((m) => m.routes)
+      },
+      {
+        path: 'oracle_command_center',
+        canActivate: [rbacGuard],
+        data: { screen: 'oracle_command_center' },
+        loadChildren: () => import('./views/oracle_command_center/route').then((m) => m.routes)
       }
     ]
   },
@@ -88,5 +94,11 @@ export const routes: Routes = [
       title: 'Page 500'
     }
   },
-  { path: '**', redirectTo: 'home' }
+  {
+    // Any unknown URL → the 404 page (rendered at the typed URL, not redirected away),
+    // so mistyped / dead links are handled instead of silently bouncing to Home.
+    path: '**',
+    loadComponent: () => import('./views/pages/page404/page404.component').then((m) => m.Page404Component),
+    data: { title: 'Page not found' }
+  }
 ];

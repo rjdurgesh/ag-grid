@@ -78,11 +78,21 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #4d5dfb, #23d3a3);
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: #fff;
+  overflow: hidden;
+  padding: 2px;
   color: #fff;
+  flex: 0 0 40px;
+}
+
+.ols-brand__img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .ols-brand__text {
@@ -114,7 +124,7 @@
 // ---- Sidebar footer (fold toggle + command-center tagline) -------------------
 .ols-sidebar-footer {
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 10px;
 }
 
@@ -133,6 +143,118 @@
 .sidebar-narrow .ols-cmd-foot,
 .sidebar-narrow-unfoldable:not(:hover) .ols-cmd-foot {
   display: none;
+}
+
+/* Collapsed rail: show ONLY the brand icon, centered (no wordmark). */
+.sidebar-narrow .ols-brand,
+.sidebar-narrow-unfoldable:not(:hover) .ols-brand {
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+}
+
+// ---- Advanced sidebar surface + nav ------------------------------------------
+#sidebar1 {
+  background:
+    radial-gradient(130% 55% at 0% 0%, rgba(124, 58, 237, 0.18), transparent 58%),
+    linear-gradient(180deg, #141b30 0%, #0f1524 55%, #0b111e 100%);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  /* CoreUI's default nav icon is rgba(255,255,255,.38) — too faint in the collapsed
+     icon rail. Brighten the base icon + link colours so icons read on their own. */
+  --cui-sidebar-nav-link-icon-color: rgba(255, 255, 255, 0.9);
+  --cui-sidebar-nav-link-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Brand mark: subtle brand glow. */
+#sidebar1 .ols-brand__mark {
+  box-shadow: 0 8px 20px -8px rgba(77, 93, 251, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* Nav items: rounded pills, hover slide, glowing active state with a left accent rail. */
+#sidebar1 .sidebar-nav .nav-link,
+#sidebar1 .sidebar-nav .nav-group-toggle {
+  position: relative;
+  margin: 2px 8px;
+  white-space: nowrap;
+  border-radius: 10px;
+  padding-block: 9px;
+  padding-inline: 10px;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+#sidebar1 .sidebar-nav .nav-link:hover,
+#sidebar1 .sidebar-nav .nav-group-toggle:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  transform: translateX(3px);
+}
+#sidebar1 .sidebar-nav .nav-link .nav-icon,
+#sidebar1 .sidebar-nav .nav-group-toggle .nav-icon {
+  color: rgba(255, 255, 255, 0.9);
+  transition: color 0.16s ease, transform 0.16s ease;
+}
+/* Collapsed icon rail: icons are the ONLY content — render them at full strength. */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-icon,
+#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-icon {
+  color: #ffffff;
+}
+
+/* Collapsed rail is only ~50px wide — the expanded pill's side margins / radius / left
+   accent shift + clip the icon (shows half). Drop them so CoreUI centres the icon. */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-link,
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group-toggle,
+#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-link,
+#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-group-toggle {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  justify-content: center !important;   /* icon dead-centre in the rail, whatever its width */
+}
+#sidebar1.sidebar-narrow .sidebar-nav .nav-link.active::before,
+#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-link.active::before {
+  display: none;
+}
+#sidebar1 .sidebar-nav .nav-link:hover .nav-icon {
+  color: #8ab4ff;
+}
+#sidebar1 .sidebar-nav .nav-link.active {
+  background: linear-gradient(90deg, rgba(77, 93, 251, 0.32), rgba(35, 211, 163, 0.10) 92%);
+  color: #fff;
+}
+/* Left accent rail via ::before so CoreUI's box-shadow reset can't wipe it. */
+#sidebar1 .sidebar-nav .nav-link.active::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #4d5dfb, #23d3a3);
+  box-shadow: 0 0 10px rgba(77, 93, 251, 0.9);
+}
+#sidebar1 .sidebar-nav .nav-link.active .nav-icon {
+  color: #8ab4ff;
+}
+
+/* Section titles: quieter, wider tracking, a touch of the accent. */
+#sidebar1 .sidebar-nav .nav-title {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  margin-top: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar1 .sidebar-nav .nav-link,
+  #sidebar1 .sidebar-nav .nav-group-toggle,
+  #sidebar1 .sidebar-nav .nav-icon { transition: none; }
+  #sidebar1 .sidebar-nav .nav-link:hover,
+  #sidebar1 .sidebar-nav .nav-group-toggle:hover { transform: none; }
 }
 
 // ---- Header right-side nav (env badge + theme + profile) --------------------

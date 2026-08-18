@@ -9,12 +9,11 @@
   <c-sidebar-header class="border-bottom ols-sidebar-header">
     <c-sidebar-brand class="ols-brand" routerLink="/home">
       <span class="ols-brand__mark" aria-hidden="true">
-        <svg cIcon name="cilSpreadsheet" height="26"></svg>
+        <img class="ols-brand__img" src="assets/header_menu_animation.gif" alt="" />
       </span>
       <span class="sidebar-brand-full ols-brand__full">
         <span class="ols-brand__text">OLS<span class="ols-brand__accent"> DASHBOARD</span></span>
       </span>
-      <span class="sidebar-brand-narrow ols-brand__short">OLS</span>
     </c-sidebar-brand>
   </c-sidebar-header>
 
@@ -23,9 +22,8 @@
   </ng-scrollbar>
 
   @if (!sidebar1.narrow) {
-    <c-sidebar-footer cSidebarToggle="sidebar1" class="border-top ols-sidebar-footer d-none d-lg-flex" toggle="unfoldable" style="cursor: pointer;">
+    <c-sidebar-footer class="border-top ols-sidebar-footer d-none d-lg-flex">
       <span class="ols-cmd-foot">OLS Operations Command Center</span>
-      <button cSidebarToggler aria-label="Toggle sidebar fold"></button>
     </c-sidebar-footer>
   }
 </c-sidebar>

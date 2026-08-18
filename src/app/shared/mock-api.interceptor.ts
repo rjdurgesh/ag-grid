@@ -71,16 +71,19 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
   if (path === '/api/auth/roles') {
     // New contract: POST { username } → single-entry { ACCESS: ROLE }. Mapped from
-    // devRoles so flipping the dev flags still exercises each access level.
+    // devRoles so flipping the dev flags still exercises each access level; `devRoles.label`
+    // sets the ROLE value so you can test the technical-action gate (OMT-TECHNICAL/BOTH vs
+    // OMT-FUNCTIONAL). Kill / start / stop need ADMIN + OMT-TECHNICAL or OMT-BOTH.
     const dr = environment.devRoles;
+    const label = dr.label;
     if (dr.is_admin) {
-      return respond({ ADMIN: 'OMT-BOTH' });
+      return respond({ ADMIN: label || 'OMT-BOTH' });
     }
     if (dr.is_read) {
-      return respond({ READ: 'OMT-READ' });
+      return respond({ READ: label || 'OMT-READ' });
     }
     if (dr.is_salt) {
-      return respond({ SALT: 'OMT-SALT' });
+      return respond({ SALT: label || 'OMT-SALT' });
     }
     return respond({ NONE: '' });
   }

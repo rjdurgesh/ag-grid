@@ -140,6 +140,20 @@ export class RbacService {
     return false;
   }
 
+  /**
+   * Privilege for destructive / technical actions — Oracle Command Center kill-session and
+   * Service Console start/stop. Requires **ADMIN access** (mandatory) **and** a technical or
+   * both role (`OMT-TECHNICAL` / `OMT-BOTH`). ADMIN + `OMT-FUNCTIONAL` and every READ/SALT
+   * user is view-only. A technical READ still cannot act — the ADMIN level is required.
+   */
+  canActTechnical(): boolean {
+    if (!this.roles().is_admin) {
+      return false;
+    }
+    const role = this.role().toUpperCase();
+    return role.includes('TECHNICAL') || role.includes('BOTH');
+  }
+
   /** Any access at all? False → send to the No-Access page. */
   hasAnyAccess(): boolean {
     const r = this.roles();

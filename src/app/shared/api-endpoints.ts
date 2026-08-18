@@ -175,5 +175,34 @@ export const API = {
      * Server list + each server's services come from the shared `healthConfig` catalogue.
      */
     serviceManage: `${API_BASE_URL}/api/service_console/service-manage`
+  },
+  /**
+   * Oracle Command Center — per-DB DBA monitoring. Every section is `POST /api/oracle_cc/{db}/…`
+   * and returns a self-describing `{ status, columns, rows, summary }` payload so the UI never
+   * hardcodes headers/columns. `db` is one of the config-driven target keys from `targets`.
+   */
+  oracle: {
+    /** DB tabs to render (config-driven) → `{ status, data: OracleTarget[] }`. */
+    targets: `${API_BASE_URL}/api/oracle_cc/targets`,
+    /** Compact per-DB snapshot for the Home strip → `{ status, data: OracleOverview[] }`. */
+    overview: `${API_BASE_URL}/api/oracle_cc/overview`,
+    /** Section 1 — tablespace/owner space + gauge summary. */
+    space: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/space`,
+    /** Section 2 — top table storage consumers (drill partition → subpartition). */
+    topSegments: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/top_segments`,
+    /** Section 3 — top index storage consumers. */
+    topIndexes: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/top_indexes`,
+    /** Section 4 — index health & stability (unusable / invisible / stale). */
+    indexHealth: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/index_health`,
+    /** Section 5 — critical locks. */
+    locks: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/locks`,
+    /** Section 4 — blocking session tree. */
+    blocking: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/blocking`,
+    /** Section 5 — sessions list (`?status=active|inactive|all`). */
+    sessions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sessions`,
+    /** Section 5 — full deep-dive for one SID/SQL_ID. */
+    sessionDetail: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/session-detail`,
+    /** Kill a session (RBAC admin + confirm). POST `{ sid, serial, immediate }`. */
+    killSession: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/kill-session`
   }
 } as const;

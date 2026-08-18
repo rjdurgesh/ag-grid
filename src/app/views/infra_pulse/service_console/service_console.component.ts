@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit, WritableSignal, computed, inject, signal } from '@angular/core';
 
-import { CanWriteDirective } from '../../../auth/can-write.directive';
+import { CanActDirective } from '../../../auth/can-act.directive';
+import { RbacService } from '../../../auth/rbac.service';
 import { ConfirmService } from '../../../components/confirm/confirm.service';
 import { ErrorReportService } from '../../../components/error-report/error-report.service';
 import { LoaderComponent } from '../../../components/loader/loader.component';
@@ -65,12 +66,13 @@ const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
   selector: 'app-service-console',
   templateUrl: './service_console.component.html',
   styleUrls: ['./service_console.component.scss'],
-  imports: [LoaderComponent, CanWriteDirective]
+  imports: [LoaderComponent, CanActDirective]
 })
 export class ServiceConsoleComponent implements OnInit, OnDestroy {
   private readonly infra = inject(InfraDataService);
   private readonly confirm = inject(ConfirmService);
   private readonly errorReport = inject(ErrorReportService);
+  private readonly rbac = inject(RbacService);
 
   readonly view = signal<ViewMode>('app');
   readonly intervals = REFRESH_INTERVALS;
@@ -273,6 +275,9 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   }
 
   async start(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
+    if (!this.rbac.canActTechnical()) {
+      return;
+    }
     const ok = await this.confirm.ask({
       title: 'Start service',
       message: `Start "${service.name}" on ${server.serverName}?`,
@@ -285,6 +290,9 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   }
 
   async stop(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
+    if (!this.rbac.canActTechnical()) {
+      return;
+    }
     const ok = await this.confirm.ask({
       title: 'Stop service',
       message: `Stop "${service.name}" on ${server.serverName}? Dependent processes may be affected.`,

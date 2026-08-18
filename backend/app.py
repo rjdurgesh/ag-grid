@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
+from oracle_cc_api import router as oracle_cc_router
 from service_console_api import router as service_console_router
 from system_api import router as system_router
 from utils.logging import configure_logging, get_logger
@@ -64,6 +65,7 @@ app.include_router(log_analytics_router)
 app.include_router(system_router)
 app.include_router(infra_health_router)
 app.include_router(service_console_router)
+app.include_router(oracle_cc_router)
 
 
 @app.get("/health", tags=["meta"])

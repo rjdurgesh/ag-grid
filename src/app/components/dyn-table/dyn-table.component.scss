@@ -1,0 +1,143 @@
+:host {
+  --dt-ok: #22c55e;
+  --dt-warn: #f59e0b;
+  --dt-crit: #ef4444;
+  --dt-line: var(--cui-border-color, rgba(255, 255, 255, 0.1));
+  --dt-surface2: color-mix(in srgb, var(--cui-body-color, #fff) 4%, transparent);
+  --dt-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  /* Opaque background for the frozen action column (see .dt-actions). */
+  --dt-freeze-bg: var(--cui-card-bg, var(--cui-body-bg, #fff));
+  display: block;
+}
+
+/* Client-side filter bar (opt-in via [filterable]) — for big lists like Sessions. */
+.dt-filter {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 9px;
+  padding: 4px 10px; border: 1px solid var(--dt-line); border-radius: 9px;
+  background: var(--dt-surface2); max-width: 460px;
+  transition: border-color 0.14s, box-shadow 0.14s;
+}
+.dt-filter:focus-within {
+  border-color: color-mix(in srgb, var(--cui-primary) 55%, var(--dt-line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-primary) 16%, transparent);
+}
+.dt-filter__ic { color: var(--cui-secondary-color); flex: 0 0 auto; }
+.dt-filter__in {
+  flex: 1 1 auto; min-width: 0; border: 0; background: transparent; outline: none;
+  color: var(--cui-body-color); font-size: 12.5px; padding: 4px 0;
+}
+.dt-filter__in::placeholder { color: var(--cui-secondary-color); }
+.dt-filter__count {
+  flex: 0 0 auto; font-size: 10.5px; font-weight: 700; color: var(--cui-secondary-color);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.dt-filter__clear {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border: 0; border-radius: 6px; cursor: pointer; line-height: 1;
+  font-size: 16px; background: transparent; color: var(--cui-secondary-color);
+  transition: background 0.14s, color 0.14s;
+}
+.dt-filter__clear:hover { background: color-mix(in srgb, var(--cui-body-color) 10%, transparent); color: var(--cui-body-color); }
+
+.dt-scroll { overflow: auto; border: 1px solid var(--dt-line); border-radius: 10px; }
+table.dt { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.dt th, table.dt td { padding: 8px 11px; text-align: left; white-space: nowrap; }
+table.dt thead th {
+  position: sticky; top: 0; z-index: 3; background: var(--dt-surface2); color: var(--cui-secondary-color);
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; border-bottom: 1px solid var(--dt-line);
+}
+table.dt tbody tr { border-top: 1px solid color-mix(in srgb, var(--cui-body-color) 6%, transparent); }
+table.dt tbody tr:hover { background: color-mix(in srgb, var(--cui-primary) 7%, transparent); }
+
+td.num, th.num { text-align: right; font-family: var(--dt-mono); font-variant-numeric: tabular-nums; }
+.dt-mono { font-family: var(--dt-mono); }
+.dt-first { font-family: var(--dt-mono); }
+
+/* Row severity is a HOVER-ONLY cue. At rest every row keeps the default (white) background
+   so the table reads cleanly and the STATE / severity chip carries the meaning. Hovering a
+   warn/crit row reveals its colour (amber / red) as an at-a-glance "needs attention" flag;
+   ok / normal rows fall through to the default blue hover above. */
+.dt-row--warn:hover > td { background: color-mix(in srgb, var(--dt-warn) 20%, transparent); }
+.dt-row--crit:hover > td { background: color-mix(in srgb, var(--dt-crit) 20%, transparent); }
+
+/* Drilldown caret — a clearly-clickable control so the drill-down option is obvious. */
+.dt-caret {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border: 1px solid color-mix(in srgb, var(--cui-primary) 42%, var(--dt-line));
+  background: color-mix(in srgb, var(--cui-primary) 10%, transparent);
+  color: var(--cui-primary); cursor: pointer; vertical-align: middle; margin-right: 9px; border-radius: 6px;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s, box-shadow 0.15s;
+}
+.dt-caret svg { width: 14px; height: 14px; transition: transform 0.18s ease; }
+.dt-caret:hover {
+  background: color-mix(in srgb, var(--cui-primary) 22%, transparent); border-color: var(--cui-primary);
+  transform: translateY(-1px); box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--cui-primary) 60%, transparent);
+}
+.dt-caret.open { background: var(--cui-primary); color: #fff; border-color: var(--cui-primary); }
+.dt-caret.open svg { transform: rotate(90deg); }
+/* Rows without children: keep the 22px slot for column alignment but show nothing. */
+.dt-caret--spacer,
+.dt-caret--spacer:hover { border-color: transparent; background: transparent; cursor: default; transform: none; box-shadow: none; }
+
+/* bar + chip */
+.dt-barwrap { display: inline-flex; align-items: center; gap: 9px; }
+.dt-bar { position: relative; height: 8px; width: 110px; border-radius: 5px; background: color-mix(in srgb, var(--cui-body-color) 11%, transparent); overflow: hidden; }
+.dt-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
+.dt-bar--ok { background: var(--dt-ok); }
+.dt-bar--warn { background: var(--dt-warn); }
+.dt-bar--crit { background: var(--dt-crit); }
+.dt-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
+.dt-chip--ok { color: var(--dt-ok); background: color-mix(in srgb, var(--dt-ok) 14%, transparent); }
+.dt-chip--warn { color: var(--dt-warn); background: color-mix(in srgb, var(--dt-warn) 15%, transparent); }
+.dt-chip--crit { color: var(--dt-crit); background: color-mix(in srgb, var(--dt-crit) 14%, transparent); }
+.dt-chip--muted { color: var(--cui-secondary-color); background: var(--dt-surface2); }
+.dt-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* Trailing action column (kill etc.) — FROZEN like an Excel freeze pane: it stays pinned to
+   the right edge while every other column scrolls horizontally underneath, so the action
+   button is always reachable no matter how many columns the payload has. Pure CSS sticky
+   (same mechanism as a spreadsheet freeze / ag-grid pinned column) — no JS, no layout hacks.
+   The cell keeps an OPAQUE background so scrolled columns don't bleed through, plus a left
+   divider + soft shadow so it clearly reads as pinned. */
+.dt-actions-h,
+.dt-actions {
+  position: sticky; right: 0; z-index: 2;
+  text-align: right; white-space: nowrap;
+  background: var(--dt-freeze-bg);
+  border-left: 1px solid var(--dt-line);
+  box-shadow: -9px 0 10px -8px rgba(15, 23, 55, 0.16);
+}
+/* Header of the frozen column = top-right corner: sticky on BOTH axes, above everything.
+   Selector is qualified to out-specify `table.dt thead th` (else its bg/z-index would win and
+   the corner would go semi-transparent, letting scrolled columns bleed through it). */
+table.dt thead th.dt-actions-h {
+  z-index: 4;
+  background: linear-gradient(var(--dt-surface2), var(--dt-surface2)), var(--dt-freeze-bg);
+}
+/* Keep the frozen cell opaque even when a row-hover / severity tint paints the other cells,
+   otherwise the semi-transparent hover colour would let scrolled columns show through it. */
+table.dt tbody tr:hover td.dt-actions,
+.dt-row--warn:hover > td.dt-actions,
+.dt-row--crit:hover > td.dt-actions { background: var(--dt-freeze-bg); }
+.dt-act {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--dt-line); background: var(--cui-body-bg); color: var(--cui-body-color);
+  border-radius: 7px; padding: 4px 11px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+  transition: color 0.14s, border-color 0.14s, background 0.14s;
+
+  & + .dt-act { margin-left: 6px; }
+  &:hover { border-color: var(--cui-primary); color: var(--cui-primary); }
+}
+.dt-act--danger {
+  color: var(--dt-crit);
+  border-color: color-mix(in srgb, var(--dt-crit) 42%, transparent);
+  background: color-mix(in srgb, var(--dt-crit) 8%, transparent);
+  &:hover { color: #fff; background: var(--dt-crit); border-color: var(--dt-crit); }
+}
+.dt-act--muted { color: var(--cui-secondary-color); }
+
+.dt-empty { text-align: center; color: var(--cui-secondary-color); padding: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dt-caret, .dt-caret svg { transition: none; }
+}

@@ -35,7 +35,7 @@
 
   <!-- KPI TILES -->
   <div class="cc-kpis">
-    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health">
+    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--srv">▦</span> Servers</div>
       <div class="cc-kpi__value">{{ serverTotal() }}</div>
       <div class="cc-kpi__break">
@@ -45,7 +45,7 @@
       </div>
     </a>
 
-    <a class="cc-kpi" routerLink="/infra_pulse/service_console">
+    <a class="cc-kpi" routerLink="/infra_pulse/service_console" title="Go to Service Console">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--svc">⚙</span> Services</div>
       <div class="cc-kpi__value">{{ serviceCounts().total }}</div>
       <div class="cc-kpi__break">
@@ -55,7 +55,7 @@
       </div>
     </a>
 
-    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health">
+    <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--share">▤</span> Share Drives</div>
       <div class="cc-kpi__value">{{ shareTotal() }}</div>
       <div class="cc-kpi__break">
@@ -70,6 +70,52 @@
       <div class="cc-kpi__value">{{ appRows().length }}</div>
       <div class="cc-kpi__break"><span class="cc-chip cc-chip--muted">monitored in {{ env }}</span></div>
     </div>
+  </div>
+
+  <!-- ORACLE DATABASES -->
+  <div class="cc-card cc-ora">
+    <div class="cc-card__head">
+      Oracle Databases
+      @if (oracleBlocking()) { <span class="cc-ora__hbadge">{{ oracleBlocking() }} blocking</span> }
+      <a class="cc-card__link" routerLink="/oracle_command_center" title="Go to Oracle Command Center">Open →</a>
+    </div>
+
+    @if (oracleDbs().length) {
+      <div class="cc-ora__grid">
+        @for (db of oracleDbs(); track db.key) {
+          <a class="cc-ora__tile" [class]="'cc-ora__tile--' + db.storage_sev" routerLink="/oracle_command_center" [queryParams]="{ db: db.key }" [title]="'Go to Oracle Command Center — ' + db.label + (db.sub ? ' ' + db.sub : '')">
+            <div class="cc-ora__top">
+              <span class="cc-ora__name">{{ db.label }}@if (db.sub) { <small>{{ db.sub }}</small> }</span>
+              @if (db.blocking) { <span class="cc-ora__blk">{{ db.blocking }} blocking</span> }
+            </div>
+            <div class="cc-ora__body">
+              <div class="cc-ora__gauge" [style.background]="oraGauge(db)">
+                <div class="cc-ora__ginner">
+                  <span class="cc-ora__gpct">{{ db.storage_pct }}%</span>
+                  <span class="cc-ora__gcap">USED</span>
+                </div>
+              </div>
+              <div class="cc-ora__stats">
+                <div class="cc-ora__stat">
+                  <span class="cc-ora__sv">{{ db.active }}</span>
+                  <span class="cc-ora__sl">Active sessions</span>
+                </div>
+                <div class="cc-ora__stat">
+                  <span class="cc-ora__sv" [class.is-crit]="db.blocking > 0">{{ db.blocking }}</span>
+                  <span class="cc-ora__sl">Blocking</span>
+                </div>
+              </div>
+            </div>
+            <div class="cc-ora__foot">
+              <span class="cc-ora__flabel">Top segment</span>
+              <span class="cc-ora__fval">{{ db.top_object }} · {{ db.top_gb }} GB</span>
+            </div>
+          </a>
+        }
+      </div>
+    } @else {
+      <div class="cc-empty">Oracle snapshot unavailable.</div>
+    }
   </div>
 
   <!-- APPLICATION STATUS MATRIX -->
@@ -133,7 +179,7 @@
     <div class="cc-card cc-attn">
       <div class="cc-card__head">
         Needs Attention · Servers Health
-        <a class="cc-card__link" routerLink="/infra_pulse/infrastructure_health">Open →</a>
+        <a class="cc-card__link" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">Open →</a>
       </div>
       @if (!attentionServers().length) {
         <div class="cc-empty cc-empty--good">✓ Every server is within healthy limits.</div>
@@ -169,7 +215,7 @@
     <div class="cc-card cc-attn">
       <div class="cc-card__head">
         Needs Attention · Services
-        <a class="cc-card__link" routerLink="/infra_pulse/service_console">Open →</a>
+        <a class="cc-card__link" routerLink="/infra_pulse/service_console" title="Go to Service Console">Open →</a>
       </div>
       @if (!attentionServices().length) {
         <div class="cc-empty cc-empty--good">✓ All monitored services are running.</div>

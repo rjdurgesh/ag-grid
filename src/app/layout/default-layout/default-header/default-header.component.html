@@ -1,9 +1,21 @@
 <ng-container>
   <c-container [fluid]="true" class="border-bottom px-4">
+    <!-- Desktop: collapse the sidebar to an icon rail (it never fully disappears). -->
     <button
       [cSidebarToggle]="sidebarId()"
       cHeaderToggler
-      class="btn"
+      class="btn d-none d-lg-inline-flex"
+      toggle="unfoldable"
+      style="margin-inline-start: -14px;"
+      aria-label="Collapse or expand sidebar"
+    >
+      <svg cIcon name="cilMenu" size="lg"></svg>
+    </button>
+    <!-- Mobile / tablet: off-canvas show / hide (the sidebar is off-screen at this size). -->
+    <button
+      [cSidebarToggle]="sidebarId()"
+      cHeaderToggler
+      class="btn d-lg-none"
       toggle="visible"
       style="margin-inline-start: -14px;"
       aria-label="Toggle sidebar navigation"

@@ -1,0 +1,388 @@
+<section class="ols-view ols-surface occ">
+  <!-- Masthead -->
+  <header class="occ__mast">
+    <span class="occ__logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="23" height="23">
+        <ellipse cx="12" cy="5.4" rx="7.4" ry="2.9" fill="none" stroke="currentColor" stroke-width="1.7" />
+        <path d="M4.6 5.4v13.2c0 1.6 3.31 2.9 7.4 2.9s7.4-1.3 7.4-2.9V5.4" fill="none" stroke="currentColor" stroke-width="1.7" />
+        <path d="M4.6 12c0 1.6 3.31 2.9 7.4 2.9s7.4-1.3 7.4-2.9" fill="none" stroke="currentColor" stroke-width="1.7" />
+      </svg>
+    </span>
+    <div class="occ__id">
+      <h1 class="occ__title">Oracle Command Center</h1>
+      <p class="occ__sub">
+        @if (activeTarget(); as t) { {{ t.instance }} · read-only monitor } @else { connecting… }
+      </p>
+    </div>
+    <span class="occ__spacer"></span>
+    <select #iv class="occ__select" (change)="onIntervalChange(+iv.value)" title="Auto-refresh interval">
+      @for (m of intervals; track m) {
+        <option [value]="m" [selected]="refreshEveryMin() === m">Refresh Every {{ m }} Minutes</option>
+      }
+    </select>
+    <button type="button" class="occ__icon-btn" title="Refresh all" aria-label="Refresh all" (click)="refreshAll()">
+      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </header>
+  @if (lastRefreshed(); as ts) {
+    <p class="occ__stamp">Last refreshed {{ formatDateTime(ts.toISOString()) }}</p>
+  }
+
+  <!-- Config-driven DB tabs -->
+  <div class="occ__tabs" role="tablist">
+    @for (t of targets(); track trackTarget($index, t)) {
+      <button type="button" class="occ__tab" [class.is-active]="activeKey() === t.key" role="tab"
+        [attr.aria-selected]="activeKey() === t.key" (click)="selectDb(t.key)">
+        <span class="occ__tab-dot" [attr.data-diag]="t.diag_pack"></span>
+        <span class="occ__tab-name">{{ t.label }}@if (t.sub) { <small>{{ t.sub }}</small> }</span>
+      </button>
+    }
+    @if (targetsError()) { <span class="occ__tabs-err">Couldn't load DB list.</span> }
+  </div>
+
+  @if (activeTarget(); as t) {
+    <div class="occ__ribbon">
+      <span class="occ-inst" [attr.data-status]="instanceStatus()" role="status"
+        [attr.aria-label]="'Instance ' + t.instance + ' — ' + instanceStatusLabel()" [title]="instanceStatusTitle()">
+        <span class="occ-inst__dot" aria-hidden="true"></span>
+        <b>{{ t.instance }}</b><span class="occ__muted">instance</span>
+      </span>
+    </div>
+  }
+
+  <!-- ============= ROW 1 : Database Storage (full width) ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('space')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">▤</span>
+        <h2 class="occ-panel__title">Database Storage</h2>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('space')) { <span class="occ-hstamp">{{ stampAbs('space') }} · {{ stampRel('space') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="spaceLoading()" title="Refresh section" (click)="loadSpace(); $event.stopPropagation()">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('space')" (click)="toggle('space')" aria-label="Collapse or expand">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+
+      @if (!isCollapsed('space')) {
+        <div class="occ-panel__body">
+          @if (spaceLoading() && !space()) {
+            <app-loader variant="skeleton" [rows]="4" message="Reading tablespaces…" />
+          } @else if (spaceError()) {
+            <div class="occ-empty occ-empty--err">Couldn't read storage for this database. Try refresh.</div>
+          } @else if (space(); as sp) {
+            @if (sp.summary; as s) {
+              <!-- Consolidated first: gauge + totals -->
+              <div class="occ-hero">
+                <svg viewBox="0 0 120 120" class="occ-gauge" role="img" [attr.aria-label]="s.used_pct + '% used'">
+                  <circle cx="60" cy="60" r="52" class="occ-gauge__track" />
+                  <circle cx="60" cy="60" r="52" pathLength="100" class="occ-gauge__val"
+                    [class]="'occ-gauge__val--' + gaugeSev(s.used_pct)"
+                    [style.stroke-dasharray]="s.used_pct + ' ' + (100 - s.used_pct)" />
+                  <text x="60" y="56" class="occ-gauge__pct">{{ s.used_pct }}%</text>
+                  <text x="60" y="74" class="occ-gauge__cap">USED</text>
+                </svg>
+                <div class="occ-tiles">
+                  <div class="occ-tile"><span class="occ-tile__l">Total (GB)</span><span class="occ-tile__v">{{ fmtNum(s.total_gb) }}</span></div>
+                  <div class="occ-tile"><span class="occ-tile__l">Used (GB)</span><span [class]="'occ-tile__v occ-tile__v--' + gaugeSev(s.used_pct)">{{ fmtNum(s.used_gb) }}</span></div>
+                  <div class="occ-tile"><span class="occ-tile__l">Free (GB)</span><span class="occ-tile__v">{{ fmtNum(s.free_gb) }}</span></div>
+                </div>
+              </div>
+
+              @if (s.breached.length) {
+                <div class="occ-danger">
+                  <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 3 1 21h22L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17" r="1.1" fill="currentColor"/></svg>
+                  <span><b>{{ s.breached.length }}</b> tablespace(s) at/over {{ s.warn_pct }}%: <b>{{ s.breached.join(', ') }}</b> — add space or purge.</span>
+                </div>
+              }
+
+              <!-- Detailed table below -->
+              <app-dyn-table [model]="$any(sp)" />
+              <p class="occ-note"><b>Note:</b> rows are owner × tablespace; <b>Used</b> is that owner's segments, <b>Total/Free</b> are the tablespace (autoextend MAXSIZE-aware). Bar turns amber at ≥{{ s.warn_pct }}%, red at ≥{{ s.crit_pct }}%.</p>
+            }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 2 : Top Table Storage Consumers ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('top')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">◱</span>
+        <h2 class="occ-panel__title">Top Table Storage Consumers</h2>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('top')) { <span class="occ-hstamp">{{ stampAbs('top') }} · {{ stampRel('top') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="topSegLoading()" title="Refresh section" (click)="loadTopSegments(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('top')" (click)="toggle('top')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('top')) {
+        <div class="occ-panel__body">
+          @if (topSegLoading() && !topSeg()) { <app-loader variant="skeleton" [rows]="4" message="Reading segments…" /> }
+          @else if (topSegError()) { <div class="occ-empty occ-empty--err">Couldn't read top tables. Try refresh.</div> }
+          @else if (topSeg(); as d) {
+            <app-dyn-table [model]="d" [maxRows]="10" />
+            <p class="occ-note"><b>Note:</b> size is <b>allocated data-segment bytes</b> (indexes/LOBs excluded). Expand ▸ a partitioned table for per-partition, then per-subpartition size. STALE = stats out of date at that level.</p>
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 3 : Top Index Storage Consumers | Index Health ============= -->
+  <div class="occ__row occ__row--split">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('topidx')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⌸</span>
+        <h2 class="occ-panel__title">Top Index Storage Consumers</h2>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('topidx')) { <span class="occ-hstamp">{{ stampAbs('topidx') }} · {{ stampRel('topidx') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="topIdxLoading()" title="Refresh section" (click)="loadTopIndexes(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('topidx')" (click)="toggle('topidx')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('topidx')) {
+        <div class="occ-panel__body">
+          @if (topIdxLoading() && !topIdx()) { <app-loader variant="skeleton" [rows]="3" message="Reading indexes…" /> }
+          @else if (topIdxError()) { <div class="occ-empty occ-empty--err">Couldn't read indexes. Try refresh.</div> }
+          @else if (topIdx(); as d) { <app-dyn-table [model]="d" [maxRows]="10" /> }
+        </div>
+      }
+    </section>
+
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('idxhealth')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⚕</span>
+        <h2 class="occ-panel__title">Index Health &amp; Stability</h2>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('idxhealth')) { <span class="occ-hstamp">{{ stampAbs('idxhealth') }} · {{ stampRel('idxhealth') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="idxHealthLoading()" title="Refresh section" (click)="loadIndexHealth(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('idxhealth')" (click)="toggle('idxhealth')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('idxhealth')) {
+        <div class="occ-panel__body">
+          @if (idxHealthLoading() && !idxHealth()) { <app-loader variant="skeleton" [rows]="3" message="Checking index health…" /> }
+          @else if (idxHealthError()) { <div class="occ-empty occ-empty--err">Couldn't read index health. Try refresh.</div> }
+          @else if (idxHealth(); as d) {
+            @if (d.rows.length) { <app-dyn-table [model]="d" [maxRows]="10" /> }
+            @else { <div class="occ-empty">All indexes valid, visible and fresh. ✓</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 4 : Critical Locks ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('locks')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⚿</span>
+        <h2 class="occ-panel__title">Critical Locks</h2>
+        @if (locks()?.summary; as s) {
+          @if ($any(s).blocking) { <span class="occ-badge occ-badge--crit">{{ $any(s).blocking }} blocking</span> }
+          @if ($any(s).waiting) { <span class="occ-badge occ-badge--warn">{{ $any(s).waiting }} waiting</span> }
+        }
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('locks')) { <span class="occ-hstamp">{{ stampAbs('locks') }} · {{ stampRel('locks') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="locksLoading()" title="Refresh section" (click)="loadLocks(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('locks')" (click)="toggle('locks')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('locks')) {
+        <div class="occ-panel__body">
+          @if (locksLoading() && !locks()) { <app-loader variant="skeleton" [rows]="3" message="Reading enqueue locks…" /> }
+          @else if (locksError()) { <div class="occ-empty occ-empty--err">Couldn't read locks. Try refresh.</div> }
+          @else if (locks(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
+              <p class="occ-note"><b>Note:</b> TX (row) + TM (DML) enqueue locks. <b>BLOCKING</b> = this session is holding a lock others wait on; <b>WAITING</b> = queued behind one. @if (canKill()) { Kill ends the session and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
+            } @else { <div class="occ-empty">No TX/TM locks are being held right now. ✓</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 5 : Blocking Sessions ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('blocking')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⛓</span>
+        <h2 class="occ-panel__title">Blocking Sessions</h2>
+        @if (blocking()?.summary; as s) {
+          @if ($any(s).chains) { <span class="occ-badge occ-badge--crit">{{ $any(s).chains }} blocker(s)</span> }
+          @if ($any(s).waiters) { <span class="occ-badge occ-badge--warn">{{ $any(s).waiters }} waiting</span> }
+        }
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('blocking')) { <span class="occ-hstamp">{{ stampAbs('blocking') }} · {{ stampRel('blocking') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="blockingLoading()" title="Refresh section" (click)="loadBlocking(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('blocking')" (click)="toggle('blocking')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('blocking')) {
+        <div class="occ-panel__body">
+          @if (blockingLoading() && !blocking()) { <app-loader variant="skeleton" [rows]="3" message="Tracing blocking chains…" /> }
+          @else if (blockingError()) { <div class="occ-empty occ-empty--err">Couldn't read blocking sessions. Try refresh.</div> }
+          @else if (blocking(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
+              <p class="occ-note"><b>Note:</b> each root is a final <b>BLOCKER</b>; expand ▸ to see the sessions it blocks (chained blocking nests deeper). Kill the blocker to free the chain.@if (!canKill()) {  Killing requires an admin role.}</p>
+            } @else { <div class="occ-empty">No sessions are blocking others right now. ✓</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 6 : Sessions & performance deep-dive ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('sessions')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">☰</span>
+        <h2 class="occ-panel__title">Sessions &amp; performance deep-dive</h2>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('sessions')) { <span class="occ-hstamp">{{ stampAbs('sessions') }} · {{ stampRel('sessions') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="sessionsLoading()" title="Refresh section" (click)="loadSessions(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('sessions')" (click)="toggle('sessions')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('sessions')) {
+        <div class="occ-panel__body">
+          <!-- State filter (default Active) -->
+          <div class="occ-seg" role="tablist" aria-label="Session state filter">
+            @for (f of sessionFilters; track f.key) {
+              <button type="button" class="occ-seg__btn" role="tab"
+                [class.is-active]="sessionFilter() === f.key" [attr.aria-selected]="sessionFilter() === f.key"
+                (click)="setSessionFilter(f.key)">
+                {{ f.label }}@if (sessionCount(f.key) !== null) { <span class="occ-seg__n">{{ sessionCount(f.key) }}</span> }
+              </button>
+            }
+          </div>
+
+          @if (sessionsLoading() && !sessions()) { <app-loader variant="skeleton" [rows]="4" message="Reading sessions…" /> }
+          @else if (sessionsError()) { <div class="occ-empty occ-empty--err">Couldn't read sessions. Try refresh.</div> }
+          @else if (sessions(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
+                filterPlaceholder="Filter sessions — SID, user, machine, SQL_ID, event…"
+                [actions]="sessionActions()" (action)="onSessionAction($event)" />
+              <p class="occ-note"><b>Note:</b> <b>Deep-dive</b> opens the actual execution plan, ASH, SQL Monitor, object stats, and locks for that SID. @if (canKill()) { Kill ends the session and rolls back its transaction. } @else { Killing a session requires an admin role. } ASH / SQL Monitor / AWR need the Diagnostics + Tuning Pack.</p>
+            } @else { <div class="occ-empty">No {{ sessionFilter() }} sessions right now.</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- Transient result banner after a kill -->
+  @if (toast(); as t) {
+    <div class="occ-toast" [class.occ-toast--ok]="t.ok" [class.occ-toast--err]="!t.ok" role="status">
+      <span class="occ-toast__ic" aria-hidden="true">{{ t.ok ? '✓' : '!' }}</span>{{ t.text }}
+    </div>
+  }
+</section>
+
+<!-- SID deep-dive drawer (outside .occ so its position:fixed isn't reset by the surface) -->
+@if (detailOpen()) {
+  <div class="occ-drawer-backdrop" (click)="closeDetail()"></div>
+  <aside class="occ-drawer" role="dialog" aria-modal="true" aria-label="Session deep-dive">
+    @if (detailLoading() && !detail()) {
+      <div class="occ-drawer__head">
+        <h3 class="occ-drawer__title">Loading session…</h3>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+      </div>
+      <div class="occ-drawer__body"><app-loader variant="spinner" message="Fetching plan, ASH, stats…" /></div>
+    } @else if (detailError()) {
+      <div class="occ-drawer__head">
+        <h3 class="occ-drawer__title">Session</h3>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+      </div>
+      <div class="occ-drawer__body"><div class="occ-empty occ-empty--err">Couldn't load the deep-dive. Close and retry.</div></div>
+    } @else if (detail(); as d) {
+      <div class="occ-drawer__head">
+        <div class="occ-drawer__id">
+          <h3 class="occ-drawer__title">Session {{ detailText(d.session, 'session') }}</h3>
+          <span [class]="'occ-chip occ-chip--' + statusSev(detailText(d.session, 'status'))">
+            <span class="occ-dot"></span>{{ detailText(d.session, 'status') }}
+          </span>
+        </div>
+        <span class="occ-panel__spacer"></span>
+        @if (hasStamp('detail')) { <span class="occ-hstamp">{{ stampAbs('detail') }} · {{ stampRel('detail') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="detailRefreshingAll()" title="Refresh all panels" aria-label="Refresh all panels" (click)="refreshDetailAll()">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        @if (canKill() && detailText(d.session, 'status') !== 'KILLED') {
+          <button type="button" class="occ-kill-btn" (click)="killFromDetail()">Kill session</button>
+        }
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+      </div>
+
+      <div class="occ-drawer__body">
+        <dl class="occ-facts">
+          <div><dt>User</dt><dd>{{ detailText(d.session, 'username') }}</dd></div>
+          <div><dt>OS user</dt><dd>{{ detailText(d.session, 'osuser') }}</dd></div>
+          <div><dt>Machine</dt><dd>{{ detailText(d.session, 'machine') }}</dd></div>
+          <div><dt>Program</dt><dd>{{ detailText(d.session, 'program') }}</dd></div>
+          <div><dt>Module</dt><dd>{{ detailText(d.session, 'module') }}</dd></div>
+          <div><dt>Logon</dt><dd>{{ detailText(d.session, 'logon_time') }}</dd></div>
+          <div class="occ-facts__wide"><dt>SQL_ID</dt><dd>{{ detailText(d.session, 'sql_id') }}</dd></div>
+        </dl>
+
+        <div class="occ-ptabs" role="tablist" aria-label="Deep-dive panels">
+          @for (p of d.panels; track p.key) {
+            <button type="button" class="occ-ptab" role="tab"
+              [class.is-active]="activePanel() === p.key" [class.is-locked]="!p.available"
+              [attr.aria-selected]="activePanel() === p.key" (click)="setPanel(p.key)">
+              {{ p.label }}@if (!p.available) { <span class="occ-ptab__lock" aria-hidden="true">🔒</span> }
+            </button>
+          }
+        </div>
+
+        @if (currentPanel(); as p) {
+          @if (!p.available) {
+            <div class="occ-empty">{{ p.label }} requires the <b>{{ p.requires }}</b> — not licensed on this database.</div>
+          } @else {
+          <div class="occ-pbar">
+            <span class="occ-pbar__t">{{ p.label }}</span>
+            <span class="occ-panel__spacer"></span>
+            @if (hasStamp('panel:' + p.key)) { <span class="occ-hstamp">{{ stampAbs('panel:' + p.key) }} · {{ stampRel('panel:' + p.key) }}</span> }
+            <button type="button" class="occ-ibtn" [class.is-spin]="isPanelRefreshing(p.key)"
+              title="Refresh {{ p.label }}" aria-label="Refresh {{ p.label }}" (click)="refreshPanel(p.key)">
+              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          @if (p.kind === 'rollback') {
+            @if (p.rollback; as rb) {
+              <div class="occ-rb">
+                <div class="occ-rb__top">
+                  <span [class]="'occ-chip occ-chip--' + (rb.percent >= 100 ? 'ok' : 'warn')"><span class="occ-dot"></span>{{ rb.state }}</span>
+                  <span class="occ-rb__pct">{{ rb.percent }}%</span>
+                </div>
+                <div class="occ-rb__bar"><i [class.is-done]="rb.percent >= 100" [style.width.%]="rb.percent"></i></div>
+                <div class="occ-rb__grid">
+                  <div class="occ-rb__tile">
+                    <span class="occ-rb__l">Undo records rolled back</span>
+                    <span class="occ-rb__v">{{ fmtNum(rb.undo_records_done) }} <small>/ {{ fmtNum(rb.undo_records_total) }}</small></span>
+                    <span class="occ-rb__sub">{{ fmtNum(rb.undo_records_left) }} pending</span>
+                  </div>
+                  <div class="occ-rb__tile">
+                    <span class="occ-rb__l">Undo blocks rolled back</span>
+                    <span class="occ-rb__v">{{ fmtNum(rb.undo_blocks_done) }} <small>/ {{ fmtNum(rb.undo_blocks_total) }}</small></span>
+                    <span class="occ-rb__sub">{{ fmtNum(rb.undo_blocks_left) }} pending</span>
+                  </div>
+                  <div class="occ-rb__tile"><span class="occ-rb__l">Elapsed</span><span class="occ-rb__v">{{ rb.elapsed }}</span></div>
+                  <div class="occ-rb__tile"><span class="occ-rb__l">Est. remaining</span><span class="occ-rb__v">{{ rb.est_remaining }}</span></div>
+                </div>
+                @if (rb.note) { <p class="occ-note">{{ rb.note }}</p> }
+              </div>
+            }
+          } @else if (p.kind === 'text') {
+            <pre class="occ-pre">{{ p.text }}</pre>
+          } @else if (p.table) {
+            <app-dyn-table [model]="p.table" />
+          }
+          }
+        }
+      </div>
+    }
+  </aside>
+}

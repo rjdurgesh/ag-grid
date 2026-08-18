@@ -55,30 +55,9 @@ export const navItems: INavData[] = [
     ]
   },
   {
-    title: true,
-    name: 'Extras'
-  },
-  {
-    name: 'Pages',
-    url: '/login',
-    iconComponent: { name: 'cil-star' },
-    children: [
-      {
-        name: 'Login',
-        url: '/login',
-        icon: 'nav-icon-bullet'
-      },
-      {
-        name: 'Error 404',
-        url: '/404',
-        icon: 'nav-icon-bullet'
-      },
-      {
-        name: 'Error 500',
-        url: '/500',
-        icon: 'nav-icon-bullet'
-      }
-    ]
+    name: 'Oracle Command Center',
+    url: '/oracle_command_center',
+    iconComponent: { name: 'cil-layers' }
   },
   {
     title: true,

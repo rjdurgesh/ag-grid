@@ -1,18 +1,10 @@
 import { Component } from '@angular/core';
-import { IconDirective } from '@coreui/icons-angular';
-import {
-  ButtonDirective,
-  ColComponent,
-  ContainerComponent,
-  FormControlDirective,
-  InputGroupComponent,
-  InputGroupTextDirective,
-  RowComponent
-} from '@coreui/angular';
+
+import { ErrorPageComponent } from '../error-page/error-page.component';
 
 @Component({
   selector: 'app-page500',
   templateUrl: './page500.component.html',
-  imports: [ContainerComponent, RowComponent, ColComponent, InputGroupComponent, InputGroupTextDirective, IconDirective, FormControlDirective, ButtonDirective]
+  imports: [ErrorPageComponent]
 })
 export class Page500Component {}

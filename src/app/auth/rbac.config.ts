@@ -9,6 +9,7 @@ export type ScreenKey =
   | 'config_ops_console'
   | 'infra_health'
   | 'service_console'
+  | 'oracle_command_center'
   | 'extras'
   | 'docs';
 
@@ -19,6 +20,7 @@ export const ALL_SCREENS: ScreenKey[] = [
   'config_ops_console',
   'infra_health',
   'service_console',
+  'oracle_command_center',
   'extras',
   'docs'
 ];
@@ -33,6 +35,7 @@ export const SCREEN_ROUTES: Record<ScreenKey, string> = {
   config_ops_console: '/config_ops_console',
   infra_health: '/infra_pulse/infrastructure_health',
   service_console: '/infra_pulse/service_console',
+  oracle_command_center: '/oracle_command_center',
   extras: '/login',
   docs: '/home'
 };
@@ -46,6 +49,7 @@ export function screenForNavUrl(url: string | undefined | any[]): ScreenKey | nu
   if (path.startsWith('/infra_pulse/infrastructure_health')) return 'infra_health';
   if (path.startsWith('/infra_pulse/service_console')) return 'service_console';
   if (path.startsWith('/infra_pulse')) return 'infra_health'; // group parent → visible if health is
+  if (path.startsWith('/oracle_command_center')) return 'oracle_command_center';
   if (path.startsWith('/login') || path.startsWith('/404') || path.startsWith('/500')) return 'extras';
   if (path.startsWith('http')) return 'docs';
   return null;

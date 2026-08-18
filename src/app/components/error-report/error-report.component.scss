@@ -1,9 +1,9 @@
-/* Layered above the data grid modal (1055) and the confirm dialog (1080/1081) —
-   an error is top priority and may appear over either. */
+/* Top priority — above the data grid modal (1055), the Oracle deep-dive drawer
+   (1086), and the confirm dialog (2000/2001); an error may appear over any of them. */
 .ols-err-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1090;
+  z-index: 2010;
   background: rgba(15, 20, 36, 0.55);
   backdrop-filter: blur(1px);
   animation: ols-err-fade 0.15s ease both;
@@ -11,7 +11,7 @@
 
 .ols-err-box {
   position: fixed;
-  z-index: 1091;
+  z-index: 2011;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);

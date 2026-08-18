@@ -47,26 +47,15 @@
   gap: 10px;
 }
 
-.iph__interval {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--cui-secondary-color);
-}
-
-.iph__interval-label {
-  font-weight: 600;
-}
-
 .iph__select {
   border: 1px solid var(--cui-border-color);
   background: var(--cui-body-bg);
   color: var(--cui-body-color);
-  border-radius: 8px;
-  padding: 7px 12px;
+  border-radius: 9px;
+  padding: 8px 12px;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.2;
   cursor: pointer;
 
   &:focus-visible {
@@ -75,23 +64,23 @@
   }
 }
 
-.iph__refresh-all {
+/* Icon-only refresh, identical to Service Console's .isc__icon-btn. */
+.iph__icon-btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
   border: 1px solid var(--cui-border-color);
   background: var(--cui-body-bg);
-  color: var(--cui-body-color);
-  border-radius: 9px;
-  padding: 7px 13px;
-  font-size: 13px;
-  font-weight: 600;
+  color: var(--cui-secondary-color);
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
+  transition: color 0.15s, border-color 0.15s;
 
   &:hover {
-    border-color: var(--cui-primary);
     color: var(--cui-primary);
+    border-color: var(--cui-primary);
   }
 }
 
