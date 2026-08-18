@@ -1,0 +1,58 @@
+<section class="olserr" [class]="'olserr--' + tone()">
+  <!-- Decorative console backdrop -->
+  <div class="olserr__bg" aria-hidden="true">
+    <span class="olserr__grid"></span>
+    <span class="olserr__glow"></span>
+    <span class="olserr__glow olserr__glow--2"></span>
+  </div>
+
+  <!-- Brand: top-center -->
+  <header class="olserr__brandbar">
+    <span class="olserr__brand-mark" aria-hidden="true">OLS</span>
+    <span class="olserr__brand-name">DASHBOARD</span>
+  </header>
+
+  <div class="olserr__card">
+    <span class="olserr__eyebrow">{{ eyebrow() }}</span>
+
+    <div class="olserr__code" aria-hidden="true">{{ code() }}</div>
+    <h1 class="olserr__sronly">{{ code() }} — {{ title() }}</h1>
+
+    <p class="olserr__title">{{ title() }}</p>
+    <p class="olserr__msg">{{ message() }}</p>
+
+    <div class="olserr__actions">
+      <a class="olserr__btn olserr__btn--primary" routerLink="/home">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M3 11.5 12 4l9 7.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M5.5 10v9.5h13V10" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M10 19.5v-5h4v5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Back to Home
+      </a>
+
+      @if (reload()) {
+        <button type="button" class="olserr__btn olserr__btn--ghost" (click)="reloadPage()">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+            <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Try again
+        </button>
+      } @else {
+        <button type="button" class="olserr__btn olserr__btn--ghost" (click)="goBack()">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Go back
+        </button>
+      }
+    </div>
+
+    @if (reload()) {
+      <p class="olserr__support">
+        Still stuck? Reach out to the OLS Team at <a href="mailto:{{ supportEmail }}">{{ supportEmail }}</a>.
+      </p>
+    }
+  </div>
+</section>

@@ -1,8 +1,9 @@
-/* Layered above the data modal (CoreUI modal z-index is 1055). */
+/* Top-most app layer: above the CoreUI modal (1055) AND the Oracle deep-dive
+   drawer (1086) / its toast (1090), so a confirm never opens behind a drawer. */
 .ols-confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1080;
+  z-index: 2000;
   background: rgba(15, 20, 36, 0.55);
   backdrop-filter: blur(1px);
   animation: ols-confirm-fade 0.15s ease both;
@@ -10,7 +11,7 @@
 
 .ols-confirm-box {
   position: fixed;
-  z-index: 1081;
+  z-index: 2001;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);

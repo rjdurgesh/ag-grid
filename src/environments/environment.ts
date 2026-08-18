@@ -26,13 +26,20 @@ export interface AppEnvironment {
   infraHealthRefreshMinutes: number;
   /** Default auto-refresh cadence (minutes) for the Service Console screen. */
   serviceConsoleRefreshMinutes: number;
+  /** Default auto-refresh cadence (minutes) for the Oracle Command Center screen. */
+  oracleCommandCenterRefreshMinutes: number;
   /** Demo identity for the direct (non-SSO) login / dev mode. Real SSO overrides it. */
   username: string;
   name: string;
   /** Master switch for OpenID Connect / SSO (false → direct login form). */
   isSsoEnabled: boolean;
-  /** Preview role flags while `GET /api/auth/roles` is mocked (ignored once real). */
-  devRoles: { is_admin: boolean; is_read: boolean; is_salt: boolean };
+  /**
+   * Preview role flags while `GET /api/auth/roles` is mocked (ignored once real).
+   * `label` sets the role value returned with the access level (e.g. `OMT-BOTH`,
+   * `OMT-TECHNICAL`, `OMT-FUNCTIONAL`) — used to exercise the technical-action gate
+   * (ADMIN + OMT-TECHNICAL/OMT-BOTH → can kill / start / stop; else view-only).
+   */
+  devRoles: { is_admin: boolean; is_read: boolean; is_salt: boolean; label?: string };
   /**
    * While `useMock` is true, any request whose path starts with one of these
    * prefixes is sent to the REAL backend (`apiBaseUrl`) instead of the mock —
@@ -53,12 +60,13 @@ export const environment: AppEnvironment = {
   // dropdown options offered on each page (5 / 10 / 15 / 30).
   infraHealthRefreshMinutes: 30,
   serviceConsoleRefreshMinutes: 30,
+  oracleCommandCenterRefreshMinutes: 30,
   username: 'OPS-10432',
   name: 'Alex Morgan',
   isSsoEnabled: false,
-  devRoles: { is_admin: true, is_read: false, is_salt: false },
+  devRoles: { is_admin: true, is_read: false, is_salt: false, label: 'OMT-BOTH' },
   // Log Analytics + Infrastructure Health are served by the real FastAPI backend;
   // everything else (incl. the Service Console's /api/infra/*) is still mocked.
   // Add more prefixes here as you implement real endpoints.
-  liveApiPrefixes: ['/api/log/', '/api/infra_health', '/api/service_console'],
+  liveApiPrefixes: ['/api/log/', '/api/infra_health', '/api/service_console', '/api/oracle_cc'],
 };

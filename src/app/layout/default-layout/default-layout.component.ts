@@ -2,7 +2,6 @@ import { Component, computed, inject } from '@angular/core';
 import { RouterLink, RouterOutlet } from '@angular/router';
 import { NgScrollbar } from 'ngx-scrollbar';
 
-import { IconDirective } from '@coreui/icons-angular';
 import {
   ContainerComponent,
   INavData,
@@ -11,9 +10,7 @@ import {
   SidebarComponent,
   SidebarFooterComponent,
   SidebarHeaderComponent,
-  SidebarNavComponent,
-  SidebarToggleDirective,
-  SidebarTogglerDirective
+  SidebarNavComponent
 } from '@coreui/angular';
 
 import { RbacService } from '../../auth/rbac.service';
@@ -38,12 +35,9 @@ function isOverflown(element: HTMLElement) {
     SidebarBrandComponent,
     SidebarNavComponent,
     SidebarFooterComponent,
-    SidebarToggleDirective,
-    SidebarTogglerDirective,
     ContainerComponent,
     DefaultFooterComponent,
     DefaultHeaderComponent,
-    IconDirective,
     NgScrollbar,
     RouterOutlet,
     RouterLink,

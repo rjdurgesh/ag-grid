@@ -1,0 +1,157 @@
+:host {
+  display: block;
+  --err-accent: var(--cui-primary, #4d5dfb);
+}
+
+.olserr {
+  position: relative;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 20px 48px;
+  overflow: hidden;
+  background:
+    radial-gradient(1100px 520px at 50% -12%, color-mix(in srgb, var(--err-accent) 24%, transparent), transparent 62%),
+    linear-gradient(180deg, color-mix(in srgb, var(--cui-body-color) 3%, var(--cui-body-bg)), var(--cui-body-bg));
+  color: var(--cui-body-color);
+
+  &--crit { --err-accent: #ef4444; }
+  &--warn { --err-accent: var(--cui-primary, #4d5dfb); }
+}
+
+/* ---- Decorative backdrop ---- */
+.olserr__bg { position: absolute; inset: 0; pointer-events: none; }
+.olserr__grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--cui-body-color) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--cui-body-color) 7%, transparent) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%);
+  -webkit-mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 72%);
+  opacity: 0.6;
+}
+.olserr__glow {
+  position: absolute; width: 460px; height: 460px; border-radius: 50%;
+  top: -120px; left: 50%; transform: translateX(-50%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--err-accent) 40%, transparent), transparent 70%);
+  filter: blur(46px); opacity: 0.55;
+  animation: olserr-float 9s ease-in-out infinite;
+}
+.olserr__glow--2 {
+  top: auto; bottom: -160px; left: 30%; width: 380px; height: 380px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--err-accent) 26%, transparent), transparent 70%);
+  animation-duration: 12s; animation-direction: reverse; opacity: 0.4;
+}
+
+/* ---- Brand bar: top-center ---- */
+.olserr__brandbar {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  padding-top: 46px;
+  animation: olserr-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.olserr__brand-mark {
+  display: inline-grid; place-items: center; width: 44px; height: 35px; border-radius: 10px;
+  font-size: 14px; font-weight: 800; letter-spacing: 0.5px; color: #fff;
+  background: linear-gradient(140deg, #4b1d95, #7c3aed 60%, #a21caf);
+  box-shadow: 0 12px 24px -8px rgba(124, 58, 237, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.olserr__brand-name {
+  font-size: 18px; font-weight: 800; letter-spacing: 3px; color: var(--cui-body-color);
+}
+
+/* ---- Card (centered in the space below the brand) ---- */
+.olserr__card {
+  position: relative;
+  z-index: 1;
+  margin: auto 0;
+  width: min(94vw, 560px);
+  text-align: center;
+  padding: 36px 34px 32px;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--cui-body-color) 10%, transparent);
+  background: color-mix(in srgb, var(--cui-body-bg) 78%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 30px 80px -28px rgba(10, 15, 40, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  animation: olserr-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.olserr__eyebrow {
+  display: inline-block; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 2.5px;
+  color: var(--err-accent); margin-bottom: 4px;
+}
+
+.olserr__code {
+  font-size: clamp(96px, 22vw, 168px);
+  font-weight: 900;
+  line-height: 0.92;
+  letter-spacing: -3px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, var(--err-accent), color-mix(in srgb, var(--err-accent) 45%, var(--cui-body-color)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 20px 60px color-mix(in srgb, var(--err-accent) 30%, transparent);
+  animation: olserr-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.olserr__sronly {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.olserr__title { margin: 6px 0 8px; font-size: 22px; font-weight: 800; letter-spacing: 0.2px; }
+.olserr__msg {
+  margin: 0 auto 26px; max-width: 42ch; font-size: 14.5px; line-height: 1.6; color: var(--cui-secondary-color);
+}
+
+/* ---- Actions ---- */
+.olserr__actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.olserr__btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 20px; border-radius: 11px; font-size: 14px; font-weight: 700;
+  cursor: pointer; text-decoration: none; border: 1px solid transparent;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.olserr__btn--primary {
+  color: #fff;
+  background: linear-gradient(135deg, var(--err-accent), color-mix(in srgb, var(--err-accent) 66%, #000));
+  box-shadow: 0 14px 30px -10px color-mix(in srgb, var(--err-accent) 75%, transparent);
+
+  &:hover { transform: translateY(-2px); box-shadow: 0 18px 36px -10px color-mix(in srgb, var(--err-accent) 85%, transparent); }
+}
+.olserr__btn--ghost {
+  color: var(--cui-body-color);
+  border-color: color-mix(in srgb, var(--cui-body-color) 18%, transparent);
+  background: color-mix(in srgb, var(--cui-body-color) 4%, transparent);
+
+  &:hover { transform: translateY(-2px); border-color: var(--err-accent); color: var(--err-accent); }
+}
+
+.olserr__support {
+  margin: 22px 0 0; font-size: 12.5px; color: var(--cui-secondary-color);
+  a { color: var(--err-accent); font-weight: 600; text-decoration: none; &:hover { text-decoration: underline; } }
+}
+
+@keyframes olserr-float {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(22px); }
+}
+@keyframes olserr-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes olserr-pop {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .olserr__glow, .olserr__card, .olserr__code { animation: none; }
+  .olserr__btn { transition: none; }
+}

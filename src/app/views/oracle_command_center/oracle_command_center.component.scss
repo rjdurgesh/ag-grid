@@ -1,0 +1,300 @@
+:host {
+  --occ-ok: #22c55e;
+  --occ-warn: #f59e0b;
+  --occ-crit: #ef4444;
+  --occ-accent: var(--cui-primary, #4d5dfb);
+  --occ-accent-soft: color-mix(in srgb, var(--occ-accent) 12%, transparent);
+  --occ-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --occ-line: var(--cui-border-color, rgba(255, 255, 255, 0.1));
+  --occ-surface2: color-mix(in srgb, var(--cui-body-color, #fff) 4%, transparent);
+  display: block;
+}
+
+/* The page uses the shared .ols-surface backdrop; lift content above its grid overlay. */
+.occ { color: var(--cui-body-color); }
+.occ > * { position: relative; z-index: 1; }
+
+/* ---- Masthead ---- */
+.occ__mast { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+.occ__logo {
+  width: 44px; height: 44px; border-radius: 13px; flex: 0 0 44px; display: grid; place-items: center; color: #fff;
+  background: linear-gradient(150deg, #4b1d95 0%, #7c3aed 55%, #a21caf 130%);
+  box-shadow: 0 10px 22px -6px rgba(124, 58, 237, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.occ__title { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: 0.2px; }
+.occ__sub { margin: 1px 0 0; font-size: 11.5px; color: var(--cui-secondary-color); font-family: var(--occ-mono); }
+.occ__spacer { flex: 1 1 auto; }
+/* Match Service Console toolbar controls exactly for cross-screen consistency. */
+.occ__select {
+  border: 1px solid var(--cui-border-color); background: var(--cui-body-bg); color: var(--cui-body-color);
+  border-radius: 9px; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.occ__icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 9px;
+  border: 1px solid var(--cui-border-color); background: var(--cui-body-bg); color: var(--cui-secondary-color);
+  cursor: pointer; transition: color 0.15s, border-color 0.15s;
+}
+.occ__icon-btn:hover { color: var(--cui-primary); border-color: var(--cui-primary); }
+.occ__stamp { margin: 8px 2px 14px; font-size: 11px; color: var(--cui-secondary-color); font-variant-numeric: tabular-nums; }
+/* Per-section / per-panel "last fetched · N ago" line, sits just left of the refresh icon. */
+.occ-hstamp { font-size: 10.5px; color: var(--cui-secondary-color); font-variant-numeric: tabular-nums; white-space: nowrap; margin-right: 2px; }
+*:focus-visible { outline: 2px solid var(--occ-accent); outline-offset: 2px; }
+
+/* ---- DB tabs ---- */
+.occ__tabs { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 0; margin-bottom: -1px; }
+.occ__tab { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; cursor: pointer; padding: 10px 16px; border-radius: 12px 12px 0 0; border: 1px solid var(--occ-line); border-bottom: none; background: var(--occ-surface2); color: var(--cui-secondary-color); font-weight: 700; font-size: 13px; white-space: nowrap; transition: color 0.15s, background 0.15s, transform 0.15s; }
+.occ__tab:hover { color: var(--cui-body-color); }
+.occ__tab.is-active { background: var(--cui-body-bg, #111726); color: var(--cui-body-color); transform: translateY(-1px); position: relative; box-shadow: 0 -6px 18px -8px rgba(77, 93, 251, 0.5); }
+.occ__tab.is-active::after { content: ""; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 2px; background: linear-gradient(90deg, var(--occ-accent), #23d3a3); border-radius: 2px; }
+.occ__tab-name small { display: block; font-size: 10px; font-weight: 600; color: var(--cui-secondary-color); letter-spacing: 0.3px; }
+.occ__tab-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; background: var(--occ-ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--occ-ok) 22%, transparent); }
+.occ__tab-dot[data-diag="false"] { background: var(--cui-secondary-color); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-secondary-color) 22%, transparent); }
+.occ__tabs-err { align-self: center; color: var(--occ-crit); font-size: 12px; }
+
+/* ---- Ribbon ---- */
+.occ__ribbon { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 10px 15px; background: var(--occ-surface2); border: 1px solid var(--occ-line); border-radius: 0 12px 12px 12px; margin-bottom: 16px; font-size: 12.5px; }
+.occ__ribbon b { font-family: var(--occ-mono); }
+.occ__muted { color: var(--cui-secondary-color); font-size: 11.5px; }
+.occ__sep { width: 1px; height: 18px; background: var(--occ-line); }
+
+/* Live instance indicator — the dot's colour reflects DB reachability
+   (green = up / responding, red = can't contact the DB, amber = connecting). */
+.occ-inst { display: inline-flex; align-items: center; gap: 8px; }
+.occ-inst b { font-family: var(--occ-mono); }
+.occ-inst__dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--cui-secondary-color);
+}
+.occ-inst[data-status="up"]   .occ-inst__dot { background: var(--occ-ok);   animation: occ-pulse-ok 2s ease-out infinite; }
+.occ-inst[data-status="down"] .occ-inst__dot { background: var(--occ-crit); animation: occ-pulse-crit 1.3s ease-out infinite; }
+.occ-inst[data-status="connecting"] .occ-inst__dot { background: var(--occ-warn); animation: occ-blink 1s steps(2, start) infinite; }
+
+@keyframes occ-pulse-ok {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--occ-ok) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--occ-ok) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--occ-ok) 0%, transparent); }
+}
+@keyframes occ-pulse-crit {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--occ-crit) 62%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--occ-crit) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--occ-crit) 0%, transparent); }
+}
+@keyframes occ-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Office env runs prefers-reduced-motion — swap the pulse for a solid static ring so the
+   state is still unmistakable without animation. */
+@media (prefers-reduced-motion: reduce) {
+  .occ-inst__dot { animation: none !important; opacity: 1; }
+  .occ-inst[data-status="up"]   .occ-inst__dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--occ-ok) 22%, transparent); }
+  .occ-inst[data-status="down"] .occ-inst__dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--occ-crit) 24%, transparent); }
+  .occ-inst[data-status="connecting"] .occ-inst__dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--occ-warn) 22%, transparent); }
+}
+
+/* ---- Rows / panels ---- */
+.occ__row { margin-bottom: 16px; }
+.occ__row--split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .occ__row--split { grid-template-columns: 1fr; } }
+
+.occ-panel { background: var(--cui-card-bg, var(--cui-body-bg)); border: 1px solid var(--occ-line); border-radius: 14px; box-shadow: 0 1px 2px rgba(15, 23, 55, 0.05), 0 12px 28px rgba(20, 30, 80, 0.06); overflow: hidden; }
+.occ-panel__head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--occ-line); }
+.occ-panel.is-collapsed .occ-panel__head { border-bottom: none; }
+.occ-panel__ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--occ-accent-soft); color: var(--occ-accent); flex: 0 0 28px; font-size: 15px; }
+.occ-panel__title { margin: 0; font-size: 14.5px; font-weight: 700; }
+.occ-panel__spacer { flex: 1 1 auto; }
+.occ-apitag { font-family: var(--occ-mono); font-size: 10px; color: var(--cui-secondary-color); background: var(--occ-surface2); border: 1px dashed var(--occ-line); border-radius: 6px; padding: 2px 7px; }
+.occ-ibtn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--occ-line); background: var(--occ-surface2); color: var(--cui-secondary-color); cursor: pointer; display: inline-grid; place-items: center; }
+.occ-ibtn:hover { color: var(--occ-accent); border-color: var(--occ-accent); }
+.occ-ibtn.is-spin svg { animation: occ-spin 0.9s linear infinite; }
+.occ-chev svg { transition: transform 0.2s ease; }
+.occ-panel.is-collapsed .occ-chev svg { transform: rotate(-90deg); }
+.occ-panel__body { padding: 14px; }
+
+.occ-empty { padding: 20px; border: 1px dashed var(--occ-line); border-radius: 10px; color: var(--cui-secondary-color); font-size: 13px; text-align: center; }
+.occ-empty--err { color: var(--occ-crit); border-color: color-mix(in srgb, var(--occ-crit) 40%, transparent); }
+.occ-panel--stub .occ-empty { background: var(--occ-surface2); }
+
+/* ---- Space section: consolidated hero on top, table below ---- */
+.occ-hero {
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+  padding: 6px 6px 16px; margin-bottom: 6px; border-bottom: 1px solid var(--occ-line);
+}
+.occ-gauge { width: 150px; height: 150px; flex: 0 0 150px; }
+.occ-gauge__track { fill: none; stroke: color-mix(in srgb, var(--cui-body-color) 12%, transparent); stroke-width: 11; }
+.occ-gauge__val { fill: none; stroke-width: 11; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 60px 60px; transition: stroke-dasharray 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+.occ-gauge__val--ok { stroke: var(--occ-ok); }
+.occ-gauge__val--warn { stroke: var(--occ-warn); }
+.occ-gauge__val--crit { stroke: var(--occ-crit); }
+.occ-gauge__pct { font-family: var(--occ-mono); font-size: 22px; font-weight: 800; text-anchor: middle; fill: var(--cui-body-color); }
+.occ-gauge__cap { font-size: 7px; text-anchor: middle; fill: var(--cui-secondary-color); text-transform: uppercase; letter-spacing: 1px; }
+.occ-tiles { display: flex; gap: 12px; flex: 1 1 auto; flex-wrap: wrap; }
+.occ-tile { flex: 1 1 130px; min-width: 120px; padding: 12px 15px; border: 1px solid var(--occ-line); border-radius: 12px; background: var(--occ-surface2); }
+.occ-tile__l { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); }
+.occ-tile__v { display: block; font-family: var(--occ-mono); font-weight: 800; font-size: 22px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.occ-tile__v--warn { color: var(--occ-warn); }
+.occ-tile__v--crit { color: var(--occ-crit); }
+
+.occ-danger { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 9px; background: color-mix(in srgb, var(--occ-crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--occ-crit) 38%, transparent); color: var(--occ-crit); font-size: 12px; margin: 12px 0; }
+
+/* ---- Dynamic table ---- */
+.occ-tbl-scroll { overflow-x: auto; border: 1px solid var(--occ-line); border-radius: 10px; }
+table.occ-dt { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.occ-dt th, table.occ-dt td { padding: 8px 11px; text-align: left; white-space: nowrap; }
+table.occ-dt thead th { position: sticky; top: 0; background: var(--occ-surface2); color: var(--cui-secondary-color); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; border-bottom: 1px solid var(--occ-line); }
+table.occ-dt tbody tr { border-top: 1px solid color-mix(in srgb, var(--cui-body-color) 6%, transparent); }
+table.occ-dt tbody tr:hover { background: var(--occ-accent-soft); }
+td.num, th.num { text-align: right; font-family: var(--occ-mono); font-variant-numeric: tabular-nums; }
+td.mono { font-family: var(--occ-mono); }
+.occ-row--crit td:first-child { box-shadow: inset 3px 0 0 var(--occ-crit); }
+.occ-row--warn td:first-child { box-shadow: inset 3px 0 0 var(--occ-warn); }
+
+.occ-barwrap { display: inline-flex; align-items: center; gap: 9px; }
+.occ-bar { position: relative; height: 8px; width: 120px; border-radius: 5px; background: color-mix(in srgb, var(--cui-body-color) 11%, transparent); overflow: hidden; }
+.occ-bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
+.occ-bar--ok { background: var(--occ-ok); }
+.occ-bar--warn { background: var(--occ-warn); }
+.occ-bar--crit { background: var(--occ-crit); }
+.occ-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; min-width: 48px; justify-content: center; }
+.occ-chip--ok { color: var(--occ-ok); background: color-mix(in srgb, var(--occ-ok) 14%, transparent); }
+.occ-chip--warn { color: var(--occ-warn); background: color-mix(in srgb, var(--occ-warn) 15%, transparent); }
+.occ-chip--crit { color: var(--occ-crit); background: color-mix(in srgb, var(--occ-crit) 14%, transparent); }
+.occ-chip--muted { color: var(--cui-secondary-color); background: var(--occ-surface2); }
+.occ-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+.occ-note { font-size: 11.5px; color: var(--cui-secondary-color); background: var(--occ-surface2); border-left: 3px solid var(--occ-accent); border-radius: 8px; padding: 9px 11px; margin: 12px 0 0; }
+.occ-note b { color: var(--cui-body-color); }
+
+/* ---- Panel-head severity badges (blocking / waiting counts) ---- */
+.occ-badge {
+  display: inline-flex; align-items: center; margin-left: 8px; padding: 2px 9px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.2px; text-transform: uppercase;
+}
+.occ-badge--crit { color: var(--occ-crit); background: color-mix(in srgb, var(--occ-crit) 14%, transparent); }
+.occ-badge--warn { color: var(--occ-warn); background: color-mix(in srgb, var(--occ-warn) 16%, transparent); }
+
+/* ---- Kill result toast (bottom-right, auto-dismiss) ---- */
+.occ-toast {
+  position: fixed; right: 22px; bottom: 22px; z-index: 1090;
+  display: inline-flex; align-items: center; gap: 9px; max-width: min(92vw, 460px);
+  padding: 11px 15px; border-radius: 11px; font-size: 13px; font-weight: 600; color: #fff;
+  box-shadow: 0 16px 40px rgba(10, 15, 40, 0.32); animation: occ-toast-in 0.22s ease both;
+}
+.occ-toast--ok { background: linear-gradient(120deg, #16a34a, #22c55e); }
+.occ-toast--err { background: linear-gradient(120deg, #dc2626, #ef4444); }
+.occ-toast__ic {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: 0 0 20px;
+  border-radius: 50%; background: rgba(255, 255, 255, 0.22); font-weight: 800; font-size: 12px;
+}
+@keyframes occ-toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---- Section 7: state filter (segmented) ---- */
+.occ-seg {
+  display: inline-flex; padding: 3px; border-radius: 10px; margin: 0 0 14px;
+  background: color-mix(in srgb, var(--cui-body-color) 6%, transparent); border: 1px solid var(--occ-line);
+}
+.occ-seg__btn {
+  border: 0; background: transparent; color: var(--cui-secondary-color); cursor: pointer;
+  font-size: 12.5px; font-weight: 700; padding: 6px 14px; border-radius: 8px;
+  display: inline-flex; align-items: center; gap: 7px; transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+
+  /* Accent-token based so it reads well in both light + dark (no reliance on body-bg). */
+  &.is-active { background: var(--occ-accent-soft); color: var(--occ-accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--occ-accent) 42%, transparent); }
+}
+.occ-seg__n {
+  min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: 10.5px; text-align: center;
+  background: color-mix(in srgb, var(--cui-body-color) 12%, transparent); color: var(--cui-body-color);
+}
+.occ-seg__btn.is-active .occ-seg__n { background: var(--occ-accent-soft); color: var(--occ-accent); }
+
+/* ---- Section 7: SID deep-dive drawer ---- */
+.occ-drawer-backdrop {
+  position: fixed; inset: 0; z-index: 1085; background: rgba(15, 20, 36, 0.55);
+  backdrop-filter: blur(1px); animation: occ-fade 0.15s ease both;
+}
+.occ-drawer {
+  position: fixed; top: 0; right: 0; z-index: 1086; height: 100vh; width: min(96vw, 760px);
+  display: flex; flex-direction: column; background: var(--cui-body-bg); color: var(--cui-body-color);
+  border-left: 1px solid var(--occ-line); box-shadow: -24px 0 60px rgba(0, 0, 0, 0.34);
+  animation: occ-drawer-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.occ-drawer__head {
+  display: flex; align-items: center; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--occ-line);
+}
+.occ-drawer__id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.occ-drawer__title { margin: 0; font-size: 16px; font-weight: 800; font-family: var(--occ-mono); }
+.occ-drawer__close {
+  border: 0; background: transparent; color: var(--cui-secondary-color); font-size: 26px; line-height: 1;
+  cursor: pointer; padding: 0 4px; &:hover { color: var(--cui-body-color); }
+}
+.occ-kill-btn {
+  border: 1px solid color-mix(in srgb, var(--occ-crit) 42%, transparent); color: var(--occ-crit);
+  background: color-mix(in srgb, var(--occ-crit) 8%, transparent); border-radius: 8px;
+  padding: 6px 14px; font-size: 12.5px; font-weight: 700; cursor: pointer; transition: all 0.14s;
+  &:hover { color: #fff; background: var(--occ-crit); border-color: var(--occ-crit); }
+}
+.occ-drawer__body { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px 22px; }
+
+.occ-facts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 9px 20px; margin: 0 0 16px;
+  > div { min-width: 0; }
+  .occ-facts__wide { grid-column: 1 / -1; }
+  dt { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); margin-bottom: 2px; }
+  dd { margin: 0; font-size: 13px; font-family: var(--occ-mono); color: var(--cui-body-color); word-break: break-all; }
+}
+
+.occ-ptabs {
+  display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--occ-line);
+}
+.occ-ptab {
+  border: 0; background: transparent; color: var(--cui-secondary-color); cursor: pointer;
+  font-size: 12.5px; font-weight: 700; padding: 6px 12px; border-radius: 8px 8px 0 0;
+  display: inline-flex; align-items: center; gap: 5px; transition: background 0.15s, color 0.15s;
+  &:hover { background: var(--occ-surface2); }
+  &.is-active { color: var(--occ-accent); background: var(--occ-accent-soft); box-shadow: inset 0 -2px 0 var(--occ-accent); }
+  &.is-locked { color: color-mix(in srgb, var(--cui-secondary-color) 70%, transparent); }
+}
+.occ-ptab__lock { font-size: 10px; }
+
+/* Per-panel toolbar (label + single-panel refresh) inside the deep-dive drawer. */
+.occ-pbar { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.occ-pbar__t { font-size: 12.5px; font-weight: 800; letter-spacing: 0.2px; color: var(--cui-body-color); }
+
+.occ-pre {
+  margin: 0; padding: 14px 16px; border-radius: 10px; border: 1px solid var(--occ-line);
+  background: color-mix(in srgb, var(--cui-body-color) 3%, transparent);
+  font-family: var(--occ-mono); font-size: 12px; line-height: 1.5; color: var(--cui-body-color);
+  white-space: pre; overflow-x: auto; max-height: 60vh;
+}
+
+/* ---- Rollback monitor (killed-session deep-dive) ---- */
+.occ-rb { display: flex; flex-direction: column; gap: 12px; }
+.occ-rb__top { display: flex; align-items: center; gap: 12px; }
+.occ-rb__pct { margin-left: auto; font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--occ-warn); }
+.occ-rb__bar {
+  position: relative; height: 12px; border-radius: 7px; overflow: hidden;
+  background: color-mix(in srgb, var(--cui-body-color) 12%, transparent);
+}
+.occ-rb__bar > i {
+  position: absolute; inset: 0 auto 0 0; border-radius: 7px;
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+  transition: width 0.4s ease;
+}
+.occ-rb__bar > i.is-done { background: linear-gradient(90deg, #16a34a, #22c55e); }
+.occ-rb__grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.occ-rb__tile {
+  display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid var(--occ-line); background: var(--occ-surface2);
+}
+.occ-rb__l { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); }
+.occ-rb__v { font-size: 17px; font-weight: 800; font-family: var(--occ-mono); font-variant-numeric: tabular-nums; color: var(--cui-body-color); }
+.occ-rb__v small { font-size: 12px; font-weight: 600; color: var(--cui-secondary-color); }
+.occ-rb__sub { font-size: 11px; color: var(--occ-warn); font-weight: 700; }
+
+@keyframes occ-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes occ-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+
+@keyframes occ-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .occ-ibtn.is-spin svg, .occ-gauge__val, .occ-chev svg,
+  .occ-drawer, .occ-drawer-backdrop, .occ-toast, .occ-rb__bar > i { animation: none; transition: none; }
+}

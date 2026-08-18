@@ -134,6 +134,15 @@ maps the flags to the `{ ACCESS: ROLE }` shape (`ADMIN`→`OMT-BOTH`, `READ`→`
 | `is_salt` | only `SALT_SCREENS` (Home + Config Ops) | on those screens (salt wins over read there) |
 | none | — | → redirected to the **No-Access** page |
 
+**Technical-action privilege** (Oracle Command Center **kill-session** + Service Console
+**start/stop**) is stricter than plain `canWrite`: it needs **ADMIN access AND a technical/both
+role** — `canActTechnical()` = `is_admin && role ∈ {OMT-TECHNICAL, OMT-BOTH}` (matched on the
+role value). So `ADMIN|OMT-TECHNICAL` and `ADMIN|OMT-BOTH` can act; **`ADMIN|OMT-FUNCTIONAL`
+and every `READ:*` are view-only** (buttons hidden); no-access sees nothing (guard → No-Access).
+Both screens still *view*-gate via `canView` (admin + read). Gated in the UI by the
+[`*olsCanAct`](src/app/auth/can-act.directive.ts) directive (Service Console) and the
+`canKill` computed (Oracle CC), with a defensive re-check before each action fires.
+
 **Generic core** — [`src/app/auth/rbac.config.ts`](src/app/auth/rbac.config.ts) is the
 one place that lists screens. To gate a new screen: add its `ScreenKey` (+ to
 `ALL_SCREENS`, and `SALT_SCREENS` if salt should see it), a `SCREEN_ROUTES` entry, a
@@ -142,10 +151,11 @@ one place that lists screens. To gate a new screen: add its `ScreenKey` (+ to
 from here.
 
 **Enforcement pieces:**
-- [`rbac.service.ts`](src/app/auth/rbac.service.ts) — `canView(screen)` / `canWrite(screen)` / `hasAnyAccess()`.
+- [`rbac.service.ts`](src/app/auth/rbac.service.ts) — `canView(screen)` / `canWrite(screen)` / `canActTechnical()` / `hasAnyAccess()`.
 - [`rbac.guard.ts`](src/app/auth/rbac.guard.ts) — blocks routes; redirects to the first allowed screen or `/no-access`.
 - Sidebar nav is filtered by `canView` in [`default-layout.component.ts`](src/app/layout/default-layout/default-layout.component.ts).
-- [`*olsCanWrite="'<screen>'"`](src/app/auth/can-write.directive.ts) — hides action controls (used on Service Console Start/Stop).
+- [`*olsCanAct`](src/app/auth/can-act.directive.ts) — hides technical-action controls (Service Console Start/Stop); Oracle CC kill uses the `canKill` computed. Both = `canActTechnical()`.
+- [`*olsCanWrite="'<screen>'"`](src/app/auth/can-write.directive.ts) — hides action controls by plain `canWrite` (still used elsewhere).
 - `<app-grid-data [readOnly]="…">` — hides Config Ops mutating controls (Add/Save/Delete/Edit/Duplicate/Roll/Upload); bound from `canWrite('config_ops_console')`.
 
 To go live: point `API.auth.roles` at your backend so it returns the flags from the
@@ -345,6 +355,60 @@ server list, then one agent proxy for status + actions):
 |---|---|---|
 | `POST /api/service_console/service-manage` (bulk status) | `{ host_name, agent_listen_port, host_platform, services: [names] }` | `{ HOST_NAME, <name>: { service, status }, …, reachable }`. Backend forms `http://{host}:{port}/service-manage` and calls it — **URL never reaches the browser**. `reachable: false` → the server shows a red "Unreachable" state. |
 | `POST /api/service_console/service-manage` (action) | `{ host_name, agent_listen_port, host_platform, service, action }` (`action` = start\|stop\|status; `service` = script path, or the name for a script-less Windows service) | `{ action, message, service, success }`. The UI shows the message as a toast, then re-fetches status. |
+
+**Oracle Command Center** (`backend/oracle_cc_api.py`, prefix `/api/oracle_cc`; on the
+`liveApiPrefixes` list so it always hits the real FastAPI, never the mock). Every tabular
+section returns the **same self-describing payload** so the UI never hardcodes columns:
+`{ status, columns:[{key,label,type,warn?,crit?}], rows:[{…}], summary? }`. Add a column to a
+query + its `columns` entry and it renders automatically (via the reusable `app-dyn-table`).
+Row meta keys: `__sev` (`ok`/`warn`/`crit` — **hover-only** cue: warn/crit rows stay white at
+rest and reveal an amber/red tint on hover; `ok`/none use the default blue hover — the state
+chip carries the meaning at rest), `__children` (drilldown tree), `<key>__sev` (chip colour),
+`__actions` (row action whitelist, e.g. `["kill"]`), plus raw `sid`/`serial` for the kill call.
+
+`app-dyn-table` inputs: `[model]` (the payload), `[actions]`/`(action)` (row buttons),
+`[maxRows]` (cap → past N rows a vertical scrollbar kicks in with a sticky header; horizontal
+scroll for wide/extra columns is always on), and `[filterable]`/`filterPlaceholder` (a
+client-side box that matches across every column and prunes drilldown trees to matching
+branches — used on the Sessions list where a DBA may face 100+ rows). The **action column is
+frozen** (CSS `position:sticky; right:0`, like an Excel freeze pane / ag-grid pinned column):
+it stays pinned to the right edge while the other columns scroll horizontally, so the
+Kill/Deep-dive buttons stay reachable no matter how many columns the payload adds.
+
+The OCC ribbon shows a **live instance indicator**: `{instance} instance` with a status dot —
+green = reachable (a section query returned), red = can't contact the DB (all sections
+errored), amber = connecting. It's derived client-side from the section load/error signals
+(`instanceStatus()`), no extra endpoint; the old "Diagnostics Pack" ribbon label was removed
+(pack licensing still surfaces where it matters — the deep-dive panels' `available/requires`).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **Config-driven**: add a row to `ORACLE_TARGETS` and a new tab appears (UI reads the same list). Each target: `{ key, label, sub?, instance, connection, diag_pack }`. |
+| `GET /api/oracle_cc/overview` | — | `{ status, data: OracleOverview[] }` — compact per-DB snapshot (storage %, blocking, active sessions, top segment) powering the **Home 'Oracle Databases' strip**; one call for the whole strip. |
+| `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — owner×tablespace space + gauge `summary` (autoextend-MAXSIZE-aware totals). |
+| `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes; partition→subpartition as `__children`. |
+| `POST /api/oracle_cc/{db}/top_indexes` | `{}` | Section 3 — top-5 indexes by allocated bytes (+ partitions). |
+| `POST /api/oracle_cc/{db}/index_health` | `{}` | Section 4 — UNUSABLE / INVISIBLE / STALE-STATS indexes (state chip). |
+| `POST /api/oracle_cc/{db}/locks` | `{}` | Section 5 — TX/TM enqueue locks, `state` BLOCKING/WAITING/HELD; each row killable. `summary:{blocking,waiting,total}`. |
+| `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — blocker→waiter tree (`__children`, chained blocking nests); each node killable. `summary:{chains,waiters}`. |
+| `POST /api/oracle_cc/{db}/sessions` | `{ status }` (`active`\|`inactive`\|`killed`\|`all`, default `active`) | Section 7 — session inventory filtered by state; each row carries `__actions` (`detail` always, `kill` unless already KILLED). Includes a **`running_for`** column (LAST_CALL_ET formatted; `—` for non-active) so long-running work is explicit instead of colour-coded. Row `__sev` = `crit` for KILLED only (long-running active is shown by the column, not an amber tint). `summary:{active,inactive,killed,total}` (full counts regardless of filter, for the tab badges). |
+| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), or `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`). `available:false` + `requires` names the pack when a feature isn't licensed. Panels: rollback (KILLED only), plan (actual `ALLSTATS LAST` — E-Rows vs A-Rows/Buffers/Reads), waits (V$SESSION_EVENT), binds (peeked binds), ash*, monitor*, stats, locks, awr* (* = needs `diag_pack`). |
+| `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). |
+
+Notes for the real wiring:
+- **Dummy ↔ real switch**: every section has a `*_dummy` (canned) + `*_real` (holds the actual
+  SQL, returns the identical shape). Flip `ORACLE_CC_USE_DUMMY=0` once connections exist. Each
+  `*_real` currently raises until you wire `_run()` (the single DB-access boundary).
+- **Monitoring account**: connect with a dedicated **read-only** user (`SELECT_CATALOG_ROLE`),
+  never OLS/SYS. `OracleTarget.connection` is the alias into your connection store.
+- **kill-session privilege**: `ALTER SYSTEM KILL SESSION` needs `ALTER SYSTEM`, which the
+  read-only monitor deliberately lacks — run kills through a **separate, privileged (audited)**
+  connection, never by widening the monitor grant. (sid/serial are Pydantic ints → injection-safe.)
+- **Licensing**: `diag_pack` per target gates ASH / AWR / SQL Monitor (Diagnostics/Tuning Pack)
+  — used by Section 7's SID deep-dive (next).
+- RBAC: registered as the `oracle_command_center` screen (admin + read can view; not a SALT
+  screen). The route is behind `rbacGuard` like every other screen, so roles are loaded before
+  it renders (needed for the admin-only kill gating), and the nav item is filtered consistently.
 
 ### 4a. Concrete JSON — what each endpoint expects & returns
 
@@ -671,6 +735,8 @@ backend rather than calling agents straight from the browser.)
 | Log Analytics | `src/app/views/log_analytics/*` |
 | Config Ops Console | `src/app/views/config_ops_console/*` |
 | Infrastructure Pulse | `src/app/views/infra_pulse/*` (`infra-data.service.ts` orchestrates config + agents) |
+| Oracle Command Center | `src/app/views/oracle_command_center/*` (`oracle-cc.service.ts`), `backend/oracle_cc_api.py`, contracts `src/app/shared/oracle-models.ts`, reusable table `src/app/components/dyn-table/*`. Home tiles deep-link with `?db=<key>` → the component lands on that tab. |
+| Error pages | `src/app/views/pages/error-page/*` (reusable `<app-error-page>` — brand top-center, then code/title), used by `page404/*` + `page500/*`. Full-bleed, theme-aware, always offers **Back to Home** + Go-back / Try-again. Unknown URLs (`**`) render the 404 page at the typed URL. Other error types are already handled: 401→login (authGuard), 403/no-role→No-Access (rbacGuard), and API 4xx/5xx surface per-screen (inline "couldn't load" states + the ErrorReportService popup with the backend message). Add a new full-page code by pointing a route at `<app-error-page code="…" …>`. |
 
 ---
 

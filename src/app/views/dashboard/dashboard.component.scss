@@ -700,3 +700,65 @@
     color: #f87171;
   }
 }
+
+/* ---- Oracle Databases strip --------------------------------------------- */
+.cc-ora .cc-card__head { justify-content: flex-start; gap: 10px; }
+.cc-ora .cc-card__link { margin-left: auto; }
+.cc-ora__hbadge {
+  font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 9px; border-radius: 999px;
+  color: var(--cc-crit); background: color-mix(in srgb, var(--cc-crit) 14%, transparent);
+}
+
+.cc-ora__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(244px, 1fr)); gap: 14px;
+}
+.cc-ora__tile {
+  display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 14px;
+  border: 1px solid var(--cui-border-color); border-left: 3px solid var(--cc-ok);
+  background: color-mix(in srgb, var(--cui-body-color) 3%, var(--cui-body-bg));
+  color: var(--cui-body-color); text-decoration: none;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+
+  &--warn { border-left-color: var(--cc-warn); }
+  &--crit { border-left-color: var(--cc-crit); }
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 26px rgba(20, 30, 80, 0.10);
+    border-color: color-mix(in srgb, var(--cui-primary) 40%, var(--cui-border-color));
+  }
+}
+.cc-ora__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cc-ora__name { font-size: 13.5px; font-weight: 800; letter-spacing: 0.2px; }
+.cc-ora__name small {
+  font-weight: 700; font-size: 10px; color: var(--cui-secondary-color);
+  margin-left: 5px; text-transform: uppercase; letter-spacing: 0.4px;
+}
+.cc-ora__blk {
+  font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
+  padding: 2px 8px; border-radius: 999px;
+  color: var(--cc-crit); background: color-mix(in srgb, var(--cc-crit) 14%, transparent);
+}
+
+.cc-ora__body { display: flex; align-items: center; gap: 14px; }
+.cc-ora__gauge { width: 72px; height: 72px; border-radius: 50%; flex: 0 0 72px; display: grid; place-items: center; }
+.cc-ora__ginner {
+  width: 54px; height: 54px; border-radius: 50%; background: var(--cui-body-bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.cc-ora__gpct { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.cc-ora__gcap { font-size: 8px; font-weight: 700; letter-spacing: 0.5px; color: var(--cui-secondary-color); }
+
+.cc-ora__stats { display: flex; flex-direction: column; gap: 8px; }
+.cc-ora__stat { display: flex; flex-direction: column; }
+.cc-ora__sv { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.cc-ora__sv.is-crit { color: var(--cc-crit); }
+.cc-ora__sl { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--cui-secondary-color); margin-top: 3px; }
+
+.cc-ora__foot { display: flex; flex-direction: column; gap: 1px; border-top: 1px solid var(--cui-border-color); padding-top: 9px; }
+.cc-ora__flabel { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--cui-secondary-color); }
+.cc-ora__fval { font-size: 12px; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-ora__tile { transition: none; }
+}

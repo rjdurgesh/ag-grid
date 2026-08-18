@@ -8,7 +8,9 @@ import { INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoin
 import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
 import { AppHealth, AppServices, HealthStatus, serviceCategory } from '../../shared/infra-models';
+import { OracleOverview } from '../../shared/oracle-models';
 import { InfraDataService } from '../infra_pulse/infra-data.service';
+import { OracleCcService } from '../oracle_command_center/oracle-cc.service';
 
 type Posture = 'operational' | 'degraded' | 'critical';
 
@@ -59,6 +61,7 @@ interface AppRow {
 })
 export class DashboardComponent implements OnInit {
   private readonly infra = inject(InfraDataService);
+  private readonly oracle = inject(OracleCcService);
   private readonly auth = inject(AuthService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -78,6 +81,11 @@ export class DashboardComponent implements OnInit {
 
   readonly healthByApp = signal<AppHealth[]>([]);
   readonly servicesByApp = signal<AppServices[]>([]);
+
+  /** Per-DB Oracle snapshot for the 'Oracle Databases' strip. */
+  readonly oracleDbs = signal<OracleOverview[]>([]);
+  /** Total blocking sessions across all DBs (drives the strip's alert accent). */
+  readonly oracleBlocking = computed(() => this.oracleDbs().reduce((n, d) => n + d.blocking, 0));
 
   readonly user = this.auth.user;
 
@@ -241,6 +249,20 @@ export class DashboardComponent implements OnInit {
     forkJoin(INFRA_APPS.map((app) => this.infra.services(app)))
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((list) => this.servicesByApp.set(list));
+
+    // Oracle snapshot (one call powers the whole strip).
+    this.oracle.overview()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) => this.oracleDbs.set(list),
+        error: () => this.oracleDbs.set([])
+      });
+  }
+
+  /** Conic gauge for a DB's storage %, coloured by severity. */
+  oraGauge(db: OracleOverview): string {
+    const color = db.storage_sev === 'crit' ? '#ef4444' : db.storage_sev === 'warn' ? '#f59e0b' : '#22c55e';
+    return `conic-gradient(${color} ${db.storage_pct * 3.6}deg, rgba(148,163,184,0.18) 0deg)`;
   }
 
   // --- Helpers --------------------------------------------------------------

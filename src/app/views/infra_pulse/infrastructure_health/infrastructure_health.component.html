@@ -11,20 +11,16 @@
     </div>
 
     <div class="iph__controls">
-      <label class="iph__interval">
-        <span class="iph__interval-label">Auto-refresh</span>
-        <select #sel class="iph__select" (change)="onIntervalChange(+sel.value)">
-          @for (m of intervals; track m) {
-            <option [value]="m" [selected]="refreshEveryMin() === m">Every {{ m }} minutes</option>
-          }
-        </select>
-      </label>
-      <button type="button" class="iph__refresh-all" (click)="refreshAll()">
+      <select #sel class="iph__select" (change)="onIntervalChange(+sel.value)">
+        @for (m of intervals; track m) {
+          <option [value]="m" [selected]="refreshEveryMin() === m">Refresh Every {{ m }} Minutes</option>
+        }
+      </select>
+      <button type="button" class="iph__icon-btn" title="Refresh all" aria-label="Refresh all" (click)="refreshAll()">
         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
           <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
           <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
-        Refresh all
       </button>
     </div>
   </div>
