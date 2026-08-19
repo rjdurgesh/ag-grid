@@ -320,6 +320,17 @@ export class GridDataComponent {
     enableClickSelection: false
   };
 
+  /** Freeze the checkbox column to the left edge so the row selector stays visible while the
+   *  data columns scroll horizontally (native selection column — safe to pin). */
+  readonly modalSelectionColumnDef: ColDef = {
+    pinned: 'left',
+    width: 52,
+    maxWidth: 52,
+    suppressMovable: true,
+    resizable: false,
+    lockPinned: true
+  };
+
   readonly fullWidthCellRenderer = DetailRowComponent;
 
   /** Context shared with all cell renderers via ag-grid `context`. */
@@ -1206,6 +1217,12 @@ export class GridDataComponent {
       headerName: 'Actions',
       minWidth: 250,
       maxWidth: 290,
+      // Frozen to the right edge so the row's Edit/Duplicate/Delete buttons stay
+      // reachable no matter how many data columns the table has (they scroll under it).
+      // ag-grid re-runs the cell renderer on the columnDefs rebuild once rows exist
+      // (see `_renderFix`), so the buttons still paint even though this is pinned.
+      pinned: 'right',
+      lockPinned: true,
       suppressMovable: true,
       valueGetter: () => '',
       sortable: false,

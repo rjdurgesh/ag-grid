@@ -27,17 +27,23 @@ import {
  * is passed through untouched.
  */
 export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
-  if (!environment.useMock || !req.url.startsWith(environment.apiBaseUrl)) {
+  // Only calls to our configured backend are candidates for mocking; leave the rest alone.
+  if (!req.url.startsWith(environment.apiBaseUrl)) {
     return next(req);
   }
 
   const url = new URL(req.url);
   const path = url.pathname;
 
-  // Config-driven passthrough: while mocking, requests whose path starts with a
-  // `liveApiPrefixes` entry go to the REAL backend (wire endpoints one prefix at
-  // a time from environment.ts — no code change needed here).
-  if (environment.liveApiPrefixes.some((prefix) => path.startsWith(prefix))) {
+  // Per-screen mock resolution: match the LONGEST `apiMocks` prefix this path starts with and
+  // use its flag; anything unlisted falls back to the global `useMock`. `false` → let the call
+  // through to the REAL backend. This is what makes one screen live-testable while the rest
+  // stay on mock data (and vice-versa) — flip a single entry in environment.ts, no code change.
+  const match = Object.keys(environment.apiMocks)
+    .filter((prefix) => path.startsWith(prefix))
+    .sort((a, b) => b.length - a.length)[0];
+  const mockThis = match ? environment.apiMocks[match] : environment.useMock;
+  if (!mockThis) {
     return next(req);
   }
 
@@ -222,7 +228,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
 
   // Infrastructure Pulse (Infra Health + Service Console) is served by the real
-  // FastAPI backend — see `liveApiPrefixes` (/api/infra_health, /api/service_console).
+  // FastAPI backend — see `apiMocks` (/api/infra_health, /api/service_console → false).
 
   // Unknown mock route.
   return respondError(404, `No mock handler for ${req.method} ${path}`);

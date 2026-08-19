@@ -3,10 +3,11 @@ blocking, sessions + SID deep-dive).
 
 Design goals baked in here:
 
-* **Config-driven DB targets.** ``ORACLE_TARGETS`` lists every database the screen
-  exposes as a tab. Add a row → a new tab appears on the UI (which reads the same list
-  from its own config) with zero query/UI code. Each target names a connection alias and
-  whether the Diagnostics/Tuning Pack is licensed (gates ASH / AWR / SQL Monitor).
+* **Config-driven DB targets.** The tab list is derived from ``app.state.db_configs``
+  (populated once in app.py from your ``connect_db`` loop) — a DB is exposed as a tab only
+  when its scope key is present there. ``TARGET_CATALOG`` supplies just the display metadata
+  per scope (label / instance / Diag-Pack, which gates ASH / AWR / SQL Monitor). Enable or
+  disable a database from that ONE place (app.py) and every screen follows, no code here.
 
 * **One self-describing payload for every tabular section** so the UI never hardcodes
   headers or column counts::
@@ -31,7 +32,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from env_loader import env_bool, env_int  # importing also loads backend/.env into os.environ
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from utils.logging import get_logger
@@ -40,80 +43,99 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/oracle_cc", tags=["oracle_cc"])
 
-# Flip to False (or set env ORACLE_CC_USE_DUMMY=0) once real monitoring connections exist.
-ORACLE_CC_USE_DUMMY = os.getenv("ORACLE_CC_USE_DUMMY", "1") != "0"
+# All tunables come from the environment / backend/.env (see .env.example); the literals
+# here are just the fallbacks when a var isn't set.
+#   ORACLE_CC_USE_DUMMY   per-screen backend dummy switch (like the UI's apiMocks) — 1 = canned
+#                         dummy data, 0 = run the real *_real SQL functions.
+#   ORACLE_CC_WARN/CRIT_PCT   tablespace gauge colour thresholds (percent used).
+#   ORACLE_CC_TOP_CHILD_LIMIT top-N biggest children per drill-down level (partitions have
+#                             hundreds; only the largest space consumers matter).
+ORACLE_CC_USE_DUMMY = env_bool("ORACLE_CC_USE_DUMMY", True)
+WARN_PCT = env_int("ORACLE_CC_WARN_PCT", 85)
+CRIT_PCT = env_int("ORACLE_CC_CRIT_PCT", 90)
+TOP_CHILD_LIMIT = env_int("ORACLE_CC_TOP_CHILD_LIMIT", 10)
 
-# GB threshold colours (percent used).
-WARN_PCT = 85
-CRIT_PCT = 90
 
-# Drill-down keeps each level to the TOP-N biggest children by size (a table can have
-# hundreds of partitions; only the largest space consumers matter). Bump if you want more.
-TOP_CHILD_LIMIT = 10
-
-
-# --- config-driven DB targets (the UI reads the same list) -------------------
+# --- config-driven DB targets ------------------------------------------------
+#
+# The SINGLE source of truth for "which databases exist" is ``app.state.db_configs``
+# (populated in app.py from your ``connect_db`` loop, keyed by scope). This catalog only
+# supplies the DISPLAY metadata (label / instance / Diag-Pack) per scope. A database becomes
+# an OCC tab **only if its scope key is present (and truthy) in db_configs** — i.e. connect_db
+# actually returned a connection for it. So enable/disable a DB from that ONE place (app.py);
+# the tabs, the Home strip and every per-DB query follow. The scope key doubles as the ``db``
+# path param AND the handle used to fetch that connection (``db_configs[target.connection]``).
 
 class OracleTarget(BaseModel):
-    key: str          # stable id used in the URL + UI tab
+    key: str          # == db_configs scope key; used in the URL + UI tab
     label: str        # "OLS CIB"
     sub: str | None = None   # "BATCH" / "REPORTING"
     instance: str            # display instance name
-    connection: str          # alias into your DB connection store (read-only monitor user)
+    connection: str          # handle into app.state.db_configs (defaults to == key)
     diag_pack: bool = False   # Diagnostics/Tuning Pack licensed? gates ASH/AWR/SQL Monitor
 
 
-ORACLE_TARGETS: list[OracleTarget] = [
-    OracleTarget(key="ols_group",         label="OLS GROUP",   instance="OLSPRD1", connection="ols_group_mon",  diag_pack=True),
-    OracleTarget(key="ols_cib_batch",     label="OLS CIB",   sub="BATCH",     instance="CIBB1", connection="ols_cib_batch_mon",  diag_pack=True),
-    OracleTarget(key="ols_cib_report",    label="OLS CIB",   sub="REPORTING", instance="CIBR1", connection="ols_cib_report_mon", diag_pack=True),
-    OracleTarget(key="ols_retail_batch",  label="OLS RETAIL", sub="BATCH",    instance="RTLB1", connection="ols_retail_batch_mon", diag_pack=False),
-    OracleTarget(key="ols_retail_report", label="OLS RETAIL", sub="REPORTING", instance="RTLR1", connection="ols_retail_report_mon", diag_pack=False),
-]
-_BY_KEY = {t.key: t for t in ORACLE_TARGETS}
+# Per-scope DISPLAY metadata — only the bits a raw DB connection can't give you: the screen
+# label/sub, the instance's friendly name, and whether the Diagnostics/Tuning Pack is licensed.
+# **KEYS MUST MATCH your db_configs scopes (connect_db()).** Everything structural (`key`,
+# `connection`) is the scope itself, so the catalog below is BUILT from this — not repeated.
+# (If your real connection/config already carries `instance` or the pack flag, source them
+# from there instead and drop them here — this map is just the hardcoded remainder.)
+TARGET_META: dict[str, dict[str, Any]] = {
+    "group":            {"label": "OLS GROUP",                        "instance": "OLSPRD1", "diag_pack": True},
+    "cib_batch":        {"label": "OLS CIB",    "sub": "BATCH",       "instance": "CIBB1",   "diag_pack": True},
+    "cib_reporting":    {"label": "OLS CIB",    "sub": "REPORTING",   "instance": "CIBR1",   "diag_pack": True},
+    "retail_batch":     {"label": "OLS RETAIL", "sub": "BATCH",       "instance": "RTLB1",   "diag_pack": False},
+    "retail_reporting": {"label": "OLS RETAIL", "sub": "REPORTING",   "instance": "RTLR1",   "diag_pack": False},
+}
+
+# Built dynamically: the scope key IS the target key AND the db_configs connection handle.
+TARGET_CATALOG: dict[str, OracleTarget] = {
+    scope: OracleTarget(
+        key=scope,
+        connection=scope,
+        label=meta["label"],
+        sub=meta.get("sub"),
+        instance=meta.get("instance", scope.upper()),
+        diag_pack=bool(meta.get("diag_pack", False)),
+    )
+    for scope, meta in TARGET_META.items()
+}
+
+
+def _enabled_target_keys(request: Request | None) -> list[str]:
+    """Catalogued scopes to surface as tabs. Dummy mode shows every catalogued scope (no real
+    connections exist in dev). Real mode shows a scope only if it's present AND truthy in
+    ``app.state.db_configs`` (connect_db returned a connection). Order follows the catalog."""
+    if ORACLE_CC_USE_DUMMY or request is None:
+        return list(TARGET_CATALOG.keys())
+    cfgs = getattr(request.app.state, "db_configs", {}) or {}
+    return [k for k in TARGET_CATALOG if cfgs.get(k)]
 
 
 def _target(db: str) -> OracleTarget:
-    t = _BY_KEY.get(db)
+    t = TARGET_CATALOG.get(db)
     if not t:
         raise HTTPException(status_code=404, detail=f"Unknown DB target '{db}'")
     return t
 
 
 @router.get("/targets")
-def list_targets() -> dict:
-    """The DB tabs the UI should render — config-driven, so a new DB is a one-line add."""
-    return {"status": "success", "data": [t.model_dump() for t in ORACLE_TARGETS]}
+def list_targets(request: Request) -> dict:
+    """The DB tabs the UI should render — driven by ``app.state.db_configs`` (see note above):
+    add/remove a scope in app.py's loader and the tab list follows, no change needed here."""
+    keys = _enabled_target_keys(request)
+    return {"status": "success", "data": [TARGET_CATALOG[k].model_dump() for k in keys]}
 
 
 @router.get("/overview")
-def overview() -> dict:
+def overview(request: Request) -> dict:
     """Compact per-DB snapshot for the Home 'Oracle Databases' strip — storage %, blocking
     sessions, active sessions, and the largest segment. ONE call powers every tile."""
-    return overview_dummy() if ORACLE_CC_USE_DUMMY else overview_real()
+    return overview_dummy(request) if ORACLE_CC_USE_DUMMY else overview_real(request)
 
 
-def overview_dummy() -> dict:
-    snap = {
-        "ols_group":         {"storage_pct": 79.2, "blocking": 1, "active": 3, "top_object": "TRADE_EVENTS",  "top_gb": 812.40},
-        "ols_cib_batch":     {"storage_pct": 88.6, "blocking": 0, "active": 5, "top_object": "POSITION_SNAP", "top_gb": 611.90},
-        "ols_cib_report":    {"storage_pct": 63.1, "blocking": 0, "active": 2, "top_object": "AUDIT_LOG",     "top_gb": 402.30},
-        "ols_retail_batch":  {"storage_pct": 91.4, "blocking": 2, "active": 4, "top_object": "FX_RATE_HIST",  "top_gb": 288.10},
-        "ols_retail_report": {"storage_pct": 45.7, "blocking": 0, "active": 1, "top_object": "REF_INSTRUMENT", "top_gb": 88.10},
-    }
-    data = []
-    for t in ORACLE_TARGETS:
-        s = snap.get(t.key, {"storage_pct": 0.0, "blocking": 0, "active": 0, "top_object": "—", "top_gb": 0.0})
-        data.append({
-            "key": t.key, "label": t.label, "sub": t.sub, "instance": t.instance, "diag_pack": t.diag_pack,
-            "storage_pct": s["storage_pct"], "storage_sev": _sev_for(s["storage_pct"]),
-            "blocking": s["blocking"], "active": s["active"],
-            "top_object": s["top_object"], "top_gb": s["top_gb"],
-        })
-    return {"status": "success", "data": data}
-
-
-def overview_real() -> dict:
+def overview_real(request: Request | None = None) -> dict:
     """One light query per target (kept cheap for Home): max tablespace used %
     (DBA_TABLESPACE_USAGE_METRICS), COUNT blocking sessions (V$SESSION.blocking_session),
     COUNT active USER sessions (V$SESSION), and the largest segment (DBA_SEGMENTS)."""
@@ -131,47 +153,9 @@ def space(db: str) -> dict:
     return space_dummy(t) if ORACLE_CC_USE_DUMMY else space_real(t)
 
 
-# --- Section 1: dummy -----------------------------------------------------------
-
-def space_dummy(t: OracleTarget) -> dict:
-    """Canned space data. Same shape as space_real."""
-    hot = t.key == "ols_group"
-    warm = t.key == "ols_cib_batch"
-    # (owner, tablespace, total_gb, used_gb) — total/free are tablespace-level, used is per owner.
-    raw = [
-        ("OLS",       "OLS_DATA", 2048, 1840.44 if hot else 1120.0),
-        ("OLS",       "OLS_IDX",  1024, 902.10 if hot else 540.0),
-        ("OLS",       "OLS_LOB",  512,  305.77),
-        ("OLS_BATCH", "OLS_DATA", 2048, 118.30),
-        ("OLS_ARCH",  "OLS_ARCH", 256,  148.20 if warm else 60.0),
-        ("OLS",       "OLS_STG",  256,  17.30),
-    ]
-    # tablespace-level used = sum of owner rows in that tablespace
-    ts_used: dict[str, float] = {}
-    for _o, ts, _tot, used in raw:
-        ts_used[ts] = ts_used.get(ts, 0.0) + used
-    rows = []
-    for owner, ts, total, used in raw:
-        free = round(total - ts_used[ts], 2)
-        pct = round(ts_used[ts] / total * 100, 1) if total else 0.0
-        rows.append({
-            "owner": owner, "tablespace": ts,
-            "total_gb": float(total), "used_gb": round(used, 2), "free_gb": free, "used_pct": pct,
-        })
-    return _space_payload(rows)
-
-
 # --- Section 1: real (the actual query) ----------------------------------------
 
 def space_real(t: OracleTarget) -> dict:
-    """Owner×tablespace space with autoextend-aware totals. Returns the same shape as
-    space_dummy. Requires SELECT on DBA_SEGMENTS / DBA_TABLESPACES / DBA_DATA_FILES /
-    DBA_FREE_SPACE (SELECT_CATALOG_ROLE).
-
-    Total = autoextend MAXSIZE (what actually fills), not current allocation.
-    Used  = that owner's segment bytes in the tablespace.
-    Free  = tablespace max - tablespace total-used.
-    """
     sql = """
         WITH ts_max AS (   -- autoextend-aware capacity per tablespace
             SELECT tablespace_name,
@@ -271,30 +255,6 @@ def _stats_cell(fresh: bool) -> dict:
     return cell
 
 
-def top_segments_dummy(t: OracleTarget) -> dict:
-    rows = [
-        {"object": "TRADE_EVENTS", "kind": "Table · RANGE", "size_gb": 812.40, "num_rows": 4120400000,
-         "last_analyzed": "14-Aug 02:10", **_stats_cell(True), "__children": [
-            {"object": "P_2026_08", "kind": "Partition", "size_gb": 96.20, "num_rows": 512000000,
-             "last_analyzed": "14-Aug 02:10", **_stats_cell(False), "__children": [
-                {"object": "SP_EUR", "kind": "Subpartition", "size_gb": 48.10, "num_rows": 256000000, "last_analyzed": "14-Aug", **_stats_cell(False)},
-                {"object": "SP_USD", "kind": "Subpartition", "size_gb": 48.10, "num_rows": 256000000, "last_analyzed": "14-Aug", **_stats_cell(True)},
-             ]},
-            {"object": "P_2026_07", "kind": "Partition", "size_gb": 94.00, "num_rows": 500000000, "last_analyzed": "01-Aug", **_stats_cell(True)},
-            {"object": "P_2026_06", "kind": "Partition", "size_gb": 90.70, "num_rows": 486000000, "last_analyzed": "01-Jul", **_stats_cell(True)},
-         ]},
-        {"object": "POSITION_SNAP", "kind": "Table · HASH", "size_gb": 611.90, "num_rows": 2980000000,
-         "last_analyzed": "13-Aug 23:40", **_stats_cell(False), "__children": [
-            {"object": "SYS_P4411", "kind": "Partition", "size_gb": 153.00, "num_rows": 745000000, "last_analyzed": "13-Aug", **_stats_cell(False)},
-            {"object": "SYS_P4412", "kind": "Partition", "size_gb": 152.60, "num_rows": 742000000, "last_analyzed": "13-Aug", **_stats_cell(False)},
-         ]},
-        {"object": "AUDIT_LOG", "kind": "Table · Heap", "size_gb": 402.30, "num_rows": 1900000000, "last_analyzed": "14-Aug 02:22", **_stats_cell(True)},
-        {"object": "REF_INSTRUMENT", "kind": "Table · Heap", "size_gb": 88.10, "num_rows": 42000000, "last_analyzed": "14-Aug 02:24", **_stats_cell(True)},
-        {"object": "FX_RATE_HIST", "kind": "Table · RANGE", "size_gb": 61.50, "num_rows": 380000000, "last_analyzed": "10-Aug", **_stats_cell(False)},
-    ]
-    return {"status": "success", "columns": _TOP_COLS, "rows": rows}
-
-
 def top_segments_real(t: OracleTarget) -> dict:
     """Top-10 tables by DATA segment bytes (owner = the monitored schema), each drilling into
     its **top-{n} partitions by size**, and each partition into its **top-{n} subpartitions by
@@ -336,20 +296,6 @@ _IDX_COLS = [
 ]
 
 
-def top_indexes_dummy(t: OracleTarget) -> dict:
-    rows = [
-        {"index_name": "IX_TRADE_EVENTS_TS", "table_name": "TRADE_EVENTS", "kind": "LOCAL · RANGE", "size_gb": 143.60, "__children": [
-            {"index_name": "P_2026_08", "table_name": "TRADE_EVENTS", "kind": "Index partition", "size_gb": 18.40},
-            {"index_name": "P_2026_07", "table_name": "TRADE_EVENTS", "kind": "Index partition", "size_gb": 17.90},
-        ]},
-        {"index_name": "PK_POSITION_SNAP", "table_name": "POSITION_SNAP", "kind": "GLOBAL", "size_gb": 96.10},
-        {"index_name": "IX_AUDIT_LOG_DT", "table_name": "AUDIT_LOG", "kind": "NORMAL", "size_gb": 71.20},
-        {"index_name": "IX_TRADE_INSTR", "table_name": "TRADE_EVENTS", "kind": "NORMAL", "size_gb": 40.30},
-        {"index_name": "UK_REF_INSTRUMENT", "table_name": "REF_INSTRUMENT", "kind": "UNIQUE", "size_gb": 9.80},
-    ]
-    return {"status": "success", "columns": _IDX_COLS, "rows": rows}
-
-
 def top_indexes_real(t: OracleTarget) -> dict:
     """Top-5 indexes by allocated bytes (DBA_SEGMENTS INDEX / INDEX PARTITION / INDEX
     SUBPARTITION), joined to DBA_INDEXES for table + type. Each partitioned index drills into
@@ -387,18 +333,6 @@ _IDXH_COLS = [
     {"key": "detail", "label": "Detail", "type": "text"},
     {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
 ]
-
-
-def index_health_dummy(t: OracleTarget) -> dict:
-    rows = [
-        {"index_name": "IX_TRADE_EVENTS_TS", "table_name": "TRADE_EVENTS", "state": "UNUSABLE", "state__sev": "crit",
-         "detail": "Offline — not maintained; rebuild required", "last_analyzed": "14-Aug", "__sev": "crit"},
-        {"index_name": "IX_STG_LOAD_TMP", "table_name": "STG_LOAD", "state": "INVISIBLE", "state__sev": "warn",
-         "detail": "Maintained but hidden from optimizer (active/offline)", "last_analyzed": "12-Aug", "__sev": "warn"},
-        {"index_name": "IX_POSITION_ACCT", "table_name": "POSITION_SNAP", "state": "STALE STATS", "state__sev": "warn",
-         "detail": "32% rows modified since last gather", "last_analyzed": "09-Aug", "__sev": "warn"},
-    ]
-    return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
 
 
 def index_health_real(t: OracleTarget) -> dict:
@@ -473,15 +407,6 @@ def _locks_payload(rows: list[dict]) -> dict:
             "summary": {"blocking": blocking, "waiting": waiting, "total": len(rows)}}
 
 
-def locks_dummy(t: OracleTarget) -> dict:
-    rows = [
-        _lock_row("OLS.TRADE_EVENTS", "TX (Row)", "Exclusive (X)", 845, 22931, "OLS_BATCH", "batch07", "14m 20s", "BLOCKING", "7ymz9qk4d3n1a"),
-        _lock_row("OLS.TRADE_EVENTS", "TX (Row)", "Row-X (RX)",   512, 10233, "OLS_APP",   "wildfly02", "13m 55s", "WAITING",  "7ymz9qk4d3n1a"),
-        _lock_row("OLS.POSITION_SNAP", "TM (DML)", "Row-X (SX)",  233,  4021, "OLS",       "etl01",    "02m 41s", "HELD",     "9ab77tzp0q2mx"),
-    ]
-    return _locks_payload(rows)
-
-
 def locks_real(t: OracleTarget) -> dict:
     """Held/blocking enqueue locks. V$LOCK (held rows: LMODE>0) joined to V$LOCKED_OBJECT +
     DBA_OBJECTS for the object name and V$SESSION for user/machine/sql; BLOCKING derived from
@@ -521,13 +446,6 @@ def kill_session(db: str, body: KillRequest) -> dict:
     this behind an admin role + an explicit confirm before calling it."""
     t = _target(db)
     return kill_session_dummy(t, body) if ORACLE_CC_USE_DUMMY else kill_session_real(t, body)
-
-
-def kill_session_dummy(t: OracleTarget, body: KillRequest) -> dict:
-    logger.info("DUMMY kill-session %s,%s on %s (immediate=%s)", body.sid, body.serial, t.key, body.immediate)
-    return {"status": "success", "success": True,
-            "message": f"Session {body.sid},{body.serial} has been marked for kill on {t.instance}. "
-                       "Its uncommitted work is being rolled back."}
 
 
 def kill_session_real(t: OracleTarget, body: KillRequest) -> dict:
@@ -589,20 +507,6 @@ def _blocking_payload(rows: list[dict]) -> dict:
     waiters = _count(rows) - len(rows)
     return {"status": "success", "columns": _BLK_COLS, "rows": rows,
             "summary": {"chains": len(rows), "waiters": waiters}}
-
-
-def blocking_dummy(t: OracleTarget) -> dict:
-    rows = [
-        _blk_node(845, 22931, "BLOCKER", "OLS_BATCH", "OLS.TRADE_EVENTS", "— holding TX row lock", "—", "7ymz9qk4d3n1a", "batch07",
-                  children=[
-                      _blk_node(512, 10233, "WAITER", "OLS_APP", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "13m 55s", "7ymz9qk4d3n1a", "wildfly02"),
-                      _blk_node(933, 5561, "WAITER", "OLS_APP", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "09m 12s", "3xk9p1v7c2rba", "wildfly05",
-                                children=[
-                                    _blk_node(1002, 7781, "WAITER", "OLS_RPT", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "04m 03s", "3xk9p1v7c2rba", "rpt01"),
-                                ]),
-                  ]),
-    ]
-    return _blocking_payload(rows)
 
 
 def blocking_real(t: OracleTarget) -> dict:
@@ -690,30 +594,6 @@ def _sess_row(sid: int, serial: int, username: str, status: str, machine: str, p
     return r
 
 
-def _all_sessions() -> list[dict]:
-    return [
-        _sess_row(845, 22931, "OLS_BATCH", "ACTIVE", "batch07", "sqlplus@batch07", "7ymz9qk4d3n1a", "ON CPU", "14m 20s", 860),
-        _sess_row(512, 10233, "OLS_APP", "ACTIVE", "wildfly02", "JDBC Thin Client", "7ymz9qk4d3n1a", "enq: TX - row lock contention", "13m 55s", 835),
-        _sess_row(233, 4021, "OLS", "ACTIVE", "etl01", "ETL_Loader", "9ab77tzp0q2mx", "db file scattered read", "00m 42s", 42),
-        _sess_row(760, 882, "OLS_APP", "INACTIVE", "wildfly03", "JDBC Thin Client", None, "SQL*Net message from client", "22m 10s", 1330),
-        _sess_row(611, 5567, "OLS_RPT", "INACTIVE", "rpt02", "BIPublisher", None, "SQL*Net message from client", "48m 03s", 2883),
-        _sess_row(1002, 7781, "OLS_RPT", "KILLED", "rpt01", "BIPublisher", "3xk9p1v7c2rba", "KILLED — PMON cleanup", "01m 12s", 72),
-    ]
-
-
-def sessions_dummy(t: OracleTarget, status: str) -> dict:
-    rows = _all_sessions()
-    counts = {
-        "active": sum(1 for r in rows if r["status"] == "ACTIVE"),
-        "inactive": sum(1 for r in rows if r["status"] == "INACTIVE"),
-        "killed": sum(1 for r in rows if r["status"] == "KILLED"),
-        "total": len(rows),
-    }
-    if status != "all":
-        rows = [r for r in rows if r["status"] == status.upper()]
-    return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
-
-
 def sessions_real(t: OracleTarget, status: str) -> dict:
     """V$SESSION (type='USER') for the inventory; STATUS is ACTIVE/INACTIVE/KILLED. `last_call`
     from LAST_CALL_ET. Full per-state counts computed with COUNT(*) GROUP BY status. Same shape."""
@@ -785,161 +665,6 @@ def _panel_rollback(percent: int = 63) -> dict:
     }
 
 
-def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
-    diag = t.diag_pack
-    pack = "Diagnostics + Tuning Pack"
-    # Look the session up so a KILLED one gets the rollback monitor + correct facts.
-    src = next((r for r in _all_sessions() if r["sid"] == q.sid), None)
-    status = src["status"] if src else "ACTIVE"
-    sql_raw = src.get("sql_id") if src else None
-    sql_id = q.sql_id or (sql_raw if sql_raw and sql_raw != "—" else None) or "7ymz9qk4d3n1a"
-
-    session = {
-        "sid": q.sid, "serial": q.serial, "session": f"{q.sid},{q.serial}",
-        "username": src["username"] if src else "OLS_BATCH", "status": status,
-        "machine": src["machine"] if src else "batch07",
-        "program": src["program"] if src else "sqlplus@batch07",
-        "logon_time": "16-Aug 13:31", "sql_id": sql_id,
-        "osuser": (src["username"].lower() if src else "olsbatch"),
-        "module": "COB_TRADE_UPDATE", "last_call": src["last_call"] if src else "14m 20s",
-    }
-
-    # DBMS_XPLAN.DISPLAY_CURSOR(:sql_id, :child, 'ALLSTATS LAST +PEEKED_BINDS') — the ACTUAL
-    # execution stats (Starts / E-Rows vs A-Rows / A-Time / Buffers / Reads) are what pinpoint
-    # the bottleneck, not the estimated plan.
-    plan_text = (
-        f"SQL_ID  {sql_id}, child number 0\n"
-        "-------------------------------------\n"
-        "UPDATE TRADE_EVENTS SET STATUS = :1 WHERE BOOK_ID = :2 AND TRADE_DT >= :3\n\n"
-        "Plan hash value: 2847583921\n\n"
-        "-------------------------------------------------------------------------------------------------\n"
-        "| Id | Operation           | Name         | Starts | E-Rows | A-Rows |   A-Time   | Buffers | Reads |\n"
-        "-------------------------------------------------------------------------------------------------\n"
-        "|  0 | UPDATE STATEMENT    |              |      1 |        |      0 | 00:12:41.5 |   1204K |  980K |\n"
-        "|  1 |  UPDATE             | TRADE_EVENTS |      1 |        |      0 | 00:12:41.5 |   1204K |  980K |\n"
-        "|* 2 |   TABLE ACCESS FULL | TRADE_EVENTS |      1 |    412 |   8400K| 00:11:58.2 |   1201K |  980K |\n"
-        "-------------------------------------------------------------------------------------------------\n\n"
-        "Predicate Information (identified by operation id):\n"
-        "   2 - filter(\"BOOK_ID\"=:2 AND \"TRADE_DT\">=:3)\n\n"
-        "Note\n-----\n"
-        "   - cardinality mis-estimate: E-Rows=412 vs A-Rows=8.4M on TABLE ACCESS FULL (Id 2)\n"
-        "   - 980K physical reads / 1.2M buffer gets — the full scan is the bottleneck;\n"
-        "     an index on (BOOK_ID, TRADE_DT) would make this an INDEX RANGE SCAN\n"
-        "   - 11m58s of the 12m41s elapsed is spent on Id 2"
-    )
-
-    ash_cols = [
-        {"key": "sample_time", "label": "Sample", "type": "text"},
-        {"key": "session_state", "label": "State", "type": "chip"},
-        {"key": "event", "label": "Event", "type": "text"},
-        {"key": "wait_class", "label": "Wait class", "type": "text"},
-        {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
-    ]
-    ash_rows = [
-        {"sample_time": "13:45:12", "session_state": "WAITING", "session_state__sev": "warn", "event": "enq: TX - row lock contention", "wait_class": "Application", "sql_id": sql_id},
-        {"sample_time": "13:45:11", "session_state": "WAITING", "session_state__sev": "warn", "event": "enq: TX - row lock contention", "wait_class": "Application", "sql_id": sql_id},
-        {"sample_time": "13:44:58", "session_state": "ON CPU", "session_state__sev": "ok", "event": "—", "wait_class": "CPU", "sql_id": sql_id},
-        {"sample_time": "13:44:40", "session_state": "WAITING", "session_state__sev": "warn", "event": "db file scattered read", "wait_class": "User I/O", "sql_id": sql_id},
-    ]
-
-    monitor_text = (
-        "Global Information\n"
-        "------------------------------\n"
-        f" Status              :  EXECUTING\n"
-        f" SQL ID              :  {sql_id}\n"
-        " Execution Started   :  16-Aug 13:31:02\n"
-        " Elapsed Time        :  14.3m\n"
-        " CPU Time            :  2.1m\n"
-        " Wait Time           :  12.2m  (enq: TX - row lock contention)\n"
-        " Buffer Gets         :  1,204,559\n"
-        " Rows Processed      :  0 (blocked)\n"
-    )
-
-    # Wait Events — V$SESSION_EVENT (cumulative per SID): where the session's time actually goes.
-    waits_cols = [
-        {"key": "event", "label": "Wait event", "type": "mono"},
-        {"key": "wait_class", "label": "Class", "type": "chip"},
-        {"key": "time_waited_s", "label": "Time waited (s)", "type": "num"},
-        {"key": "waits", "label": "Waits", "type": "num"},
-        {"key": "avg_ms", "label": "Avg (ms)", "type": "num"},
-    ]
-    waits_rows = [
-        {"event": "enq: TX - row lock contention", "wait_class": "Application", "wait_class__sev": "crit",
-         "time_waited_s": 761.2, "waits": 1, "avg_ms": 761200.0, "__sev": "crit"},
-        {"event": "db file scattered read", "wait_class": "User I/O", "wait_class__sev": "warn",
-         "time_waited_s": 118.7, "waits": 41822, "avg_ms": 2.8, "__sev": "warn"},
-        {"event": "db file sequential read", "wait_class": "User I/O", "wait_class__sev": "warn",
-         "time_waited_s": 22.4, "waits": 9210, "avg_ms": 2.4},
-        {"event": "log file sync", "wait_class": "Commit", "wait_class__sev": "ok", "time_waited_s": 1.1, "waits": 120, "avg_ms": 9.2},
-        {"event": "SQL*Net message to client", "wait_class": "Idle", "wait_class__sev": "muted", "time_waited_s": 0.3, "waits": 5044, "avg_ms": 0.1},
-    ]
-
-    # Bind Variables — peeked binds (DBMS_XPLAN +PEEKED_BINDS) / V$SQL_BIND_CAPTURE: spot skew / bind peeking.
-    binds_cols = [
-        {"key": "name", "label": "Bind", "type": "mono"},
-        {"key": "pos", "label": "Pos", "type": "num"},
-        {"key": "datatype", "label": "Datatype", "type": "text"},
-        {"key": "value", "label": "Peeked value", "type": "mono"},
-    ]
-    binds_rows = [
-        {"name": ":1  (STATUS)", "pos": 1, "datatype": "VARCHAR2(16)", "value": "'SETTLED'"},
-        {"name": ":2  (BOOK_ID)", "pos": 2, "datatype": "NUMBER", "value": "4021"},
-        {"name": ":3  (TRADE_DT)", "pos": 3, "datatype": "DATE", "value": "2026-08-01 00:00:00"},
-    ]
-
-    stats_cols = [
-        {"key": "object", "label": "Object", "type": "mono"},
-        {"key": "num_rows", "label": "Rows", "type": "num"},
-        {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
-        {"key": "state", "label": "Stats", "type": "chip"},
-    ]
-    stats_rows = [
-        {"object": "TRADE_EVENTS", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "STALE", "state__sev": "warn"},
-        {"object": "PK_TRADE_EV", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "FRESH", "state__sev": "ok"},
-    ]
-
-    locks_cols = [
-        {"key": "type", "label": "Lock", "type": "text"},
-        {"key": "mode_held", "label": "Mode held", "type": "text"},
-        {"key": "object", "label": "Object", "type": "mono"},
-        {"key": "state", "label": "State", "type": "chip"},
-    ]
-    locks_rows = [
-        {"type": "TX (Row)", "mode_held": "Exclusive (X)", "object": "OLS.TRADE_EVENTS", "state": "BLOCKING", "state__sev": "crit"},
-    ]
-
-    awr_cols = [
-        {"key": "snap", "label": "Snap window", "type": "text"},
-        {"key": "elapsed_s", "label": "Elapsed (s)", "type": "num"},
-        {"key": "cpu_s", "label": "CPU (s)", "type": "num"},
-        {"key": "buffer_gets", "label": "Buffer gets", "type": "num"},
-        {"key": "executions", "label": "Execs", "type": "num"},
-    ]
-    awr_rows = [
-        {"snap": "16-Aug 12:00–13:00", "elapsed_s": 512.4, "cpu_s": 88.1, "buffer_gets": 42118900, "executions": 1204},
-        {"snap": "16-Aug 11:00–12:00", "elapsed_s": 498.7, "cpu_s": 84.7, "buffer_gets": 41008120, "executions": 1190},
-    ]
-
-    panels = []
-    # Killed sessions are (almost always) busy rolling back — surface that first.
-    if status == "KILLED":
-        panels.append(_panel_rollback())
-    panels += [
-        _panel_text("plan", "Execution Plan", plan_text),
-        _panel_table("waits", "Wait Events", waits_cols, waits_rows),
-        _panel_table("binds", "Bind Variables", binds_cols, binds_rows),
-        _panel_table("ash", "Active Session History", ash_cols, ash_rows, requires=pack, available=diag),
-        _panel_text("monitor", "SQL Monitor", monitor_text, requires=pack, available=diag),
-        _panel_table("stats", "Object Statistics", stats_cols, stats_rows),
-        _panel_table("locks", "Locks Held", locks_cols, locks_rows),
-        _panel_table("awr", "AWR (DBA_HIST)", awr_cols, awr_rows, requires=pack, available=diag),
-    ]
-    # Per-tab refresh: return only the requested panel (the real fn would run just that query).
-    if q.panel:
-        panels = [p for p in panels if p["key"] == q.panel]
-    return {"status": "success", "session": session, "panels": panels}
-
-
 def session_detail_real(t: OracleTarget, q: SessionDetailQuery) -> dict:
     """Assemble the deep-dive from, per panel:
       * rollback— (killed sessions) V$SESSION_LONGOPS WHERE opname='Transaction Rollback'
@@ -976,3 +701,22 @@ def _run(t: OracleTarget, sql: str, binds: dict | None = None) -> list[tuple]:
         f"No live monitoring connection wired for '{t.connection}'. "
         "Set ORACLE_CC_USE_DUMMY=1 (default) or implement _run()."
     )
+
+
+# ---------------------------------------------------------------------------
+# Dummy-mode implementations live in oracle_cc_dummy (canned data, no routes). They
+# import the shared contract/helpers from THIS module, so this import sits at the very
+# bottom - after every shared name above is defined - to keep the cycle safe. It wires
+# the routes' `*_dummy` calls (used when ORACLE_CC_USE_DUMMY is on).
+from oracle_cc_dummy import (  # noqa: E402
+    overview_dummy,
+    space_dummy,
+    top_segments_dummy,
+    top_indexes_dummy,
+    index_health_dummy,
+    locks_dummy,
+    kill_session_dummy,
+    blocking_dummy,
+    sessions_dummy,
+    session_detail_dummy,
+)

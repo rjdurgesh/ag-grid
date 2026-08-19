@@ -18,9 +18,10 @@ for a real HTTP call to the agent and a real disk-usage read.
 
 from __future__ import annotations
 
-import random
 import shutil
 from typing import Any
+
+from env_loader import env_bool  # importing also loads backend/.env into os.environ
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -30,6 +31,12 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/infra_health", tags=["infra_health"])
+
+# Per-screen backend DUMMY switch (the backend analog of the UI's apiMocks) — set in .env.
+# 1/true = canned dummy data (config catalogue + synthetic agent); 0/false = real DB proc +
+# real agent HTTP call. Lets you develop this screen against real infra without touching the
+# others (and vice-versa).
+INFRA_HEALTH_USE_DUMMY = env_bool("INFRA_HEALTH_USE_DUMMY", True)
 
 
 # --- request bodies ----------------------------------------------------------
@@ -54,50 +61,20 @@ class ShareRequest(BaseModel):
 # --- config: the DB-connection boundary (stand-in) ---------------------------
 
 def retrieve_server_health_details(group_db_config: Any, app_env: str | None) -> dict:
-    """Server/share monitoring catalogue for the health screen — the DB boundary.
+    """Server/share monitoring catalogue for the health screen — the DB boundary. Dummy mode
+    returns canned rows (``infrastructure_health_dummy.config_dummy``); real mode runs the
+    stored proc. Same ``{ status, data:[ rows ] }`` shape either way, so nothing downstream
+    changes."""
+    if INFRA_HEALTH_USE_DUMMY:
+        return config_dummy(app_env)
+    return retrieve_server_health_details_real(group_db_config, app_env)
 
-    Stand-in: returns the data inline. In production, open ``group_db_config`` and call
-    the stored proc filtered by ``app_env`` — it must return this same shape
-    (``{ status, data:[ rows ] }``) and nothing downstream changes.
-    """
-    return {
-        "status": "success",
-        "data": [
-            {
-                "APP_ENV": "DEV", "RESOURCE_CATEGORY": "SERVER", "HOST_PLATFORM": "WINDOWS",
-                "HOST_NAME": "eurv12", "HOST_ADDRESS": "eurv12.xmp.net.intra", "AGENT_LISTEN_PORT": 7002,
-                "APP_NAME": "OLS_GROUP",
-                "MONITORING_CONFIG": {"infra": ["ram", "cpu"], "disk": ["c", "d"],
-                                       "services": [{"OLSFILELoader": None, "OLSUI-API-3": None}]},
-                "IS_ACTIVE": "Y", "COMMENTS": "This is an OLS Dev 1 Server.",
-                "LAST_UPDATED_BY": "OPS-10432", "LAST_UPDATED_ON": "2026-02-10 14:59:16",
-            },
-            {
-                "APP_ENV": "DEV", "RESOURCE_CATEGORY": "SERVER", "HOST_PLATFORM": "WINDOWS",
-                "HOST_NAME": "eurv13", "HOST_ADDRESS": "eurv13.xmp.net.intra", "AGENT_LISTEN_PORT": 7002,
-                "APP_NAME": "OLS_CIB",
-                "MONITORING_CONFIG": {"infra": ["ram", "cpu"], "disk": ["c", "d"], "services": []},
-                "IS_ACTIVE": "Y", "COMMENTS": "This is an OLS CIB Dev 1 Server.",
-                "LAST_UPDATED_BY": "OPS-10435", "LAST_UPDATED_ON": "2026-02-12 14:59:16",
-            },
-            {
-                "APP_ENV": "DEV", "RESOURCE_CATEGORY": "SERVER", "HOST_PLATFORM": "LINUX",
-                "HOST_NAME": "eurv22", "HOST_ADDRESS": "eurv22.xmp.net.intra", "AGENT_LISTEN_PORT": 7002,
-                "APP_NAME": "OLS_GROUP",
-                "MONITORING_CONFIG": {"infra": ["ram", "cpu"], "disk": ["apps", "data", "tmp"],
-                                       "services": [{"apache": "/data/apache/scripts/apache.sh"}]},
-                "IS_ACTIVE": "Y", "COMMENTS": "This is an OLS Linux Dev Server.",
-                "LAST_UPDATED_BY": "OPS-10435", "LAST_UPDATED_ON": "2026-02-12 14:59:16",
-            },
-            {
-                "APP_ENV": "DEV", "RESOURCE_CATEGORY": "SHARE_DRIVE", "HOST_PLATFORM": "SHARE_DRIVE",
-                "HOST_NAME": "olsdev", "HOST_ADDRESS": "\\\\nas.dev.intra\\olsdev", "AGENT_LISTEN_PORT": 999999,
-                "APP_NAME": "OLS_GROUP", "MONITORING_CONFIG": None,
-                "IS_ACTIVE": "Y", "COMMENTS": "This is an OLS Share drive.",
-                "LAST_UPDATED_BY": "OPS-10435", "LAST_UPDATED_ON": "2026-02-12 14:59:16",
-            },
-        ],
-    }
+
+def retrieve_server_health_details_real(group_db_config: Any, app_env: str | None) -> dict:
+    """Real catalogue: open ``group_db_config`` and call the stored proc filtered by
+    ``app_env``; it must return the same ``{ status, data:[ rows ] }`` shape. Wire this to your
+    DB (mirrors ``log_analytics.dependencies.fetch_log_path``)."""
+    raise RuntimeError("retrieve_server_health_details_real: wire the stored proc via group_db_config")
 
 
 # --- agent metrics (stand-in for the on-server agent) ------------------------
@@ -124,81 +101,27 @@ def call_agent(host_name: str, agent_listen_port: int, host_platform: str | None
     ``_agent_over_http``), so it never reaches the browser's network tab.
     """
     try:
-        # ─── DUMMY ↔ REAL SWITCH — change these two lines to go live ─────────────
-        # DUMMY (synthetic data, no agent needed) — ACTIVE:
-        return _synthetic_agent(host_name, agent_listen_port, host_platform, monitoring_config)
-        # PRODUCTION (call the real on-server agent) — comment the line above, then
-        # uncomment the next line AND the `_agent_over_http` function further down:
-        # return _agent_over_http(host_name, agent_listen_port, monitoring_config)
-        # ────────────────────────────────────────────────────────────────────────
-    except Exception as exc:  # final safety net (also covers the real HTTP path)
+        if INFRA_HEALTH_USE_DUMMY:
+            return synthetic_agent(host_name, agent_listen_port, host_platform, monitoring_config)
+        return _agent_over_http(host_name, agent_listen_port, monitoring_config)
+    except Exception as exc:  # final safety net (covers a dead agent AND httpx not installed)
         logger.warning("agent unreachable %s:%s — %s", host_name, agent_listen_port, exc)
         return {"HOST_NAME": host_name, "reachable": False, "error": str(exc)}
 
 
-# ─── PRODUCTION agent call — uncomment this whole function to talk to real agents ───
-# Requires httpx:  pip install httpx   (and add `httpx` to backend/requirements.txt)
-#
-# def _agent_over_http(host_name: str, agent_listen_port: int,
-#                      monitoring_config: dict | None) -> dict:
-#     """Call the on-server agent's /system-metrics endpoint and return its reading.
-#
-#     The dynamic URL is built HERE (server-side) from the config row's host_name +
-#     agent_listen_port — so it NEVER reaches the browser. The agent is expected to
-#     return the same shape `_synthetic_agent` produces (os, cpu_percent, load_avg,
-#     ram{bytes,percent}, disk_storage{drive → {used, free, total, percent}}); we just
-#     stamp `reachable=True`. A slow/dead agent fails fast on the timeout and comes back
-#     as `reachable=False` instead of stalling the screen.
-#     """
-#     import httpx
-#     url = f"http://{host_name}.xmp.net.intra:{agent_listen_port}/system-metrics"
-#     try:
-#         resp = httpx.post(url, json=monitoring_config, timeout=8.0)
-#         resp.raise_for_status()
-#         data = resp.json()
-#         data["reachable"] = True
-#         return data
-#     except Exception as exc:
-#         logger.warning("agent unreachable at %s — %s", url, exc)
-#         return {"HOST_NAME": host_name, "reachable": False, "error": str(exc)}
-# ───────────────────────────────────────────────────────────────────────────────────
-
-
-def _synthetic_agent(host_name: str, agent_listen_port: int, host_platform: str | None,
-                     monitoring_config: dict | None) -> dict:
-    """Stand-in agent reading — deterministic synthetic data. See `_agent_over_http`
-    (above, commented out) for the real call this replaces."""
-    cfg = monitoring_config or {}
-    rnd = random.Random(host_name)  # deterministic per host so values are stable
-    is_windows = (host_platform or "").upper().startswith("WIN")
-
-    # RAM in bytes (like the real agent): fake 16 GB on Windows, 8 GB on Linux.
-    total_ram = (16 if is_windows else 8) * _GB
-    ram_percent = round(rnd.uniform(18, 72), 1)
-    used_ram = int(total_ram * ram_percent / 100)
-    ram = {"total": total_ram, "used": used_ram, "available": total_ram - used_ram,
-           "free": total_ram - used_ram, "percent": ram_percent}
-
-    # Disk per configured mount — values as "NN.NN GB" strings, keyed by drive.
-    disk_storage: dict[str, dict] = {}
-    for name in cfg.get("disk", []) or []:
-        drive = f"{name.upper()}:/" if is_windows else (name if str(name).startswith("/") else f"/{name}")
-        total_gb = round(rnd.uniform(80, 750), 2)
-        pct = round(rnd.uniform(5, 92), 1)
-        used_gb = round(total_gb * pct / 100, 2)
-        disk_storage[drive] = {"drive": drive, "total": _gb_str(total_gb), "used": _gb_str(used_gb),
-                                "free": _gb_str(round(total_gb - used_gb, 2)), "percent": pct}
-
-    return {
-        "AGENT_LISTEN_PORT": agent_listen_port,
-        "HOST_NAME": host_name,
-        "reachable": True,
-        "os": "Windows" if is_windows else "Linux",
-        "cpu_percent": round(rnd.uniform(0, 95), 1),
-        "load_avg": [round(rnd.uniform(0, 2), 2) for _ in range(3)],
-        "ram": ram,
-        "disk_storage": disk_storage,
-    }
+def _agent_over_http(host_name: str, agent_listen_port: int, monitoring_config: dict | None) -> dict:
+    """Real agent call (used when INFRA_HEALTH_USE_DUMMY is off). The dynamic URL is built HERE
+    (server-side) from host_name + agent_listen_port, so it NEVER reaches the browser. Returns
+    the same shape ``synthetic_agent`` produces, stamped ``reachable=True``. Requires httpx
+    (``pip install httpx``) — imported lazily so dummy mode needs no extra dependency; a
+    missing httpx / slow / dead agent is caught by ``call_agent`` and rendered as unreachable."""
+    import httpx  # lazy: only needed in real mode
+    url = f"http://{host_name}.xmp.net.intra:{agent_listen_port}/system-metrics"
+    resp = httpx.post(url, json=monitoring_config, timeout=8.0)
+    resp.raise_for_status()
+    data = resp.json()
+    data["reachable"] = True
+    return data
 
 
 def read_share_space(host_address: str) -> dict:
@@ -245,3 +168,10 @@ def infra_health_metrics(req: MetricsRequest) -> dict:
 def infra_health_share(req: ShareRequest) -> dict:
     """Per-share free space (computed directly from the path — no agent)."""
     return read_share_space(req.host_address)
+
+
+# ---------------------------------------------------------------------------
+# Dummy-mode data lives in infrastructure_health_dummy (canned catalogue + synthetic agent).
+# It imports the shared byte/GB helpers from THIS module, so this import sits at the bottom —
+# after those helpers are defined — to keep the cycle safe. Used when INFRA_HEALTH_USE_DUMMY on.
+from infrastructure_health_dummy import config_dummy, synthetic_agent  # noqa: E402

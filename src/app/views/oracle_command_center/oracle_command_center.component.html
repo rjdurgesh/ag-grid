@@ -99,8 +99,8 @@
               }
 
               <!-- Detailed table below -->
-              <app-dyn-table [model]="$any(sp)" />
-              <p class="occ-note"><b>Note:</b> rows are owner × tablespace; <b>Used</b> is that owner's segments, <b>Total/Free</b> are the tablespace (autoextend MAXSIZE-aware). Bar turns amber at ≥{{ s.warn_pct }}%, red at ≥{{ s.crit_pct }}%.</p>
+              <app-dyn-table [model]="$any(sp)" [freezeFirst]="false" />
+              <p class="occ-note"><b>Note:</b> each row is one owner's usage inside a tablespace — <b>Used</b> is that owner's segments, <b>Total/Free</b> are the whole tablespace. Bar goes amber at {{ s.warn_pct }}%, red at {{ s.crit_pct }}%.</p>
             }
           }
         </div>
@@ -125,7 +125,7 @@
           @else if (topSegError()) { <div class="occ-empty occ-empty--err">Couldn't read top tables. Try refresh.</div> }
           @else if (topSeg(); as d) {
             <app-dyn-table [model]="d" [maxRows]="10" />
-            <p class="occ-note"><b>Note:</b> size is <b>allocated data-segment bytes</b> (indexes/LOBs excluded). Expand ▸ a partitioned table for per-partition, then per-subpartition size. STALE = stats out of date at that level.</p>
+            <p class="occ-note"><b>Note:</b> size counts the table's <b>data segments only</b> — its indexes and LOBs are listed separately. <b>STALE</b> = the optimizer stats for that object are out of date.</p>
           }
         </div>
       }
@@ -147,7 +147,7 @@
         <div class="occ-panel__body">
           @if (topIdxLoading() && !topIdx()) { <app-loader variant="skeleton" [rows]="3" message="Reading indexes…" /> }
           @else if (topIdxError()) { <div class="occ-empty occ-empty--err">Couldn't read indexes. Try refresh.</div> }
-          @else if (topIdx(); as d) { <app-dyn-table [model]="d" [maxRows]="10" /> }
+          @else if (topIdx(); as d) { <app-dyn-table [model]="d" [maxRows]="10" [freezeFirst]="false" /> }
         </div>
       }
     </section>
@@ -196,7 +196,7 @@
           @else if (locks(); as d) {
             @if (d.rows.length) {
               <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
-              <p class="occ-note"><b>Note:</b> TX (row) + TM (DML) enqueue locks. <b>BLOCKING</b> = this session is holding a lock others wait on; <b>WAITING</b> = queued behind one. @if (canKill()) { Kill ends the session and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
+              <p class="occ-note"><b>Note:</b> a <b>BLOCKING</b> session is holding a lock others are stuck behind — that's the one to act on. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No TX/TM locks are being held right now. ✓</div> }
           }
         </div>
@@ -226,7 +226,7 @@
           @else if (blocking(); as d) {
             @if (d.rows.length) {
               <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
-              <p class="occ-note"><b>Note:</b> each root is a final <b>BLOCKER</b>; expand ▸ to see the sessions it blocks (chained blocking nests deeper). Kill the blocker to free the chain.@if (!canKill()) {  Killing requires an admin role.}</p>
+              <p class="occ-note"><b>Note:</b> each top row is the <b>root blocker</b>; its children are the sessions waiting on it. @if (canKill()) { <b>Kill the blocker</b> to free the whole chain. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No sessions are blocking others right now. ✓</div> }
           }
         </div>
@@ -265,7 +265,7 @@
               <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
                 filterPlaceholder="Filter sessions — SID, user, machine, SQL_ID, event…"
                 [actions]="sessionActions()" (action)="onSessionAction($event)" />
-              <p class="occ-note"><b>Note:</b> <b>Deep-dive</b> opens the actual execution plan, ASH, SQL Monitor, object stats, and locks for that SID. @if (canKill()) { Kill ends the session and rolls back its transaction. } @else { Killing a session requires an admin role. } ASH / SQL Monitor / AWR need the Diagnostics + Tuning Pack.</p>
+              <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. } ASH / SQL Monitor / AWR need the Diagnostics + Tuning Pack.</p>
             } @else { <div class="occ-empty">No {{ sessionFilter() }} sessions right now.</div> }
           }
         </div>

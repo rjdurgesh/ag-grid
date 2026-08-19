@@ -185,9 +185,10 @@
 }
 
 .login-brand__logo {
-  height: clamp(2.6rem, 9vw, 3.6rem);
+  height: clamp(3.2rem, 11vw, 4.6rem);
   width: auto;
-  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 18px rgba(107, 120, 255, 0.55));
+  /* Cyan glow to match the drop's own colour, so it reads as lit on the dark backdrop. */
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 20px rgba(45, 205, 220, 0.55));
   animation: login-brand-float 5s ease-in-out infinite;
 }
 

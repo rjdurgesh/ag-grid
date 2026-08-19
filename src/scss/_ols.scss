@@ -181,6 +181,17 @@
   padding-inline: 10px;
   transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
+/* Submenu (nav-group) children indent. CoreUI pulls the child `.nav-icon` left with
+   `margin-left: -32px`, sized for its own (larger) default link padding. Our flat
+   `padding-inline: 10px` above shrinks that padding, so the -32px yanked child icons far left
+   ("submenu loses its position"). Neutralise the negative pull and set an explicit left
+   indent so children read as a clean nested sub-list under their parent. */
+#sidebar1 .sidebar-nav .nav-group-items .nav-link {
+  padding-left: 30px;
+}
+#sidebar1 .sidebar-nav .nav-group-items .nav-icon {
+  margin-left: 0;
+}
 #sidebar1 .sidebar-nav .nav-link:hover,
 #sidebar1 .sidebar-nav .nav-group-toggle:hover {
   background: rgba(255, 255, 255, 0.07);

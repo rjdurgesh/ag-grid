@@ -5,7 +5,7 @@ where to configure things, every API the app calls, and the exact request/respon
 shape each one expects. It is kept up to date as the app evolves.
 
 > TL;DR to go live: edit **`src/environments/environment.ts`** — set `apiBaseUrl`, `appEnv`,
-> and either `useMock: false` (all real) or add path prefixes to `liveApiPrefixes` (real one
+> and either `useMock: false` (all real) or flip individual screens in `apiMocks` (real one
 > area at a time). Make sure each API returns the documented shape.
 
 ---
@@ -18,8 +18,8 @@ URLs only and reads `apiBaseUrl` from here).
 | Setting | Purpose | Change to |
 |---|---|---|
 | `apiBaseUrl` | Root of your backend. Every endpoint is built from it. | Your API host, e.g. `https://ols-api.mybank.net` |
-| `useMock` | While `true`, the in-app mock answers endpoints with canned data. | `false` to hit the real backend for everything |
-| `liveApiPrefixes` | While `useMock` is true, request paths starting with any of these go to the **real** backend (the rest stay mocked). Wire endpoints one area at a time. | e.g. `['/api/log/']` (Log Analytics is live), add `'/api/config/'` etc. as you go |
+| `useMock` | Global default: while `true`, the in-app mock answers any endpoint **not listed in `apiMocks`** with canned data. | `false` to hit the real backend for everything unlisted |
+| `apiMocks` | **Per-screen** mock control — a map of API path-prefix → `mock?` (`true` = in-app mock, `false` = real backend). A request matches the **longest** prefix; unlisted paths fall back to `useMock`. Lets you develop/test one screen live while the rest stay mocked (or vice-versa). | e.g. `'/api/oracle_cc': false` (live), `'/api/config': true` (mock) — flip one entry, no code change |
 | `appEnv` | Environment (`DEV` \| `STG` \| `LIVE`). Header pill + sent to env-aware APIs (Config `tables`, Infra `config`). **`LIVE` is sent to the backend as `PROD`** via `apiEnv()`. | The env this instance runs in |
 | `supportEmail` | Address the error-popup "Email" button reports to. | Your support inbox |
 | `infraHealthRefreshMinutes` / `serviceConsoleRefreshMinutes` | Default auto-refresh cadence (minutes) for the Infrastructure Health / Service Console screens. Must be one of each page's dropdown options (5 / 10 / 15 / 30). | Your preferred default (e.g. `5`) |
@@ -28,12 +28,28 @@ URLs only and reads `apiBaseUrl` from here).
 | `devRoles` | Preview role flags while `GET /api/auth/roles` is mocked. | — |
 
 **Wiring an endpoint to the real backend (no code change):** point `apiBaseUrl` at your host,
-keep `useMock: true`, and add the path prefix to `liveApiPrefixes`. That area then hits the
-real API (visible in DevTools → Network) while everything else stays on the mock. Log Analytics
-(`/api/log/`) is already wired this way to the FastAPI backend in `backend/`.
+keep `useMock: true`, and set that screen's prefix to `false` in `apiMocks` (e.g.
+`'/api/config': false`). That area then hits the real API (visible in DevTools → Network) while
+everything else stays on the mock. The reverse works too — keep a screen on `true` to mock it
+even when `useMock` is globally `false`. Log Analytics, Infra Health, Service Console and Oracle
+Command Center are already `false` (live) against the FastAPI backend in `backend/`.
 
 `API` (in `api-endpoints.ts`) is one object holding every URL. To fully detach the mock, set
 `useMock: false` (or remove `mockApiInterceptor` from [`app.config.ts`](src/app/app.config.ts)).
+
+**Two independent layers of "mock" — don't confuse them:**
+1. **Frontend `apiMocks`** (above, in `environment.ts`) decides whether a request *even leaves
+   Angular*. `true` → answered in-browser by `mock-data.ts`, backend never called.
+2. **Backend per-screen `*_USE_DUMMY`** (in `backend/.env`) decides, *once a request reaches
+   FastAPI*, whether that screen returns canned data or runs its real functions:
+   `ORACLE_CC_USE_DUMMY`, `INFRA_HEALTH_USE_DUMMY` (add one per screen you split). The backend
+   has **no** `apiMocks` — these env flags are its equivalent, screen by screen.
+
+   So three dev stages per screen: `apiMocks:true` (pure UI, no backend) → `apiMocks:false` +
+   `*_USE_DUMMY=1` (real backend, canned data, no DB/agent) → `apiMocks:false` + `*_USE_DUMMY=0`
+   (fully live). Each screen with a real/dummy split keeps its dummy data in a sibling module
+   (`oracle_cc_dummy.py`, `infrastructure_health_dummy.py`) imported at the bottom of its API
+   file; flip its flag in `.env`, no code change.
 
 ---
 
@@ -356,8 +372,8 @@ server list, then one agent proxy for status + actions):
 | `POST /api/service_console/service-manage` (bulk status) | `{ host_name, agent_listen_port, host_platform, services: [names] }` | `{ HOST_NAME, <name>: { service, status }, …, reachable }`. Backend forms `http://{host}:{port}/service-manage` and calls it — **URL never reaches the browser**. `reachable: false` → the server shows a red "Unreachable" state. |
 | `POST /api/service_console/service-manage` (action) | `{ host_name, agent_listen_port, host_platform, service, action }` (`action` = start\|stop\|status; `service` = script path, or the name for a script-less Windows service) | `{ action, message, service, success }`. The UI shows the message as a toast, then re-fetches status. |
 
-**Oracle Command Center** (`backend/oracle_cc_api.py`, prefix `/api/oracle_cc`; on the
-`liveApiPrefixes` list so it always hits the real FastAPI, never the mock). Every tabular
+**Oracle Command Center** (`backend/oracle_cc_api.py`, prefix `/api/oracle_cc`; set `false` in
+`apiMocks` so it always hits the real FastAPI, never the mock). Every tabular
 section returns the **same self-describing payload** so the UI never hardcodes columns:
 `{ status, columns:[{key,label,type,warn?,crit?}], rows:[{…}], summary? }`. Add a column to a
 query + its `columns` entry and it renders automatically (via the reusable `app-dyn-table`).
@@ -370,9 +386,10 @@ chip carries the meaning at rest), `__children` (drilldown tree), `<key>__sev` (
 `[maxRows]` (cap → past N rows a vertical scrollbar kicks in with a sticky header; horizontal
 scroll for wide/extra columns is always on), and `[filterable]`/`filterPlaceholder` (a
 client-side box that matches across every column and prunes drilldown trees to matching
-branches — used on the Sessions list where a DBA may face 100+ rows). The **action column is
-frozen** (CSS `position:sticky; right:0`, like an Excel freeze pane / ag-grid pinned column):
-it stays pinned to the right edge while the other columns scroll horizontally, so the
+branches — used on the Sessions list where a DBA may face 100+ rows). The **first column (row
+identifier) and the action column are both frozen** (CSS `position:sticky; left:0` / `right:0`,
+like Excel freeze panes / ag-grid pinned columns): they stay pinned to their edges while the
+middle columns scroll horizontally — so you never lose which row you're on, and the
 Kill/Deep-dive buttons stay reachable no matter how many columns the payload adds.
 
 The OCC ribbon shows a **live instance indicator**: `{instance} instance` with a status dot —
@@ -383,7 +400,7 @@ errored), amber = connecting. It's derived client-side from the section load/err
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **Config-driven**: add a row to `ORACLE_TARGETS` and a new tab appears (UI reads the same list). Each target: `{ key, label, sub?, instance, connection, diag_pack }`. |
+| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **Driven by `app.state.db_configs`**: a DB shows only if its scope key is present (and, in real mode, truthy) there — so `app.py`'s `load_db_configs()` / `connect_db` loop is the single on/off switch for every screen. `TARGET_META` (in `oracle_cc_api.py`) just adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, diag_pack }` where `key == connection ==` the db_configs scope. Dummy mode shows all catalogued scopes. |
 | `GET /api/oracle_cc/overview` | — | `{ status, data: OracleOverview[] }` — compact per-DB snapshot (storage %, blocking, active sessions, top segment) powering the **Home 'Oracle Databases' strip**; one call for the whole strip. |
 | `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — owner×tablespace space + gauge `summary` (autoextend-MAXSIZE-aware totals). |
 | `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes; partition→subpartition as `__children`. |
@@ -396,11 +413,23 @@ errored), amber = connecting. It's derived client-side from the section load/err
 | `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). |
 
 Notes for the real wiring:
-- **Dummy ↔ real switch**: every section has a `*_dummy` (canned) + `*_real` (holds the actual
-  SQL, returns the identical shape). Flip `ORACLE_CC_USE_DUMMY=0` once connections exist. Each
-  `*_real` currently raises until you wire `_run()` (the single DB-access boundary).
+- **Dummy ↔ real switch**: every section has a `*_real` (holds the actual SQL, in `oracle_cc_api.py`)
+  and a `*_dummy` (canned data) — the dummies live in a **separate module `oracle_cc_dummy.py`**
+  (imported at the bottom of `oracle_cc_api.py` once the shared helpers exist) so the router file
+  stays lean; both return the identical shape. Flip `ORACLE_CC_USE_DUMMY=0` once connections exist.
+  Each `*_real` currently raises until you wire `_run()` (the single DB-access boundary).
+- **Tunables live in `backend/.env`** (loaded by `env_loader.py`, no external dep; real env vars
+  win; `.env` is gitignored, `.env.example` is the committed template): `ORACLE_CC_USE_DUMMY`,
+  `ORACLE_CC_WARN_PCT` / `ORACLE_CC_CRIT_PCT` (gauge thresholds), `ORACLE_CC_TOP_CHILD_LIMIT`
+  (drill-down top-N). The code literals are just fallbacks.
+- **Target catalog is built dynamically**: `TARGET_META` (in `oracle_cc_api.py`) holds only the
+  per-scope *display* bits (label/sub/instance/diag_pack); `TARGET_CATALOG` is derived from it
+  with `key == connection ==` the scope. So the only hardcoded remainder is display metadata.
 - **Monitoring account**: connect with a dedicated **read-only** user (`SELECT_CATALOG_ROLE`),
-  never OLS/SYS. `OracleTarget.connection` is the alias into your connection store.
+  never OLS/SYS. `OracleTarget.connection` is the **scope key into `app.state.db_configs`** —
+  so `_run()` opens the query with `request.app.state.db_configs[target.connection]`. Enabling a
+  DB is therefore just: load its scope in `load_db_configs()` (app.py) and add its display row to
+  `TARGET_META`.
 - **kill-session privilege**: `ALTER SYSTEM KILL SESSION` needs `ALTER SYSTEM`, which the
   read-only monitor deliberately lacks — run kills through a **separate, privileged (audited)**
   connection, never by widening the monitor grant. (sid/serial are Pydantic ints → injection-safe.)
@@ -617,15 +646,17 @@ N cards only re-renders the one card whose `target` input actually changed — n
 global tick (the header's live memory SSE ticks every ~2 s). Verified smooth at 35 servers; the
 backend fan-out for 35 servers completes in well under a second.
 
-Backend: `backend/infrastructure_health_api.py` — `retrieve_server_health_details` is the DB
-boundary (swap for the real query); `call_agent` / `read_share_space` are stand-ins (swap for
-a real `httpx` call to the agent and a real `shutil.disk_usage`). `call_agent` already wraps the
-reading in try/except → `{ reachable: false }`; the ready-to-use **production function
-`_agent_over_http`** (builds `http://{host}.xmp.net.intra:{port}/system-metrics` and POSTs with an
-8 s timeout) sits right below it, commented out — going live is a **one-line switch** inside
-`call_agent` (`_synthetic_agent(...)` → `_agent_over_http(...)`) plus uncommenting that function and
-`pip install httpx`. Wired live via `liveApiPrefixes: ['…','/api/infra_health']`. Units: RAM is **bytes** (→ GB),
-disk values are **"NN.NN GB" strings** (parsed), and the bars use the agent-supplied `percent`.
+Backend: `backend/infrastructure_health_api.py` (routes + real functions) with the canned data
+split into **`backend/infrastructure_health_dummy.py`** (`config_dummy` + `synthetic_agent`),
+same pattern as `oracle_cc_dummy.py`. The **`INFRA_HEALTH_USE_DUMMY`** flag (`backend/.env`)
+switches both the config catalogue and the agent between dummy and real: dummy →
+`config_dummy` / `synthetic_agent`; real → `retrieve_server_health_details_real` (wire the DB
+proc — currently raises) / **`_agent_over_http`** (builds
+`http://{host}.xmp.net.intra:{port}/system-metrics`, POSTs with an 8 s timeout, lazy `import
+httpx`). `call_agent` wraps the reading in try/except → `{ reachable: false }`, so a dead agent
+(or missing httpx) is a single red card, never a panel error. Going fully live = set
+`INFRA_HEALTH_USE_DUMMY=0` + `pip install httpx` + wire the DB proc. Units: RAM is **bytes**
+(→ GB), disk values are **"NN.NN GB" strings** (parsed), bars use the agent-supplied `percent`.
 
 **Service Console** (new contract — `backend/service_console_api.py`): reuses the **same
 `POST /api/infra_health` catalogue** (one shared, cached fetch), filtered to `SERVER` rows
@@ -641,7 +672,7 @@ that are `IS_ACTIVE = 'Y'` **and** have services. Then per server:
 The backend forms the dynamic `…/service-manage` agent URL server-side; the browser only sees
 `/api/service_console/service-manage`. Single endpoint, two payloads (branches on `action`);
 dummy today with a commented `_service_agent_over_http` for going live (same switch pattern as
-Infra Health). Wired via `liveApiPrefixes: ['…','/api/service_console']`.
+Infra Health). Wired via `apiMocks: { '/api/service_console': false }`.
 
 Servers are ordered **Windows → Linux → Share** in both By-Application and By-Status (matching
 Infra Health). Each server bar has an **ⓘ info** button (host, environment, platform, service
