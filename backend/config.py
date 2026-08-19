@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import os
 
+import env_loader  # noqa: F401  — loads backend/.env into os.environ before Settings reads it
+
 
 def _int_env(name: str, default: int) -> int:
     """Read an int env var, falling back to `default` on unset/invalid."""

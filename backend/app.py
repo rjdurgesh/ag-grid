@@ -27,18 +27,25 @@ app = FastAPI(title="OLS Dashboard API", version="0.1.0")
 
 
 def load_db_configs() -> dict[str, dict]:
-    """Per-schema DB connection configs, read once at startup.
+    """Per-scope DB connection configs, read once at startup — the SINGLE source of truth for
+    which databases the app can reach. Every screen keys off this: Log Analytics + Infra Health
+    use ``"group"``; the Oracle Command Center builds its tabs from whichever scopes are present
+    here (see ``oracle_cc_api.TARGET_CATALOG``). Add/remove a scope → it appears/disappears
+    across the app. No screen hardcodes the connection list.
 
-    Stand-in — swap for your real loader (config file / env / secrets manager).
-    Each value holds whatever your DB layer needs (dsn, user, password, pool
-    settings, …). ``fetch_log_path`` receives the ``"group"`` one to open the
-    connection and call the stored proc. Keyed by schema.
+    Stand-in — swap the body for your real loader, e.g.::
+
+        cfgs = {}
+        for scope in ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting"):
+            cfgs[scope] = connect_db(scope.upper())   # your real connection object
+        return cfgs
+
+    Each value holds whatever your DB layer needs (dsn, user, password, pool, or a live
+    connection). In dev it's an empty stub per scope (dummy endpoints don't open connections);
+    a scope is treated as "available" for live OCC tabs only when its value is truthy.
     """
-    return {
-        "group": {},   # GROUP schema — used by GET /servers + the path jail
-        "cib": {},
-        "retail": {},
-    }
+    scopes = ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting")
+    return {scope: {} for scope in scopes}
 
 
 # Exposed on the app so any request can read it via ``request.app.state.db_configs``

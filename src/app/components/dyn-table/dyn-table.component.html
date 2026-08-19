@@ -13,12 +13,12 @@
     }
   </div>
 }
-<div class="dt-scroll" [style.max-height.px]="maxHeightPx()">
+<div class="dt-scroll" [class.dt--freeze-first]="freezeFirst()" [style.max-height.px]="maxHeightPx()">
   <table class="dt">
     <thead>
       <tr>
-        @for (c of model().columns; track trackCol($index, c)) {
-          <th [class.num]="isNumeric(c)">{{ c.label }}</th>
+        @for (c of model().columns; track trackCol($index, c); let first = $first) {
+          <th [class.num]="isNumeric(c)" [class.dt-first-h]="first">{{ c.label }}</th>
         }
         @if (hasActions()) {
           <th class="dt-actions-h">Actions</th>

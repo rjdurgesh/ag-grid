@@ -1,0 +1,118 @@
+DECLARE
+  l_main CLOB;
+  l_body CLOB;
+BEGIN
+  DBMS_LOB.CREATETEMPORARY(l_main, TRUE);
+  DBMS_LOB.CREATETEMPORARY(l_body, TRUE);
+
+  -- chunk 1
+  DBMS_LOB.APPEND(l_main, TO_CLOB(q'~<!doctype html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <title>OLS - LMA Daily Comparison Batch Notification</title>
+  <style>
+    body { margin:0; padding:0; background-color:#eef2f6; }
+  </style>
+</head>~'));
+
+  -- chunk 2 ... repeat as many times as needed
+  DBMS_LOB.APPEND(l_main, TO_CLOB(q'~<body style="margin:0; padding:0;">
+  <div class="preheader">LMA Daily Comparison ...</div>
+</body>
+</html>~'));
+
+  DBMS_LOB.APPEND(l_body, TO_CLOB(q'~<!doctype html> ... body version ... </html>~'));
+
+  INSERT INTO employee (emp_name, data)
+  VALUES ('John Doe',
+          JSON_OBJECT('main' VALUE l_main,
+                      'body' VALUE l_body
+                      RETURNING CLOB));
+
+  COMMIT;
+  DBMS_LOB.FREETEMPORARY(l_main);
+  DBMS_LOB.FREETEMPORARY(l_body);
+END;
+/
+
+SELECT JSON_VALUE(data, '$.main' RETURNING CLOB) AS main_html,
+       JSON_VALUE(data, '$.body' RETURNING CLOB) AS body_html
+FROM   employee
+WHERE  emp_id = 1;
+
+SELECT JSON_VALUE(data, '$.main' RETURNING CLOB) INTO l_main
+FROM employee WHERE emp_id = 1;
+
+SET DEFINE OFF;
+SET SERVEROUTPUT ON;
+
+DECLARE
+  c_emp_id CONSTANT NUMBER := 1;
+
+  l_main   CLOB;
+  l_body   CLOB;
+  l_rows   NUMBER;
+BEGIN
+  DBMS_LOB.CREATETEMPORARY(l_main, TRUE);
+  DBMS_LOB.CREATETEMPORARY(l_body, TRUE);
+
+  ------------------------------------------------------------------
+  -- MAIN  (add as many APPEND calls as the HTML needs)
+  ------------------------------------------------------------------
+  DBMS_LOB.APPEND(l_main, TO_CLOB(q'~<!doctype html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <title>OLS - LMA Daily Comparison Batch Notification</title>
+  <style>
+    body { margin:0; padding:0; background-color:#eef2f6; }
+    .rate-table td { font-family:Consolas, 'Courier New', monospace; }
+  </style>
+</head>~'));
+
+  DBMS_LOB.APPEND(l_main, TO_CLOB(q'~<body style="margin:0; padding:0;">
+  <div class="preheader">LMA Daily Comparison ...</div>
+</body>
+</html>~'));
+
+  ------------------------------------------------------------------
+  -- BODY
+  ------------------------------------------------------------------
+  DBMS_LOB.APPEND(l_body, TO_CLOB(q'~<!doctype html>
+<html lang="en">
+  ... body version ...
+</html>~'));
+
+  ------------------------------------------------------------------
+  -- Replace the whole document
+  ------------------------------------------------------------------
+  UPDATE employee
+  SET    data = JSON_OBJECT('main' VALUE l_main,
+                            'body' VALUE l_body
+                            RETURNING CLOB)
+  WHERE  emp_id = c_emp_id;
+
+  l_rows := SQL%ROWCOUNT;
+
+  IF l_rows = 0 THEN
+    RAISE_APPLICATION_ERROR(-20001, 'No employee row with emp_id = ' || c_emp_id);
+  END IF;
+
+  COMMIT;
+
+  DBMS_OUTPUT.PUT_LINE('Updated ' || l_rows || ' row.');
+  DBMS_OUTPUT.PUT_LINE('main length : ' || DBMS_LOB.GETLENGTH(l_main));
+  DBMS_OUTPUT.PUT_LINE('body length : ' || DBMS_LOB.GETLENGTH(l_body));
+
+  DBMS_LOB.FREETEMPORARY(l_main);
+  DBMS_LOB.FREETEMPORARY(l_body);
+
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+    IF DBMS_LOB.ISTEMPORARY(l_main) = 1 THEN DBMS_LOB.FREETEMPORARY(l_main); END IF;
+    IF DBMS_LOB.ISTEMPORARY(l_body) = 1 THEN DBMS_LOB.FREETEMPORARY(l_body); END IF;
+    RAISE;
+END;
+/

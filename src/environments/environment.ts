@@ -41,12 +41,14 @@ export interface AppEnvironment {
    */
   devRoles: { is_admin: boolean; is_read: boolean; is_salt: boolean; label?: string };
   /**
-   * While `useMock` is true, any request whose path starts with one of these
-   * prefixes is sent to the REAL backend (`apiBaseUrl`) instead of the mock —
-   * wire endpoints to the live API one prefix at a time, no code change. Empty
-   * (or `useMock:false`) → normal behaviour.
+   * Per-screen mock control — the flexible alternative to the single global switch. Maps each
+   * screen's API path-prefix to whether that screen is MOCKED (`true` → in-app dummy data) or
+   * LIVE (`false` → real backend at `apiBaseUrl`). A request is matched to the LONGEST prefix
+   * it starts with and uses that flag; anything not listed falls back to the global `useMock`.
+   * So you can build/test one screen against the real backend while the rest stay on mock data
+   * (or vice-versa) — flip one entry without disturbing the others.
    */
-  liveApiPrefixes: string[];
+  apiMocks: Record<string, boolean>;
 }
 
 export const environment: AppEnvironment = {
@@ -65,8 +67,14 @@ export const environment: AppEnvironment = {
   name: 'Alex Morgan',
   isSsoEnabled: false,
   devRoles: { is_admin: true, is_read: false, is_salt: false, label: 'OMT-BOTH' },
-  // Log Analytics + Infrastructure Health are served by the real FastAPI backend;
-  // everything else (incl. the Service Console's /api/infra/*) is still mocked.
-  // Add more prefixes here as you implement real endpoints.
-  liveApiPrefixes: ['/api/log/', '/api/infra_health', '/api/service_console', '/api/oracle_cc'],
+  // Per-screen mock switches — override the global `useMock` above for that screen's API
+  // prefix. false = hit the real FastAPI backend; true = in-app mock. Anything not listed
+  // here falls back to `useMock`. Flip a single screen to develop/test it in isolation.
+  apiMocks: {
+    '/api/log/':            false, // Log Analytics Hub       → live backend
+    '/api/infra_health':    false, // Infrastructure Health   → live backend
+    '/api/service_console': false, // Service Console         → live backend
+    '/api/oracle_cc':       false, // Oracle Command Center   → live backend
+    '/api/config':          true,  // Config Ops Console      → in-app mock
+  },
 };

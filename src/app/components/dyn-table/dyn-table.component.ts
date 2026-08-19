@@ -44,6 +44,11 @@ export class DynTableComponent {
     return n && n > 0 ? 34 + n * 39 : null;
   });
 
+  /** Freeze the first column (row identifier) to the left edge, matching the always-frozen
+   *  action column. On by default; set false for narrow tables where it adds no value
+   *  (e.g. Database Storage, Top Index) so it doesn't show a needless pinned divider. */
+  readonly freezeFirst = input<boolean>(true);
+
   /** Show a client-side filter box that matches across every column (for big lists like
    *  Sessions where a DBA needs to zero in on a SID / user / SQL_ID quickly). */
   readonly filterable = input<boolean>(false);

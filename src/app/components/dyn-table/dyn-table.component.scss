@@ -119,6 +119,27 @@ table.dt thead th.dt-actions-h {
 table.dt tbody tr:hover td.dt-actions,
 .dt-row--warn:hover > td.dt-actions,
 .dt-row--crit:hover > td.dt-actions { background: var(--dt-freeze-bg); }
+
+/* First column (the row identifier — SID / object / index) is frozen, pinned to the LEFT edge
+   so you never lose track of which row you're on when a wide table scrolls right. Symmetric to
+   the frozen action column (sticky, opaque, divider + shadow on the right side). Opt-in via the
+   .dt--freeze-first container class ([freezeFirst], default on) — narrow tables switch it off. */
+.dt--freeze-first td.dt-first,
+.dt--freeze-first table.dt thead th.dt-first-h {
+  position: sticky; left: 0; z-index: 2;
+  background: var(--dt-freeze-bg);
+  border-right: 1px solid var(--dt-line);
+  box-shadow: 9px 0 10px -8px rgba(15, 23, 55, 0.16);
+}
+/* Header of the frozen first column = top-left corner: sticky on BOTH axes, above everything.
+   Qualified to out-specify `table.dt thead th` (its bg/z-index would otherwise win). */
+.dt--freeze-first table.dt thead th.dt-first-h {
+  z-index: 4;
+  background: linear-gradient(var(--dt-surface2), var(--dt-surface2)), var(--dt-freeze-bg);
+}
+.dt--freeze-first table.dt tbody tr:hover td.dt-first,
+.dt--freeze-first .dt-row--warn:hover > td.dt-first,
+.dt--freeze-first .dt-row--crit:hover > td.dt-first { background: var(--dt-freeze-bg); }
 .dt-act {
   display: inline-flex; align-items: center; gap: 5px;
   border: 1px solid var(--dt-line); background: var(--cui-body-bg); color: var(--cui-body-color);
