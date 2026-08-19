@@ -126,52 +126,22 @@
   animation: login-sheen 6s ease-in-out infinite;
 }
 
-/* ---- Login core ---------------------------------------------------------- */
-.login-core {
-  position: relative;
-  width: 100px;
-  height: 100px;
-  margin: 2px auto 12px;
-  transform: translateZ(40px);
+/* ---- Cosmic emblem (space_1.gif) — a compact, centered glowing ring, like the old core.
+   The gif is bright-on-black, so `mix-blend-mode: screen` drops its black background out and
+   lets only the glow show over the dark card (no box, no full-width split, matches the bg). */
+.login-space {
+  width: 160px;
+  height: 130px;
+  margin: 0 auto 8px;
+  background: url("/assets/space_1.gif") center / contain no-repeat;
+  mix-blend-mode: screen;
+  /* screen already drops pure black; this feathers the very edge so no faint box can show. */
+  -webkit-mask-image: radial-gradient(closest-side, #000 88%, transparent);
+  mask-image: radial-gradient(closest-side, #000 88%, transparent);
 }
-
-.login-core__ring {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 2px solid transparent;
-
-  &--1 { border-top-color: #6b78ff; border-right-color: rgba(107, 120, 255, 0.3); animation: login-spin 3s linear infinite; }
-  &--2 { inset: 13px; border-bottom-color: #23d3a3; border-left-color: rgba(35, 211, 163, 0.3); animation: login-spin 2.2s linear infinite reverse; }
-  &--3 { inset: 26px; border-top-color: #a855f7; border-right-color: rgba(168, 85, 247, 0.3); animation: login-spin 1.6s linear infinite; }
-}
-
-.login-core__orbit {
-  position: absolute;
-  inset: -7px;
-  border-radius: 50%;
-  animation: login-spin 6s linear infinite;
-
-  .login-core__sat {
-    position: absolute;
-    top: -4px;
-    left: 50%;
-    width: 9px;
-    height: 9px;
-    margin-left: -4.5px;
-    border-radius: 50%;
-    background: #23d3a3;
-    box-shadow: 0 0 14px #23d3a3;
-  }
-}
-
-.login-core__dot {
-  position: absolute;
-  inset: 40px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 40% 35%, #cfe0ff, #4d5dfb 70%);
-  box-shadow: 0 0 26px rgba(107, 120, 255, 0.85);
-  animation: login-pulse 2s ease-in-out infinite;
+/* Office machines run prefers-reduced-motion — swap the gif for its static first frame. */
+@media (prefers-reduced-motion: reduce) {
+  .login-space { background-image: url("/assets/space_1_poster.png"); }
 }
 
 /* ---- Extruded 3D brand + logo ------------------------------------------- */
@@ -185,10 +155,14 @@
 }
 
 .login-brand__logo {
-  height: clamp(3.2rem, 11vw, 4.6rem);
+  height: clamp(2.8rem, 9vw, 3.6rem);
   width: auto;
-  /* Cyan glow to match the drop's own colour, so it reads as lit on the dark backdrop. */
-  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 20px rgba(45, 205, 220, 0.55));
+  /* Sit the drop on a WHITE rounded badge (fills the transparent area) so it reads crisp on
+     the dark card — the same on-white look as the browser-tab favicon. */
+  background: #fff;
+  padding: 8px;
+  border-radius: 15px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.6);
   animation: login-brand-float 5s ease-in-out infinite;
 }
 
@@ -362,32 +336,18 @@
    "reduce motion" setting ON — Windows: Settings › Accessibility › Visual
    effects › "Animation effects" = Off, or the "Adjust for best performance"
    system option. Edge/Chrome then report `prefers-reduced-motion: reduce` and
-   suppress every CSS animation. Because the login-core rings are drawn as
-   partial arcs (only one border edge is coloured) they look "half-broken" once
-   frozen.
-
-   So we don't just stop the animations here — we also give the core an
-   intentional STATIC state: full-circle rings, no lone orbiting satellite, a
-   solid centre dot. It reads as a clean emblem even with motion disabled.
+   suppress every CSS animation. So we stop the card/brand animations here and
+   swap the cosmic banner (a looping GIF, which CSS can't pause) for a static
+   first-frame poster — a clean cosmic image instead of motion.
    -------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   .login-orb, .login-grid, .login-beam, .login-net__lines line, .login-net__nodes circle,
-  .login-card__sheen, .login-core__ring, .login-core__orbit, .login-core__dot,
-  .login-brand3d, .login-brand__logo, .login-sso__glow, .login-foot__pulse, .login-foot__pulse::after,
-  .login-card, .login-page__stage {
+  .login-card__sheen, .login-brand3d, .login-brand__logo, .login-sso__glow,
+  .login-foot__pulse, .login-foot__pulse::after, .login-card, .login-page__stage {
     animation: none !important;
   }
-
-  /* Complete, evenly-coloured rings instead of frozen partial arcs. */
-  .login-core__ring { border-color: rgba(107, 120, 255, 0.5); }
-  .login-core__ring--2 { border-color: rgba(35, 211, 163, 0.5); }
-  .login-core__ring--3 { border-color: rgba(168, 85, 247, 0.5); }
-
-  /* The orbit only makes sense while spinning; hide the stranded satellite. */
-  .login-core__orbit { display: none; }
   .login-card__sheen { display: none; }
-
-  /* Ensure the entered/settled state is visible (no fade-in to rely on). */
-  .login-core__dot { opacity: 1; }
+  /* Ensure the settled state is visible (no fade-in to rely on). */
   .login-card { opacity: 1; }
+  /* The cosmic banner swaps to a static poster via `.login-space`'s own rule above. */
 }
