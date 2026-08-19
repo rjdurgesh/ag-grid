@@ -54,6 +54,9 @@ ORACLE_CC_USE_DUMMY = env_bool("ORACLE_CC_USE_DUMMY", True)
 WARN_PCT = env_int("ORACLE_CC_WARN_PCT", 85)
 CRIT_PCT = env_int("ORACLE_CC_CRIT_PCT", 90)
 TOP_CHILD_LIMIT = env_int("ORACLE_CC_TOP_CHILD_LIMIT", 10)
+# App schema whose segments/indexes the storage sections report on (the owner-filtered
+# queries bind :owner to this). Set ORACLE_CC_SCHEMA in .env if it isn't OLS.
+OCC_SCHEMA = os.getenv("ORACLE_CC_SCHEMA", "OLS")
 
 
 # --- config-driven DB targets ------------------------------------------------
@@ -139,7 +142,33 @@ def overview_real(request: Request | None = None) -> dict:
     """One light query per target (kept cheap for Home): max tablespace used %
     (DBA_TABLESPACE_USAGE_METRICS), COUNT blocking sessions (V$SESSION.blocking_session),
     COUNT active USER sessions (V$SESSION), and the largest segment (DBA_SEGMENTS)."""
-    raise RuntimeError("overview_real: wire _run() per target")
+    snap_sql = """
+        SELECT (SELECT ROUND(MAX(used_percent), 1) FROM dba_tablespace_usage_metrics)        AS storage_pct,
+               (SELECT COUNT(*) FROM v$session WHERE blocking_session IS NOT NULL)            AS blocking,
+               (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE')     AS active
+          FROM dual
+    """
+    top_sql = """
+        SELECT segment_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+          FROM dba_segments
+         WHERE owner = :owner
+         GROUP BY segment_name
+         ORDER BY size_gb DESC
+         FETCH FIRST 1 ROWS ONLY
+    """
+    data = []
+    for key in _enabled_target_keys(request):
+        tgt = TARGET_CATALOG[key]
+        snap = (_run(tgt, snap_sql) or [{}])[0]
+        top = (_run(tgt, top_sql, {"owner": OCC_SCHEMA}) or [{}])[0]
+        pct = float(snap.get("storage_pct") or 0)
+        data.append({
+            "key": tgt.key, "label": tgt.label, "sub": tgt.sub, "instance": tgt.instance, "diag_pack": tgt.diag_pack,
+            "storage_pct": pct, "storage_sev": _sev_for(pct),
+            "blocking": int(snap.get("blocking") or 0), "active": int(snap.get("active") or 0),
+            "top_object": top.get("segment_name") or "—", "top_gb": float(top.get("size_gb") or 0),
+        })
+    return {"status": "success", "data": data}
 
 
 # =============================================================================
@@ -185,8 +214,11 @@ def space_real(t: OracleTarget) -> dict:
           JOIN ts_used u ON u.tablespace_name = o.tablespace_name
          ORDER BY used_gb DESC
     """
+    # _run returns dicts keyed by (lowercased) column name → map to the payload's keys.
     rows = [
-        {"owner": r[0], "tablespace": r[1], "total_gb": r[2], "used_gb": r[3], "free_gb": r[4], "used_pct": r[5]}
+        {"owner": r["owner"], "tablespace": r["tablespace_name"],
+         "total_gb": r["total_gb"], "used_gb": r["used_gb"],
+         "free_gb": r["free_gb"], "used_pct": r["used_pct"]}
         for r in _run(t, sql)
     ]
     return _space_payload(rows)
@@ -262,20 +294,56 @@ def top_segments_real(t: OracleTarget) -> dict:
     Size = allocated segment bytes. Uses DBA_SEGMENTS (TABLE / TABLE PARTITION / TABLE
     SUBPARTITION) + DBA_TAB_STATISTICS for the stale flag; assemble the 3-level tree in Python,
     applying `FETCH FIRST {n} ROWS ONLY` (ordered by size DESC) at each child level.""".format(n=TOP_CHILD_LIMIT)
-    sql_tables = """
-        SELECT segment_name,
-               ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+    owner = OCC_SCHEMA
+    # 1) Top-N tables by total data-segment bytes (sums table + its partitions/subpartitions).
+    tables = _run(t, """
+        SELECT segment_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
           FROM dba_segments
          WHERE owner = :owner
            AND segment_type IN ('TABLE','TABLE PARTITION','TABLE SUBPARTITION')
          GROUP BY segment_name
          ORDER BY size_gb DESC
-         FETCH FIRST 10 ROWS ONLY
-    """
-    # (partition/subpartition detail + NUM_ROWS/STALE_STATS come from
-    #  dba_segments by partition_name and dba_tab_statistics; assembled into __children)
-    _ = sql_tables
-    raise RuntimeError("top_segments_real: wire _run() to your monitoring connection")
+         FETCH FIRST :lim ROWS ONLY
+    """, {"owner": owner, "lim": 10})
+
+    # 2) Stats (num_rows / last_analyzed / stale) for tables + partitions, in one pass.
+    stats: dict[tuple, dict] = {}
+    for s in _run(t, """
+        SELECT object_type, table_name, partition_name, num_rows, stale_stats,
+               TO_CHAR(last_analyzed, 'DD-Mon HH24:MI') AS last_analyzed
+          FROM dba_tab_statistics
+         WHERE owner = :owner AND object_type IN ('TABLE','PARTITION')
+    """, {"owner": owner}):
+        stats[(s["table_name"], s.get("partition_name"))] = s
+
+    def cells(table: str, part: str | None = None) -> dict:
+        s = stats.get((table, part), {})
+        fresh = (s.get("stale_stats") or "NO") != "YES"
+        return {"num_rows": s.get("num_rows"), "last_analyzed": s.get("last_analyzed") or "—", **_stats_cell(fresh)}
+
+    # 3) For each table, its top-N partitions as __children. (Add a subpartition level the same
+    #    way — query segment_type='TABLE SUBPARTITION' grouped by subobject — if you use them.)
+    rows = []
+    for tb in tables:
+        seg = tb["segment_name"]
+        parts = _run(t, """
+            SELECT partition_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+              FROM dba_segments
+             WHERE owner = :owner AND segment_name = :seg
+               AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
+             GROUP BY partition_name
+             ORDER BY size_gb DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"owner": owner, "seg": seg, "lim": TOP_CHILD_LIMIT})
+        row = {"object": seg, "kind": "Table", "size_gb": tb["size_gb"], **cells(seg)}
+        children = [
+            {"object": p["partition_name"], "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, p["partition_name"])}
+            for p in parts
+        ]
+        if children:
+            row["__children"] = children
+        rows.append(row)
+    return {"status": "success", "columns": _TOP_COLS, "rows": rows}
 
 
 # =============================================================================
@@ -312,8 +380,28 @@ def top_indexes_real(t: OracleTarget) -> dict:
          ORDER BY size_gb DESC
          FETCH FIRST 5 ROWS ONLY
     """
-    _ = sql
-    raise RuntimeError("top_indexes_real: wire _run() to your monitoring connection")
+    rows = []
+    for ix in _run(t, sql, {"owner": OCC_SCHEMA}):
+        name = ix["index_name"]
+        parts = _run(t, """
+            SELECT partition_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+              FROM dba_segments
+             WHERE owner = :owner AND segment_name = :seg
+               AND segment_type IN ('INDEX PARTITION','INDEX SUBPARTITION')
+             GROUP BY partition_name
+             ORDER BY size_gb DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"owner": OCC_SCHEMA, "seg": name, "lim": TOP_CHILD_LIMIT})
+        row = {"index_name": name, "table_name": ix["table_name"], "kind": ix["kind"], "size_gb": ix["size_gb"]}
+        children = [
+            {"index_name": p["partition_name"], "table_name": ix["table_name"],
+             "kind": "Index partition", "size_gb": p["size_gb"]}
+            for p in parts
+        ]
+        if children:
+            row["__children"] = children
+        rows.append(row)
+    return {"status": "success", "columns": _IDX_COLS, "rows": rows}
 
 
 # =============================================================================
@@ -345,7 +433,7 @@ def index_health_real(t: OracleTarget) -> dict:
                CASE WHEN status = 'UNUSABLE' THEN 'UNUSABLE'
                     WHEN visibility = 'INVISIBLE' THEN 'INVISIBLE'
                     ELSE 'STALE STATS' END AS state,
-               last_analyzed
+               TO_CHAR(last_analyzed, 'DD-Mon') AS last_analyzed
           FROM dba_indexes
          WHERE owner = :owner
            AND (status = 'UNUSABLE' OR visibility = 'INVISIBLE'
@@ -353,8 +441,22 @@ def index_health_real(t: OracleTarget) -> dict:
                                    WHERE owner = :owner AND object_type LIKE 'INDEX%' AND stale_stats = 'YES'))
          ORDER BY state
     """
-    _ = sql
-    raise RuntimeError("index_health_real: wire _run() to your monitoring connection")
+    sev = {"UNUSABLE": "crit", "INVISIBLE": "warn", "STALE STATS": "warn"}
+    detail = {
+        "UNUSABLE": "Offline — not maintained; rebuild required",
+        "INVISIBLE": "Maintained but hidden from the optimizer",
+        "STALE STATS": "Stats out of date; gather to refresh",
+    }
+    rows = []
+    for r in _run(t, sql, {"owner": OCC_SCHEMA}):
+        st = r["state"]
+        s = sev.get(st, "warn")
+        rows.append({
+            "index_name": r["index_name"], "table_name": r["table_name"],
+            "state": st, "state__sev": s, "detail": detail.get(st, ""),
+            "last_analyzed": r.get("last_analyzed") or "—", "__sev": s,
+        })
+    return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
 
 
 # =============================================================================
@@ -683,24 +785,49 @@ def session_detail_real(t: OracleTarget, q: SessionDetailQuery) -> dict:
     raise RuntimeError("session_detail_real: wire _run() + DBMS_XPLAN/DBMS_SQL_MONITOR to your monitoring connection")
 
 
-# --- DB access boundary (stand-in) --------------------------------------------
+# --- DB access boundary -------------------------------------------------------
+#
+# `_run` is the ONE place that touches the DB. Every *_real above is just "SQL + shape the
+# dicts", because `_run` returns rows as **dicts keyed by lowercased column name** — so the
+# mapping is by name (robust to column order), e.g. row["used_pct"], not row[5].
+#
+# The connection comes from what your `connect_db(scope)` stored in app.state.db_configs;
+# app.py wires it once via `set_db_configs(app.state.db_configs)` so the (t)-only *_real
+# functions can reach it without threading `request` everywhere.
 
-def _run(t: OracleTarget, sql: str, binds: dict | None = None) -> list[tuple]:
-    """Execute a read-only query against the target's monitoring connection and return
-    rows as tuples. Stand-in — swap the body for your real pool::
+_DB_CONFIGS: dict[str, Any] = {}
 
-        import oracledb
-        cfg  = CONNECTIONS[t.connection]          # dsn/user/password for the read-only monitor
-        with oracledb.connect(**cfg) as con, con.cursor() as cur:
-            cur.execute(sql, binds or {})
-            return cur.fetchall()
 
-    Kept separate so every *_real function is just SQL + a row-shape map.
+def set_db_configs(cfgs: dict[str, Any] | None) -> None:
+    """Register the per-scope connections so `_run` can resolve one by `t.connection`.
+    Call once from app.py after building app.state.db_configs."""
+    global _DB_CONFIGS
+    _DB_CONFIGS = cfgs or {}
+
+
+def _run(t: OracleTarget, sql: str, binds: dict | None = None) -> list[dict]:
+    """Execute read-only `sql` on the target's monitoring connection; return rows as a list
+    of dicts keyed by lowercased column name. Binds are a dict for named binds (``:owner``).
+
+    Assumes a python-oracledb / cx_Oracle style connection object in db_configs[t.connection]
+    (both share this cursor API). If your `connect_db` returns a *config* instead of a live
+    connection, open it here instead.
     """
-    raise RuntimeError(
-        f"No live monitoring connection wired for '{t.connection}'. "
-        "Set ORACLE_CC_USE_DUMMY=1 (default) or implement _run()."
-    )
+    conn = _DB_CONFIGS.get(t.connection)
+    if conn is None:
+        raise RuntimeError(
+            f"No live connection for scope '{t.connection}'. Check load_db_configs()/connect_db "
+            "in app.py (and that set_db_configs ran), or keep ORACLE_CC_USE_DUMMY=1."
+        )
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, binds or {})
+        if cur.description is None:
+            return []
+        cols = [d[0].lower() for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        cur.close()
 
 
 # ---------------------------------------------------------------------------

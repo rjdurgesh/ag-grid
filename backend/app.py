@@ -13,6 +13,7 @@ Run (from the ``backend/`` directory)::
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import oracle_cc_api
 from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
@@ -53,6 +54,10 @@ def load_db_configs() -> dict[str, dict]:
 # *pools* you'd open them in a lifespan handler and close them on shutdown; a plain
 # config dict needs nothing more than this.
 app.state.db_configs = load_db_configs()
+
+# Hand the same per-scope connections to the Oracle Command Center so its `*_real` functions
+# can resolve one by scope via `_run` (they don't receive `request`). No-op in dummy mode.
+oracle_cc_api.set_db_configs(app.state.db_configs)
 
 # The Angular dev server runs on :4200. Add your real front-end origins for prod.
 ALLOWED_ORIGINS = [
