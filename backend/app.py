@@ -34,16 +34,22 @@ def load_db_configs() -> dict[str, dict]:
     here (see ``oracle_cc_api.TARGET_CATALOG``). Add/remove a scope → it appears/disappears
     across the app. No screen hardcodes the connection list.
 
-    Stand-in — swap the body for your real loader, e.g.::
+    Stand-in — swap the body for your real loader. Connect each scope INSIDE a try/except so a
+    single unreachable database can't crash startup — a failed scope maps to None, which the OCC
+    reads as "down" (grey tab) while every other DB works::
 
         cfgs = {}
         for scope in ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting"):
-            cfgs[scope] = connect_db(scope.upper())   # your real connection object
+            try:
+                cfgs[scope] = connect_db(scope.upper())   # your real connection object
+            except Exception as exc:
+                logger.warning("DB '%s' unavailable at startup: %s", scope, exc)
+                cfgs[scope] = None                        # keeps the tab, shown grey/unreachable
         return cfgs
 
     Each value holds whatever your DB layer needs (dsn, user, password, pool, or a live
     connection). In dev it's an empty stub per scope (dummy endpoints don't open connections);
-    a scope is treated as "available" for live OCC tabs only when its value is truthy.
+    a scope reads as "reachable" (green tab) only when its value is truthy.
     """
     scopes = ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting")
     return {scope: {} for scope in scopes}
