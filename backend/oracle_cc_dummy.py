@@ -16,6 +16,7 @@ from typing import Any  # noqa: F401  (used in annotations)
 from fastapi import Request  # noqa: F401  (used in annotations)
 
 from oracle_cc_api import (
+    TARGET_CATALOG,
     KillRequest,
     OracleTarget,
     SessionDetailQuery,
@@ -52,7 +53,7 @@ def overview_dummy(request: Request | None = None) -> dict:
         t = TARGET_CATALOG[key]
         s = snap.get(key, {"storage_pct": 0.0, "blocking": 0, "active": 0, "top_object": "—", "top_gb": 0.0})
         data.append({
-            "key": t.key, "label": t.label, "sub": t.sub, "instance": t.instance, "diag_pack": t.diag_pack,
+            "key": t.key, "label": t.label, "sub": t.sub, "instance": t.instance, "reachable": True,
             "storage_pct": s["storage_pct"], "storage_sev": _sev_for(s["storage_pct"]),
             "blocking": s["blocking"], "active": s["active"],
             "top_object": s["top_object"], "top_gb": s["top_gb"],
@@ -193,8 +194,6 @@ def sessions_dummy(t: OracleTarget, status: str) -> dict:
 
 
 def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
-    diag = t.diag_pack
-    pack = "Diagnostics + Tuning Pack"
     # Look the session up so a KILLED one gets the rollback monitor + correct facts.
     src = next((r for r in _all_sessions() if r["sid"] == q.sid), None)
     status = src["status"] if src else "ACTIVE"
@@ -335,11 +334,11 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
         _panel_text("plan", "Execution Plan", plan_text),
         _panel_table("waits", "Wait Events", waits_cols, waits_rows),
         _panel_table("binds", "Bind Variables", binds_cols, binds_rows),
-        _panel_table("ash", "Active Session History", ash_cols, ash_rows, requires=pack, available=diag),
-        _panel_text("monitor", "SQL Monitor", monitor_text, requires=pack, available=diag),
+        _panel_table("ash", "Active Session History", ash_cols, ash_rows),
+        _panel_text("monitor", "SQL Monitor", monitor_text),
         _panel_table("stats", "Object Statistics", stats_cols, stats_rows),
         _panel_table("locks", "Locks Held", locks_cols, locks_rows),
-        _panel_table("awr", "AWR (DBA_HIST)", awr_cols, awr_rows, requires=pack, available=diag),
+        _panel_table("awr", "AWR (DBA_HIST)", awr_cols, awr_rows),
     ]
     # Per-tab refresh: return only the requested panel (the real fn would run just that query).
     if q.panel:

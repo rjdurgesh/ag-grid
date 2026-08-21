@@ -33,7 +33,8 @@
     @for (t of targets(); track trackTarget($index, t)) {
       <button type="button" class="occ__tab" [class.is-active]="activeKey() === t.key" role="tab"
         [attr.aria-selected]="activeKey() === t.key" (click)="selectDb(t.key)">
-        <span class="occ__tab-dot" [attr.data-diag]="t.diag_pack"></span>
+        <span class="occ__tab-dot" [attr.data-reachable]="t.reachable"
+          [title]="t.reachable ? 'Database reachable' : 'Database unreachable'"></span>
         <span class="occ__tab-name">{{ t.label }}@if (t.sub) { <small>{{ t.sub }}</small> }</span>
       </button>
     }
@@ -47,6 +48,15 @@
         <span class="occ-inst__dot" aria-hidden="true"></span>
         <b>{{ t.instance }}</b><span class="occ__muted">instance</span>
       </span>
+    </div>
+  }
+
+  @if (instanceStatus() === 'down') {
+    <div class="occ-downbanner" role="alert">
+      <span class="occ-downbanner__ic" aria-hidden="true">!</span>
+      <span><b>{{ activeTarget()?.instance || 'This database' }}</b> looks unreachable right now — the sections
+      below will show a read error until it's back. The other database tabs are unaffected; check the
+      connection, then use <b>Refresh</b>.</span>
     </div>
   }
 
@@ -265,7 +275,7 @@
               <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
                 filterPlaceholder="Filter sessions — SID, user, machine, SQL_ID, event…"
                 [actions]="sessionActions()" (action)="onSessionAction($event)" />
-              <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. } ASH / SQL Monitor / AWR need the Diagnostics + Tuning Pack.</p>
+              <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No {{ sessionFilter() }} sessions right now.</div> }
           }
         </div>
@@ -339,7 +349,7 @@
 
         @if (currentPanel(); as p) {
           @if (!p.available) {
-            <div class="occ-empty">{{ p.label }} requires the <b>{{ p.requires }}</b> — not licensed on this database.</div>
+            <div class="occ-empty">{{ p.label }} isn't available for this session right now.</div>
           } @else {
           <div class="occ-pbar">
             <span class="occ-pbar__t">{{ p.label }}</span>

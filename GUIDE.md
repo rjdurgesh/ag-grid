@@ -395,12 +395,17 @@ Kill/Deep-dive buttons stay reachable no matter how many columns the payload add
 The OCC ribbon shows a **live instance indicator**: `{instance} instance` with a status dot —
 green = reachable (a section query returned), red = can't contact the DB (all sections
 errored), amber = connecting. It's derived client-side from the section load/error signals
-(`instanceStatus()`), no extra endpoint; the old "Diagnostics Pack" ribbon label was removed
-(pack licensing still surfaces where it matters — the deep-dive panels' `available/requires`).
+(`instanceStatus()`), no extra endpoint. When the active DB is unreachable (all sections error)
+a red "database unreachable" banner appears above the sections; the other tabs are unaffected.
+(The Diagnostics-Pack concept was removed entirely — there is no pack gating anywhere now.)
+
+Each **tab** also carries a status dot: **green = reachable, grey = down**, from `reachable` on
+`/targets` (dummy → always true; real → the scope has a truthy connection in `db_configs`). A
+down DB still gets a tab (grey) and its sections show read errors — the app never goes down.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **Driven by `app.state.db_configs`**: a DB shows only if its scope key is present (and, in real mode, truthy) there — so `app.py`'s `load_db_configs()` / `connect_db` loop is the single on/off switch for every screen. `TARGET_META` (in `oracle_cc_api.py`) just adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, diag_pack }` where `key == connection ==` the db_configs scope. Dummy mode shows all catalogued scopes. |
+| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **One tab per catalogued DB**; each carries `reachable` (green dot = up, grey = down) computed from `app.state.db_configs` (real: scope has a truthy connection; dummy: always true). A down DB still gets a (grey) tab. `TARGET_META` (in `oracle_cc_api.py`) adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, reachable }` where `key == connection ==` the db_configs scope. |
 | `GET /api/oracle_cc/overview` | — | `{ status, data: OracleOverview[] }` — compact per-DB snapshot (storage %, blocking, active sessions, top segment) powering the **Home 'Oracle Databases' strip**; one call for the whole strip. |
 | `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — owner×tablespace space + gauge `summary` (autoextend-MAXSIZE-aware totals). |
 | `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes; partition→subpartition as `__children`. |
@@ -409,7 +414,7 @@ errored), amber = connecting. It's derived client-side from the section load/err
 | `POST /api/oracle_cc/{db}/locks` | `{}` | Section 5 — TX/TM enqueue locks, `state` BLOCKING/WAITING/HELD; each row killable. `summary:{blocking,waiting,total}`. |
 | `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — blocker→waiter tree (`__children`, chained blocking nests); each node killable. `summary:{chains,waiters}`. |
 | `POST /api/oracle_cc/{db}/sessions` | `{ status }` (`active`\|`inactive`\|`killed`\|`all`, default `active`) | Section 7 — session inventory filtered by state; each row carries `__actions` (`detail` always, `kill` unless already KILLED). Includes a **`running_for`** column (LAST_CALL_ET formatted; `—` for non-active) so long-running work is explicit instead of colour-coded. Row `__sev` = `crit` for KILLED only (long-running active is shown by the column, not an amber tint). `summary:{active,inactive,killed,total}` (full counts regardless of filter, for the tab badges). |
-| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), or `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`). `available:false` + `requires` names the pack when a feature isn't licensed. Panels: rollback (KILLED only), plan (actual `ALLSTATS LAST` — E-Rows vs A-Rows/Buffers/Reads), waits (V$SESSION_EVENT), binds (peeked binds), ash*, monitor*, stats, locks, awr* (* = needs `diag_pack`). |
+| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), or `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`). a panel is `available:false` only if its own query fails (built independently). Panels: rollback (KILLED only), plan (actual `ALLSTATS LAST` — E-Rows vs A-Rows/Buffers/Reads), waits (V$SESSION_EVENT), binds (peeked binds), ash (ASH), monitor (SQL Monitor), stats, locks, awr (DBA_HIST). |
 | `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). |
 
 Notes for the real wiring:
@@ -417,24 +422,35 @@ Notes for the real wiring:
   and a `*_dummy` (canned data) — the dummies live in a **separate module `oracle_cc_dummy.py`**
   (imported at the bottom of `oracle_cc_api.py` once the shared helpers exist) so the router file
   stays lean; both return the identical shape. Flip `ORACLE_CC_USE_DUMMY=0` once connections exist.
-  Each `*_real` currently raises until you wire `_run()` (the single DB-access boundary).
+  Every `*_real` is now **implemented** — it runs its SQL via `_run()` and maps the rows into the
+  same `{status, columns, rows, summary}` contract the dummy returns (reusing the same helpers:
+  `_space_payload`, `_lock_row`, `_blk_node`, `_sess_row`, `_stats_cell`, `_panel_*`). `_run(t, sql,
+  binds)` is the ONE DB touch-point: it executes read-only SQL on `db_configs[t.connection]` and
+  returns rows as **dicts keyed by lowercased column name** (so `*_real` is just "SQL + shape the
+  dicts", mapped by name not position). To go live: (1) `connect_db` puts live connections in
+  `app.state.db_configs`; app.py calls `oracle_cc_api.set_db_configs(...)`; (2) set the app schema
+  via `ORACLE_CC_SCHEMA` (owner for the segment/index queries; default `OLS`); (3) `ORACLE_CC_USE_DUMMY=0`.
+  The SQL is standard V$/DBA_* but **verify view/column names against your Oracle version**;
+  `session_detail_real` builds each panel in its own try/except so one bad query degrades that panel
+  to `available:false` rather than failing the drawer. (`kill_session_real` stays a stub on purpose —
+  `ALTER SYSTEM KILL SESSION` needs a **separate privileged, audited** connection, never the monitor.)
 - **Tunables live in `backend/.env`** (loaded by `env_loader.py`, no external dep; real env vars
   win; `.env` is gitignored, `.env.example` is the committed template): `ORACLE_CC_USE_DUMMY`,
   `ORACLE_CC_WARN_PCT` / `ORACLE_CC_CRIT_PCT` (gauge thresholds), `ORACLE_CC_TOP_CHILD_LIMIT`
   (drill-down top-N). The code literals are just fallbacks.
 - **Target catalog is built dynamically**: `TARGET_META` (in `oracle_cc_api.py`) holds only the
-  per-scope *display* bits (label/sub/instance/diag_pack); `TARGET_CATALOG` is derived from it
+  per-scope *display* bits (label/sub/instance); `TARGET_CATALOG` is derived from it
   with `key == connection ==` the scope. So the only hardcoded remainder is display metadata.
 - **Monitoring account**: connect with a dedicated **read-only** user (`SELECT_CATALOG_ROLE`),
-  never OLS/SYS. `OracleTarget.connection` is the **scope key into `app.state.db_configs`** —
-  so `_run()` opens the query with `request.app.state.db_configs[target.connection]`. Enabling a
+  never OLS/SYS. `OracleTarget.connection` is the **scope key into `app.state.db_configs`** — so
+  `_run()` uses the connection `set_db_configs()` registered for `target.connection`. Enabling a
   DB is therefore just: load its scope in `load_db_configs()` (app.py) and add its display row to
   `TARGET_META`.
 - **kill-session privilege**: `ALTER SYSTEM KILL SESSION` needs `ALTER SYSTEM`, which the
   read-only monitor deliberately lacks — run kills through a **separate, privileged (audited)**
   connection, never by widening the monitor grant. (sid/serial are Pydantic ints → injection-safe.)
-- **Licensing**: `diag_pack` per target gates ASH / AWR / SQL Monitor (Diagnostics/Tuning Pack)
-  — used by Section 7's SID deep-dive (next).
+- **Reachability**: each target carries a `reachable` flag (green/grey tab dot) from
+  `db_configs`; a down DB stays a grey tab with erroring sections — the app never goes down.
 - RBAC: registered as the `oracle_command_center` screen (admin + read can view; not a SALT
   screen). The route is behind `rbacGuard` like every other screen, so roles are loaded before
   it renders (needed for the admin-only kill gating), and the nav item is filtered consistently.

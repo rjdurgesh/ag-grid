@@ -7,7 +7,8 @@ export interface OracleTarget {
   sub?: string | null;
   instance: string;
   connection: string;
-  diag_pack: boolean;
+  /** DB reachable right now? Drives the tab's status dot (green = up, grey = down). */
+  reachable: boolean;
 }
 
 /** Compact per-DB snapshot for the Home 'Oracle Databases' strip (`/api/oracle_cc/overview`). */
@@ -16,7 +17,7 @@ export interface OracleOverview {
   label: string;
   sub?: string | null;
   instance: string;
-  diag_pack: boolean;
+  reachable: boolean;
   storage_pct: number;
   storage_sev: 'ok' | 'warn' | 'crit';
   blocking: number;
@@ -83,8 +84,8 @@ export interface RollbackStatus {
 /**
  * One panel of the Section 7 SID deep-dive. `kind:'text'` → a monospace block (plan,
  * SQL Monitor); `kind:'table'` → a normal dyn-table payload; `kind:'rollback'` → the
- * killed-session rollback monitor. `available:false` means the feature isn't licensed
- * (`requires` names the pack) — the UI shows a notice instead.
+ * killed-session rollback monitor. `available:false` means that panel's own query couldn't
+ * run for this session/DB — the UI shows a notice instead.
  */
 export interface DetailPanel {
   key: string;

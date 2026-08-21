@@ -215,6 +215,20 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
       return;
     }
     this.activeKey.set(key);
+    // Clear the previous DB's data so each panel shows its LOADER (not the old tab's stale
+    // numbers) while the new DB's queries run. (A same-tab refresh keeps its data — no flicker —
+    // because the loaders don't clear; only a DB switch resets here.)
+    this.space.set(null);
+    this.topSeg.set(null);
+    this.topIdx.set(null);
+    this.idxHealth.set(null);
+    this.locks.set(null);
+    this.blocking.set(null);
+    this.sessions.set(null);
+    this.stamps.set({});
+    if (this.detailOpen()) {
+      this.closeDetail();   // the drawer belonged to the old DB's session
+    }
     this.refreshAll();
     this.armTimer();
   }

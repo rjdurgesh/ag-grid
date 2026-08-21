@@ -57,6 +57,11 @@ TOP_CHILD_LIMIT = env_int("ORACLE_CC_TOP_CHILD_LIMIT", 10)
 # App schema whose segments/indexes the storage sections report on (the owner-filtered
 # queries bind :owner to this). Set ORACLE_CC_SCHEMA in .env if it isn't OLS.
 OCC_SCHEMA = os.getenv("ORACLE_CC_SCHEMA", "OLS")
+# Dev/demo ONLY: comma-separated scopes to force "unreachable" so you can preview the down UI
+# (grey tab dot + unreachable banner + section read-errors) without a real outage. Leave EMPTY
+# in real deployments — reachability is otherwise driven by the live connection. e.g.
+# ORACLE_CC_FORCE_DOWN=retail_reporting
+_FORCE_DOWN = {s.strip() for s in os.getenv("ORACLE_CC_FORCE_DOWN", "").split(",") if s.strip()}
 
 
 # --- config-driven DB targets ------------------------------------------------
@@ -75,21 +80,19 @@ class OracleTarget(BaseModel):
     sub: str | None = None   # "BATCH" / "REPORTING"
     instance: str            # display instance name
     connection: str          # handle into app.state.db_configs (defaults to == key)
-    diag_pack: bool = False   # Diagnostics/Tuning Pack licensed? gates ASH/AWR/SQL Monitor
 
 
 # Per-scope DISPLAY metadata — only the bits a raw DB connection can't give you: the screen
-# label/sub, the instance's friendly name, and whether the Diagnostics/Tuning Pack is licensed.
-# **KEYS MUST MATCH your db_configs scopes (connect_db()).** Everything structural (`key`,
-# `connection`) is the scope itself, so the catalog below is BUILT from this — not repeated.
-# (If your real connection/config already carries `instance` or the pack flag, source them
-# from there instead and drop them here — this map is just the hardcoded remainder.)
+# label/sub and the instance's friendly name. **KEYS MUST MATCH your db_configs scopes
+# (connect_db()).** Everything structural (`key`, `connection`) is the scope itself, so the
+# catalog below is BUILT from this — not repeated. (If your real connection already exposes
+# `instance`, source it from there and drop it here — this map is just the hardcoded remainder.)
 TARGET_META: dict[str, dict[str, Any]] = {
-    "group":            {"label": "OLS GROUP",                        "instance": "OLSPRD1", "diag_pack": True},
-    "cib_batch":        {"label": "OLS CIB",    "sub": "BATCH",       "instance": "CIBB1",   "diag_pack": True},
-    "cib_reporting":    {"label": "OLS CIB",    "sub": "REPORTING",   "instance": "CIBR1",   "diag_pack": True},
-    "retail_batch":     {"label": "OLS RETAIL", "sub": "BATCH",       "instance": "RTLB1",   "diag_pack": False},
-    "retail_reporting": {"label": "OLS RETAIL", "sub": "REPORTING",   "instance": "RTLR1",   "diag_pack": False},
+    "group":            {"label": "OLS GROUP",                        "instance": "OLSPRD1"},
+    "cib_batch":        {"label": "OLS CIB",    "sub": "BATCH",       "instance": "CIBB1"},
+    "cib_reporting":    {"label": "OLS CIB",    "sub": "REPORTING",   "instance": "CIBR1"},
+    "retail_batch":     {"label": "OLS RETAIL", "sub": "BATCH",       "instance": "RTLB1"},
+    "retail_reporting": {"label": "OLS RETAIL", "sub": "REPORTING",   "instance": "RTLR1"},
 }
 
 # Built dynamically: the scope key IS the target key AND the db_configs connection handle.
@@ -100,26 +103,37 @@ TARGET_CATALOG: dict[str, OracleTarget] = {
         label=meta["label"],
         sub=meta.get("sub"),
         instance=meta.get("instance", scope.upper()),
-        diag_pack=bool(meta.get("diag_pack", False)),
     )
     for scope, meta in TARGET_META.items()
 }
 
 
 def _enabled_target_keys(request: Request | None) -> list[str]:
-    """Catalogued scopes to surface as tabs. Dummy mode shows every catalogued scope (no real
-    connections exist in dev). Real mode shows a scope only if it's present AND truthy in
-    ``app.state.db_configs`` (connect_db returned a connection). Order follows the catalog."""
+    """Every catalogued DB is shown as a tab (order follows the catalog). Whether each one is
+    reachable is a separate flag (see `_reachable`) that colours the tab dot — a down DB still
+    gets a tab so the operator can see it and its state, it just shows grey + section errors."""
+    return list(TARGET_CATALOG.keys())
+
+
+def _reachable(request: Request | None, scope: str) -> bool:
+    """Is this DB's connection usable? Dummy mode → always True. Real mode → True when
+    `connect_db` put a truthy connection in app.state.db_configs for this scope (i.e. the
+    connect succeeded); a scope that's missing/None/failed reads as down (grey tab). This never
+    touches the DB, so it can't hang or bring the screen down if a database is unavailable."""
+    if scope in _FORCE_DOWN:  # dev/demo override (see ORACLE_CC_FORCE_DOWN)
+        return False
     if ORACLE_CC_USE_DUMMY or request is None:
-        return list(TARGET_CATALOG.keys())
+        return True
     cfgs = getattr(request.app.state, "db_configs", {}) or {}
-    return [k for k in TARGET_CATALOG if cfgs.get(k)]
+    return bool(cfgs.get(scope))
 
 
 def _target(db: str) -> OracleTarget:
     t = TARGET_CATALOG.get(db)
     if not t:
         raise HTTPException(status_code=404, detail=f"Unknown DB target '{db}'")
+    if db in _FORCE_DOWN:  # dev/demo: simulate an unreachable DB so every section 503s
+        raise HTTPException(status_code=503, detail=f"Database '{db}' is unreachable")
     return t
 
 
@@ -128,7 +142,8 @@ def list_targets(request: Request) -> dict:
     """The DB tabs the UI should render — driven by ``app.state.db_configs`` (see note above):
     add/remove a scope in app.py's loader and the tab list follows, no change needed here."""
     keys = _enabled_target_keys(request)
-    return {"status": "success", "data": [TARGET_CATALOG[k].model_dump() for k in keys]}
+    return {"status": "success",
+            "data": [{**TARGET_CATALOG[k].model_dump(), "reachable": _reachable(request, k)} for k in keys]}
 
 
 @router.get("/overview")
@@ -159,15 +174,22 @@ def overview_real(request: Request | None = None) -> dict:
     data = []
     for key in _enabled_target_keys(request):
         tgt = TARGET_CATALOG[key]
-        snap = (_run(tgt, snap_sql) or [{}])[0]
-        top = (_run(tgt, top_sql, {"owner": OCC_SCHEMA}) or [{}])[0]
-        pct = float(snap.get("storage_pct") or 0)
-        data.append({
-            "key": tgt.key, "label": tgt.label, "sub": tgt.sub, "instance": tgt.instance, "diag_pack": tgt.diag_pack,
-            "storage_pct": pct, "storage_sev": _sev_for(pct),
-            "blocking": int(snap.get("blocking") or 0), "active": int(snap.get("active") or 0),
-            "top_object": top.get("segment_name") or "—", "top_gb": float(top.get("size_gb") or 0),
-        })
+        reachable = _reachable(request, key)
+        tile = {"key": tgt.key, "label": tgt.label, "sub": tgt.sub, "instance": tgt.instance,
+                "reachable": reachable, "storage_pct": 0.0, "storage_sev": "ok",
+                "blocking": 0, "active": 0, "top_object": "—", "top_gb": 0.0}
+        if reachable:
+            try:  # a single down DB must not fail the whole strip
+                snap = (_run(tgt, snap_sql) or [{}])[0]
+                top = (_run(tgt, top_sql, {"owner": OCC_SCHEMA}) or [{}])[0]
+                pct = float(snap.get("storage_pct") or 0)
+                tile.update({"storage_pct": pct, "storage_sev": _sev_for(pct),
+                             "blocking": int(snap.get("blocking") or 0), "active": int(snap.get("active") or 0),
+                             "top_object": top.get("segment_name") or "—", "top_gb": float(top.get("size_gb") or 0)})
+            except Exception as exc:
+                logger.warning("overview: DB '%s' unreachable — %s", key, exc)
+                tile["reachable"] = False
+        data.append(tile)
     return {"status": "success", "data": data}
 
 
@@ -519,7 +541,7 @@ def locks_real(t: OracleTarget) -> dict:
                DECODE(l.lmode, 6,'Exclusive (X)', 5,'Row-X (SSX)', 4,'Share (S)',
                                3,'Row-X (RX)', 2,'Row-S (RS)', TO_CHAR(l.lmode)) AS mode_held,
                s.sid, s.serial# AS serial, s.username, s.machine,
-               NUMTODSINTERVAL(l.ctime, 'SECOND') AS held_for,
+               l.ctime AS held_secs,
                CASE WHEN l.block = 1 THEN 'BLOCKING'
                     WHEN s.blocking_session IS NOT NULL THEN 'WAITING'
                     ELSE 'HELD' END AS state,
@@ -532,8 +554,13 @@ def locks_real(t: OracleTarget) -> dict:
            AND l.lmode > 0
          ORDER BY DECODE(state,'BLOCKING',0,'WAITING',1,2), l.ctime DESC
     """
-    _ = sql
-    raise RuntimeError("locks_real: wire _run() to your monitoring connection")
+    rows = [
+        _lock_row(r["object"] or "—", r["lock_type"], r["mode_held"],
+                  int(r["sid"]), int(r["serial"]), r["username"] or "—", r["machine"] or "—",
+                  _fmt_dur(r.get("held_secs")), r["state"], r["sql_id"] or "—")
+        for r in _run(t, sql)
+    ]
+    return _locks_payload(rows)
 
 
 class KillRequest(BaseModel):
@@ -626,10 +653,27 @@ def blocking_real(t: OracleTarget) -> dict:
          WHERE s.blocking_session IS NOT NULL
             OR s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
     """
-    # Assemble the tree in Python: index rows by sid, attach each to its blocker's __children,
-    # collect the un-blocked blockers as roots.
-    _ = sql
-    raise RuntimeError("blocking_real: wire _run() to your monitoring connection")
+    # Assemble the tree in Python: index rows by sid, group waiters under their blocker,
+    # then the un-blocked blockers are the roots.
+    raw = _run(t, sql)
+    by_sid = {int(r["sid"]): r for r in raw}
+    kids: dict[int, list[dict]] = {}
+    for r in raw:
+        blocker = r.get("blocked_by")
+        if blocker:                       # this session is waiting behind `blocker`
+            kids.setdefault(int(blocker), []).append(r)
+
+    def build(r: dict, role: str, visited: set[int]) -> dict:
+        sid = int(r["sid"])
+        seen = visited | {sid}
+        children = [build(c, "WAITER", seen) for c in kids.get(sid, []) if int(c["sid"]) not in seen]
+        return _blk_node(sid, int(r["serial"]), role, r.get("username") or "—",
+                         r.get("object") or "—", r.get("event") or "—",
+                         _fmt_dur(r.get("seconds_in_wait")), r.get("sql_id") or "—",
+                         r.get("machine") or "—", children or None)
+
+    roots = [by_sid[sid] for sid in kids if not (by_sid.get(sid) or {}).get("blocked_by") and sid in by_sid]
+    return _blocking_payload([build(r, "BLOCKER", set()) for r in roots])
 
 
 # =============================================================================
@@ -707,8 +751,20 @@ def sessions_real(t: OracleTarget, status: str) -> dict:
            AND (:status = 'all' OR LOWER(s.status) = :status)
          ORDER BY DECODE(s.status,'ACTIVE',0,'INACTIVE',1,2), s.last_call_et DESC
     """
-    _ = sql
-    raise RuntimeError("sessions_real: wire _run() to your monitoring connection")
+    rows = [
+        _sess_row(int(r["sid"]), int(r["serial"]), r["username"] or "—", (r["status"] or "").upper(),
+                  r["machine"] or "—", r["program"] or "—", r.get("sql_id"),
+                  r.get("event") or "ON CPU", _fmt_dur(r.get("secs")), int(r.get("secs") or 0))
+        for r in _run(t, sql, {"status": status})
+    ]
+    # Full per-state counts (independent of the filter) so the UI can label every tab.
+    counts = {"active": 0, "inactive": 0, "killed": 0, "total": 0}
+    for c in _run(t, "SELECT LOWER(status) AS st, COUNT(*) AS c FROM v$session WHERE type='USER' GROUP BY LOWER(status)"):
+        n = int(c["c"] or 0)
+        counts["total"] += n
+        if c["st"] in counts:
+            counts[c["st"]] = n
+    return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
 
 
 class SessionDetailQuery(BaseModel):
@@ -723,8 +779,8 @@ class SessionDetailQuery(BaseModel):
 def session_detail(db: str, body: SessionDetailQuery) -> dict:
     """The SID deep-dive: a self-describing list of panels (plan / ASH / SQL Monitor / stats /
     locks / AWR). Panels are either `kind:'text'` (monospace block) or `kind:'table'` (a normal
-    dyn-table payload). ASH / SQL Monitor / AWR are `available:false` unless the target's
-    Diagnostics+Tuning Pack is licensed (`diag_pack`), so we never query unlicensed features."""
+    dyn-table payload). A panel comes back `available:false` only if its own query fails (each
+    panel is built independently), never for licensing."""
     t = _target(db)
     return session_detail_dummy(t, body) if ORACLE_CC_USE_DUMMY else session_detail_real(t, body)
 
@@ -776,13 +832,187 @@ def session_detail_real(t: OracleTarget, q: SessionDetailQuery) -> dict:
                   (Starts / E-Rows vs A-Rows / A-Time / Buffers / Reads pinpoint the bottleneck)
       * waits   — V$SESSION_EVENT for the SID (cumulative time per wait event + wait class)
       * binds   — DBMS_XPLAN peeked binds / V$SQL_BIND_CAPTURE (bind peeking / data skew)
-      * ash     — V$ACTIVE_SESSION_HISTORY (last N min for the SID)          [diag pack]
-      * monitor — DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>sid, type=>'TEXT') [tuning pack]
+      * ash     — V$ACTIVE_SESSION_HISTORY (last N min for the SID)
+      * monitor — DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>sid, type=>'TEXT')
       * stats   — DBA_TAB_STATISTICS for the objects in the plan
       * locks   — V$LOCK / V$LOCKED_OBJECT for the SID
-      * awr     — DBA_HIST_SQLSTAT for the sql_id                            [diag pack]
-    Only run the pack-gated panels when t.diag_pack is true; otherwise return available:false."""
-    raise RuntimeError("session_detail_real: wire _run() + DBMS_XPLAN/DBMS_SQL_MONITOR to your monitoring connection")
+      * awr     — DBA_HIST_SQLSTAT for the sql_id
+
+    NOTE: this is a lot of version/edition-specific V$/DBA SQL — it's wired to the exact panel
+    contract (keys/columns) the UI expects, but verify the view/column names against your Oracle
+    version. Each panel is built inside its own try/except so one bad query degrades that panel
+    to `available:false` instead of failing the whole deep-dive."""
+    sid, serial = int(q.sid), int(q.serial)
+
+    facts = _run(t, """
+        SELECT s.sid, s.serial# AS serial, s.username, s.status, s.machine, s.program,
+               s.sql_id, NVL(s.event, 'ON CPU') AS event, s.last_call_et AS secs,
+               s.osuser, s.module, TO_CHAR(s.logon_time, 'DD-Mon HH24:MI') AS logon_time
+          FROM v$session s WHERE s.sid = :sid AND s.serial# = :serial
+    """, {"sid": sid, "serial": serial})
+    f = facts[0] if facts else {}
+    status = (f.get("status") or "ACTIVE").upper()
+    sql_id = q.sql_id or (f.get("sql_id") if f.get("sql_id") not in (None, "—") else None)
+    session = {
+        "sid": sid, "serial": serial, "session": f"{sid},{serial}",
+        "username": f.get("username") or "—", "status": status,
+        "machine": f.get("machine") or "—", "program": f.get("program") or "—",
+        "logon_time": f.get("logon_time") or "—", "sql_id": sql_id or "—",
+        "osuser": f.get("osuser") or "—", "module": f.get("module") or "—",
+        "last_call": _fmt_dur(f.get("secs")),
+    }
+
+    def _safe(build, fallback):
+        try:
+            return build()
+        except Exception as exc:  # one panel's SQL failing shouldn't kill the drawer
+            logger.warning("session-detail panel failed (%s): %s", getattr(fallback, "get", lambda k: "?")("key"), exc)
+            return fallback
+
+    waits_cols = [{"key": "event", "label": "Wait event", "type": "mono"},
+                  {"key": "wait_class", "label": "Class", "type": "chip"},
+                  {"key": "time_waited_s", "label": "Time waited (s)", "type": "num"},
+                  {"key": "waits", "label": "Waits", "type": "num"},
+                  {"key": "avg_ms", "label": "Avg (ms)", "type": "num"}]
+    binds_cols = [{"key": "name", "label": "Bind", "type": "mono"},
+                  {"key": "pos", "label": "Pos", "type": "num"},
+                  {"key": "datatype", "label": "Datatype", "type": "text"},
+                  {"key": "value", "label": "Peeked value", "type": "mono"}]
+    ash_cols = [{"key": "sample_time", "label": "Sample", "type": "text"},
+                {"key": "session_state", "label": "State", "type": "chip"},
+                {"key": "event", "label": "Event", "type": "text"},
+                {"key": "wait_class", "label": "Wait class", "type": "text"},
+                {"key": "sql_id", "label": "SQL_ID", "type": "mono"}]
+    stats_cols = [{"key": "object", "label": "Object", "type": "mono"},
+                  {"key": "num_rows", "label": "Rows", "type": "num"},
+                  {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
+                  {"key": "state", "label": "Stats", "type": "chip"}]
+    locks_cols = [{"key": "type", "label": "Lock", "type": "text"},
+                  {"key": "mode_held", "label": "Mode held", "type": "text"},
+                  {"key": "object", "label": "Object", "type": "mono"},
+                  {"key": "state", "label": "State", "type": "chip"}]
+    awr_cols = [{"key": "snap", "label": "Snap window", "type": "text"},
+                {"key": "elapsed_s", "label": "Elapsed (s)", "type": "num"},
+                {"key": "cpu_s", "label": "CPU (s)", "type": "num"},
+                {"key": "buffer_gets", "label": "Buffer gets", "type": "num"},
+                {"key": "executions", "label": "Execs", "type": "num"}]
+    _WAIT_SEV = {"Application": "crit", "Concurrency": "crit", "User I/O": "warn", "System I/O": "warn",
+                 "Cluster": "warn", "Commit": "ok", "CPU": "ok", "Idle": "muted"}
+
+    def plan_panel():
+        if not sql_id:
+            return _panel_text("plan", "Execution Plan", "", available=False)
+        out = _run(t, "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(:sql_id, NULL, 'ALLSTATS LAST +PEEKED_BINDS'))",
+                   {"sql_id": sql_id})
+        text = "\n".join(str(r.get("plan_table_output") or "") for r in out)
+        return _panel_text("plan", "Execution Plan", text or "(no plan in the cursor cache for this SQL_ID)")
+
+    def waits_panel():
+        rows = []
+        for r in _run(t, "SELECT event, wait_class, time_waited, total_waits, average_wait FROM v$session_event WHERE sid = :sid ORDER BY time_waited DESC",
+                      {"sid": sid}):
+            wc = r.get("wait_class") or "—"
+            row = {"event": r["event"], "wait_class": wc, "wait_class__sev": _WAIT_SEV.get(wc, "muted"),
+                   "time_waited_s": round((r.get("time_waited") or 0) / 100, 1),
+                   "waits": int(r.get("total_waits") or 0), "avg_ms": round((r.get("average_wait") or 0) * 10, 1)}
+            if _WAIT_SEV.get(wc) in ("crit", "warn"):
+                row["__sev"] = _WAIT_SEV[wc]
+            rows.append(row)
+        return _panel_table("waits", "Wait Events", waits_cols, rows)
+
+    def binds_panel():
+        if not sql_id:
+            return _panel_table("binds", "Bind Variables", binds_cols, [], available=False)
+        rows = [{"name": r.get("name"), "pos": r.get("position"), "datatype": r.get("datatype_string") or "",
+                 "value": str(r.get("value_string") or "")}
+                for r in _run(t, "SELECT name, position, datatype_string, value_string FROM v$sql_bind_capture WHERE sql_id = :sql_id ORDER BY position",
+                              {"sql_id": sql_id})]
+        return _panel_table("binds", "Bind Variables", binds_cols, rows)
+
+    def ash_panel():
+        rows = [{"sample_time": r.get("sample_time"), "session_state": r.get("session_state"),
+                 "session_state__sev": "ok" if r.get("session_state") == "ON CPU" else "warn",
+                 "event": r.get("event") or "—", "wait_class": r.get("wait_class") or "CPU", "sql_id": r.get("sql_id") or "—"}
+                for r in _run(t, """
+                    SELECT TO_CHAR(sample_time,'HH24:MI:SS') AS sample_time, session_state, event, wait_class, sql_id
+                      FROM v$active_session_history
+                     WHERE session_id = :sid AND sample_time > SYSDATE - INTERVAL '10' MINUTE
+                     ORDER BY sample_time DESC FETCH FIRST 50 ROWS ONLY
+                """, {"sid": sid})]
+        return _panel_table("ash", "Active Session History", ash_cols, rows)
+
+    def monitor_panel():
+        out = _run(t, "SELECT DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>:sid, type=>'TEXT') AS report FROM dual", {"sid": sid})
+        return _panel_text("monitor", "SQL Monitor", (str(out[0].get("report")) if out else "") or "(no active SQL Monitor report)")
+
+    def stats_panel():
+        rows = [{"object": r["table_name"], "num_rows": r.get("num_rows"), "last_analyzed": r.get("last_analyzed") or "—",
+                 "state": "STALE" if r.get("stale_stats") == "YES" else "FRESH",
+                 "state__sev": "warn" if r.get("stale_stats") == "YES" else "ok"}
+                for r in _run(t, """
+                    SELECT table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
+                      FROM dba_tab_statistics
+                     WHERE owner = :owner AND object_type = 'TABLE'
+                       AND table_name IN (SELECT object_name FROM v$sql_plan
+                                           WHERE sql_id = :sql_id AND object_owner = :owner AND object_type LIKE 'TABLE%')
+                """, {"owner": OCC_SCHEMA, "sql_id": sql_id or ""})]
+        return _panel_table("stats", "Object Statistics", stats_cols, rows)
+
+    def locks_panel():
+        rows = []
+        for r in _run(t, """
+            SELECT DECODE(l.type,'TX','TX (Row)','TM','TM (DML)',l.type) AS type,
+                   DECODE(l.lmode,6,'Exclusive (X)',5,'Row-X (SSX)',4,'Share (S)',3,'Row-X (RX)',2,'Row-S (RS)',TO_CHAR(l.lmode)) AS mode_held,
+                   (SELECT o.owner||'.'||o.object_name FROM v$locked_object lo JOIN dba_objects o ON o.object_id = lo.object_id
+                     WHERE lo.session_id = l.sid AND ROWNUM = 1) AS object,
+                   CASE WHEN l.block = 1 THEN 'BLOCKING' ELSE 'HELD' END AS state
+              FROM v$lock l WHERE l.sid = :sid AND l.type IN ('TX','TM') AND l.lmode > 0
+        """, {"sid": sid}):
+            st = r["state"]
+            rows.append({"type": r["type"], "mode_held": r["mode_held"], "object": r.get("object") or "—",
+                         "state": st, "state__sev": "crit" if st == "BLOCKING" else "ok"})
+        return _panel_table("locks", "Locks Held", locks_cols, rows)
+
+    def awr_panel():
+        if not sql_id:
+            return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, [], available=False)
+        rows = [{"snap": r.get("snap"), "elapsed_s": round((r.get("elapsed_time") or 0) / 1e6, 1),
+                 "cpu_s": round((r.get("cpu_time") or 0) / 1e6, 1), "buffer_gets": int(r.get("buffer_gets") or 0),
+                 "executions": int(r.get("executions_delta") or 0)}
+                for r in _run(t, """
+                    SELECT TO_CHAR(s.begin_interval_time,'DD-Mon HH24:MI') AS snap,
+                           st.elapsed_time_delta AS elapsed_time, st.cpu_time_delta AS cpu_time,
+                           st.buffer_gets_delta AS buffer_gets, st.executions_delta
+                      FROM dba_hist_sqlstat st JOIN dba_hist_snapshot s ON s.snap_id = st.snap_id
+                     WHERE st.sql_id = :sql_id ORDER BY s.begin_interval_time DESC FETCH FIRST 8 ROWS ONLY
+                """, {"sql_id": sql_id})]
+        return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, rows)
+
+    def rollback_panel():
+        rb = _run(t, """
+            SELECT NVL(ROUND(sofar * 100 / NULLIF(totalwork, 0)), 0) AS pct
+              FROM v$session_longops
+             WHERE sid = :sid AND opname = 'Transaction Rollback' AND sofar < totalwork
+             ORDER BY start_time DESC FETCH FIRST 1 ROWS ONLY
+        """, {"sid": sid})
+        return _panel_rollback(int(rb[0]["pct"]) if rb else 0)
+
+    panels = []
+    if status == "KILLED":
+        panels.append(_safe(rollback_panel, _panel_rollback(0)))
+    panels += [
+        _safe(plan_panel, _panel_text("plan", "Execution Plan", "", available=False)),
+        _safe(waits_panel, _panel_table("waits", "Wait Events", waits_cols, [], available=False)),
+        _safe(binds_panel, _panel_table("binds", "Bind Variables", binds_cols, [], available=False)),
+        _safe(ash_panel, _panel_table("ash", "Active Session History", ash_cols, [], available=False)),
+        _safe(monitor_panel, _panel_text("monitor", "SQL Monitor", "", available=False)),
+        _safe(stats_panel, _panel_table("stats", "Object Statistics", stats_cols, [], available=False)),
+        _safe(locks_panel, _panel_table("locks", "Locks Held", locks_cols, [], available=False)),
+        _safe(awr_panel, _panel_table("awr", "AWR (DBA_HIST)", awr_cols, [], available=False)),
+    ]
+    if q.panel:  # per-tab refresh → just the requested panel
+        panels = [p for p in panels if p["key"] == q.panel]
+    return {"status": "success", "session": session, "panels": panels}
 
 
 # --- DB access boundary -------------------------------------------------------
