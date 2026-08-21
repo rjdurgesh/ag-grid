@@ -327,40 +327,58 @@ def top_segments_real(t: OracleTarget) -> dict:
          ORDER BY size_gb DESC
          FETCH FIRST :lim ROWS ONLY
     """, {"owner": owner, "lim": 10})
+    names = [r["segment_name"] for r in tables]
+    if not names:
+        return {"status": "success", "columns": _TOP_COLS, "rows": []}
 
-    # 2) Stats (num_rows / last_analyzed / stale) for tables + partitions, in one pass.
+    # Bind the top-N table names as an IN-list (:n0, :n1, …) so the next two queries touch ONLY
+    # those tables — never the whole schema's stats/segments (which can be huge in production).
+    # The placeholders are generated tokens; the names go in as bind VALUES → injection-safe.
+    ph = ", ".join(f":n{i}" for i in range(len(names)))
+    name_binds = {f"n{i}": n for i, n in enumerate(names)}
+
+    # 2) Stats (num_rows / last_analyzed / stale) for JUST those tables + their partitions.
     stats: dict[tuple, dict] = {}
-    for s in _run(t, """
+    for s in _run(t, f"""
         SELECT object_type, table_name, partition_name, num_rows, stale_stats,
                TO_CHAR(last_analyzed, 'DD-Mon HH24:MI') AS last_analyzed
           FROM dba_tab_statistics
          WHERE owner = :owner AND object_type IN ('TABLE','PARTITION')
-    """, {"owner": owner}):
+           AND table_name IN ({ph})
+    """, {"owner": owner, **name_binds}):
         stats[(s["table_name"], s.get("partition_name"))] = s
+
+    # 3) Top-N partitions PER table in ONE windowed query (ROW_NUMBER per segment) — not a
+    #    query per table — again scoped to the same top-N names.
+    parts_by_table: dict[str, list[dict]] = {}
+    for p in _run(t, f"""
+        SELECT segment_name, partition_name, size_gb FROM (
+            SELECT segment_name, partition_name,
+                   ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
+                   ROW_NUMBER() OVER (PARTITION BY segment_name ORDER BY SUM(bytes) DESC) AS rn
+              FROM dba_segments
+             WHERE owner = :owner AND segment_name IN ({ph})
+               AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
+             GROUP BY segment_name, partition_name
+        ) WHERE rn <= :lim
+        ORDER BY segment_name, size_gb DESC
+    """, {"owner": owner, "lim": TOP_CHILD_LIMIT, **name_binds}):
+        parts_by_table.setdefault(p["segment_name"], []).append(p)
 
     def cells(table: str, part: str | None = None) -> dict:
         s = stats.get((table, part), {})
         fresh = (s.get("stale_stats") or "NO") != "YES"
         return {"num_rows": s.get("num_rows"), "last_analyzed": s.get("last_analyzed") or "—", **_stats_cell(fresh)}
 
-    # 3) For each table, its top-N partitions as __children. (Add a subpartition level the same
-    #    way — query segment_type='TABLE SUBPARTITION' grouped by subobject — if you use them.)
+    # 4) Assemble the tree (table → its top-N partitions). (Add a subpartition level the same
+    #    way — a windowed query over segment_type='TABLE SUBPARTITION' — if you use them.)
     rows = []
     for tb in tables:
         seg = tb["segment_name"]
-        parts = _run(t, """
-            SELECT partition_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
-              FROM dba_segments
-             WHERE owner = :owner AND segment_name = :seg
-               AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
-             GROUP BY partition_name
-             ORDER BY size_gb DESC
-             FETCH FIRST :lim ROWS ONLY
-        """, {"owner": owner, "seg": seg, "lim": TOP_CHILD_LIMIT})
         row = {"object": seg, "kind": "Table", "size_gb": tb["size_gb"], **cells(seg)}
         children = [
             {"object": p["partition_name"], "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, p["partition_name"])}
-            for p in parts
+            for p in parts_by_table.get(seg, [])
         ]
         if children:
             row["__children"] = children
@@ -391,7 +409,9 @@ def top_indexes_real(t: OracleTarget) -> dict:
     SUBPARTITION), joined to DBA_INDEXES for table + type. Each partitioned index drills into
     its **top-{n} partitions by size** (ordered DESC, `FETCH FIRST {n} ROWS ONLY`), not every
     partition. Same {{columns, rows}} shape (partitions as __children).""".format(n=TOP_CHILD_LIMIT)
-    sql = """
+    owner = OCC_SCHEMA
+    # 1) Top-5 indexes by allocated bytes.
+    idx = _run(t, """
         SELECT s.segment_name AS index_name, i.table_name, i.index_type AS kind,
                ROUND(SUM(s.bytes)/1024/1024/1024, 2) AS size_gb
           FROM dba_segments s
@@ -401,24 +421,40 @@ def top_indexes_real(t: OracleTarget) -> dict:
          GROUP BY s.segment_name, i.table_name, i.index_type
          ORDER BY size_gb DESC
          FETCH FIRST 5 ROWS ONLY
-    """
-    rows = []
-    for ix in _run(t, sql, {"owner": OCC_SCHEMA}):
-        name = ix["index_name"]
-        parts = _run(t, """
-            SELECT partition_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+    """, {"owner": owner})
+    names = [ix["index_name"] for ix in idx]
+    if not names:
+        return {"status": "success", "columns": _IDX_COLS, "rows": []}
+
+    # 2) Top-N partitions PER index in ONE windowed query (ROW_NUMBER per segment), scoped to
+    #    just the top-5 index names (:n0…:n4) — not a query per index. Placeholders are tokens;
+    #    the names bind as VALUES → injection-safe.
+    ph = ", ".join(f":n{i}" for i in range(len(names)))
+    name_binds = {f"n{i}": n for i, n in enumerate(names)}
+    parts_by_index: dict[str, list[dict]] = {}
+    for p in _run(t, f"""
+        SELECT segment_name, partition_name, size_gb FROM (
+            SELECT segment_name, partition_name,
+                   ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
+                   ROW_NUMBER() OVER (PARTITION BY segment_name ORDER BY SUM(bytes) DESC) AS rn
               FROM dba_segments
-             WHERE owner = :owner AND segment_name = :seg
+             WHERE owner = :owner AND segment_name IN ({ph})
                AND segment_type IN ('INDEX PARTITION','INDEX SUBPARTITION')
-             GROUP BY partition_name
-             ORDER BY size_gb DESC
-             FETCH FIRST :lim ROWS ONLY
-        """, {"owner": OCC_SCHEMA, "seg": name, "lim": TOP_CHILD_LIMIT})
+             GROUP BY segment_name, partition_name
+        ) WHERE rn <= :lim
+        ORDER BY segment_name, size_gb DESC
+    """, {"owner": owner, "lim": TOP_CHILD_LIMIT, **name_binds}):
+        parts_by_index.setdefault(p["segment_name"], []).append(p)
+
+    # 3) Assemble the tree (index → its top-N partitions).
+    rows = []
+    for ix in idx:
+        name = ix["index_name"]
         row = {"index_name": name, "table_name": ix["table_name"], "kind": ix["kind"], "size_gb": ix["size_gb"]}
         children = [
             {"index_name": p["partition_name"], "table_name": ix["table_name"],
              "kind": "Index partition", "size_gb": p["size_gb"]}
-            for p in parts
+            for p in parts_by_index.get(name, [])
         ]
         if children:
             row["__children"] = children
