@@ -62,30 +62,21 @@ def overview_dummy(request: Request | None = None) -> dict:
 
 
 def space_dummy(t: OracleTarget) -> dict:
-    """Canned space data. Same shape as space_real."""
-    hot = t.key == "group"
-    warm = t.key == "cib_batch"
-    # (owner, tablespace, total_gb, used_gb) — total/free are tablespace-level, used is per owner.
+    """Canned per-tablespace space. Same shape as space_real — free/used% vs physical alloc."""
+    # (tablespace, alloc_max_gb, physical_alloc_gb, used_gb) — used <= physical.
     raw = [
-        ("OLS",       "OLS_DATA", 2048, 1840.44 if hot else 1120.0),
-        ("OLS",       "OLS_IDX",  1024, 902.10 if hot else 540.0),
-        ("OLS",       "OLS_LOB",  512,  305.77),
-        ("OLS_BATCH", "OLS_DATA", 2048, 118.30),
-        ("OLS_ARCH",  "OLS_ARCH", 256,  148.20 if warm else 60.0),
-        ("OLS",       "OLS_STG",  256,  17.30),
+        ("OLS_DATA", 2048.0, 2000.0, 1900.00),   # used 95%   → red
+        ("OLS_IDX",  1024.0, 1000.0,  870.00),   # used 87%   → amber
+        ("OLS_LOB",   512.0,  512.0,  305.77),   # used ~60%  → green
+        ("OLS_ARCH",  256.0,  200.0,   60.00),   # used 30%   → green
+        ("OLS_STG",   256.0,  128.0,   17.30),   # used ~14%  → green
     ]
-    # tablespace-level used = sum of owner rows in that tablespace
-    ts_used: dict[str, float] = {}
-    for _o, ts, _tot, used in raw:
-        ts_used[ts] = ts_used.get(ts, 0.0) + used
     rows = []
-    for owner, ts, total, used in raw:
-        free = round(total - ts_used[ts], 2)
-        pct = round(ts_used[ts] / total * 100, 1) if total else 0.0
-        rows.append({
-            "owner": owner, "tablespace": ts,
-            "total_gb": float(total), "used_gb": round(used, 2), "free_gb": free, "used_pct": pct,
-        })
+    for ts, alloc, phys, used in raw:
+        rows.append({"tablespace": ts, "total_alloc_gb": alloc, "total_phys_gb": phys,
+                     "used_gb": round(used, 2), "free_gb": round(phys - used, 2),
+                     "total_free_gb": round(alloc - used, 2),
+                     "used_pct": round(used / phys * 100, 2) if phys else 0.0})
     return _space_payload(rows)
 
 

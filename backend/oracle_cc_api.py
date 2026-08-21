@@ -199,7 +199,7 @@ def overview_real(request: Request | None = None) -> dict:
 
 @router.post("/{db}/space")
 def space(db: str) -> dict:
-    """Consolidated space (gauge) + owner×tablespace breakdown for one DB."""
+    """Consolidated space (gauge) + per-tablespace breakdown (alloc/physical/used/free + State)."""
     t = _target(db)
     return space_dummy(t) if ORACLE_CC_USE_DUMMY else space_real(t)
 
@@ -207,40 +207,37 @@ def space(db: str) -> dict:
 # --- Section 1: real (the actual query) ----------------------------------------
 
 def space_real(t: OracleTarget) -> dict:
+    """Per-tablespace space: allocated (autoextend-aware max) + physical bytes from
+    DBA_DATA_FILES, used from DBA_SEGMENTS, and free GB / free % of the autoextend max."""
     sql = """
-        WITH ts_max AS (   -- autoextend-aware capacity per tablespace
-            SELECT tablespace_name,
-                   SUM(CASE WHEN autoextensible = 'YES' THEN GREATEST(bytes, maxbytes)
-                            ELSE bytes END) AS max_bytes
-              FROM dba_data_files
-             GROUP BY tablespace_name
-        ),
-        ts_used AS (       -- total used per tablespace (all owners)
-            SELECT tablespace_name, SUM(bytes) AS used_bytes
-              FROM dba_segments
-             GROUP BY tablespace_name
-        ),
-        own AS (           -- used per (owner, tablespace)
-            SELECT owner, tablespace_name, SUM(bytes) AS owner_bytes
-              FROM dba_segments
-             GROUP BY owner, tablespace_name
+        WITH c1 AS (
+            SELECT a.tablespace_name,
+                   ROUND(a.bytes_alloc     / (1024*1024*1024), 2) AS total_alloc_gb,
+                   ROUND(a.physical_bytes  / (1024*1024*1024), 2) AS total_phys_gb,
+                   ROUND(NVL(b.tot_used,0) / (1024*1024*1024), 2) AS used_gb
+              FROM (SELECT tablespace_name,
+                           SUM(bytes) AS physical_bytes,
+                           SUM(DECODE(autoextensible, 'NO', bytes, 'YES', maxbytes)) AS bytes_alloc
+                      FROM dba_data_files
+                     GROUP BY tablespace_name) a
+              LEFT JOIN (SELECT tablespace_name, SUM(bytes) AS tot_used
+                           FROM dba_segments
+                          GROUP BY tablespace_name) b
+                ON a.tablespace_name = b.tablespace_name
         )
-        SELECT o.owner,
-               o.tablespace_name,
-               ROUND(m.max_bytes    / 1024/1024/1024, 2) AS total_gb,
-               ROUND(o.owner_bytes  / 1024/1024/1024, 2) AS used_gb,
-               ROUND((m.max_bytes - u.used_bytes)/1024/1024/1024, 2) AS free_gb,
-               ROUND(u.used_bytes * 100 / NULLIF(m.max_bytes,0), 1)  AS used_pct
-          FROM own o
-          JOIN ts_max  m ON m.tablespace_name = o.tablespace_name
-          JOIN ts_used u ON u.tablespace_name = o.tablespace_name
-         ORDER BY used_gb DESC
+        SELECT tablespace_name, total_alloc_gb, total_phys_gb, used_gb,
+               ROUND(total_phys_gb  - used_gb, 2)                   AS free_gb,
+               ROUND(total_alloc_gb - used_gb, 2)                   AS total_free_gb,
+               ROUND((used_gb / NULLIF(total_phys_gb, 0)) * 100, 2) AS used_pct
+          FROM c1
+         ORDER BY used_pct DESC
     """
-    # _run returns dicts keyed by (lowercased) column name → map to the payload's keys.
+    # Free + Used % are vs PHYSICAL alloc (free = physical - used); Total Free is vs the
+    # autoextend-aware Alloc max (= alloc max - used, i.e. room left before the ceiling).
     rows = [
-        {"owner": r["owner"], "tablespace": r["tablespace_name"],
-         "total_gb": r["total_gb"], "used_gb": r["used_gb"],
-         "free_gb": r["free_gb"], "used_pct": r["used_pct"]}
+        {"tablespace": r["tablespace_name"], "total_alloc_gb": r["total_alloc_gb"],
+         "total_phys_gb": r["total_phys_gb"], "used_gb": r["used_gb"], "free_gb": r["free_gb"],
+         "total_free_gb": r["total_free_gb"], "used_pct": r["used_pct"]}
         for r in _run(t, sql)
     ]
     return _space_payload(rows)
@@ -251,25 +248,23 @@ def _sev_for(pct: float) -> str:
 
 
 def _space_payload(rows: list[dict]) -> dict:
-    """Shared column contract + gauge summary for Section 1."""
-    for r in rows:  # per-row tint (ok/warn/crit) for the UI
-        r["__sev"] = _sev_for(float(r.get("used_pct") or 0))
-    # gauge = per-tablespace totals (dedupe tablespace so we don't double-count owners)
-    seen: dict[str, dict] = {}
+    """Shared column contract + gauge summary for Section 1. Each input row carries
+    tablespace / total_alloc_gb / total_phys_gb / used_gb / free_gb / used_pct / datafiles.
+    Used % (last column, a bar) is against PHYSICAL allocation = used / physical."""
     for r in rows:
-        seen.setdefault(r["tablespace"], {"total": r["total_gb"], "pct": r["used_pct"]})
-    total = round(sum(v["total"] for v in seen.values()), 2)
-    # used derived from pct so the gauge matches the rows
-    used = round(sum(v["total"] * v["pct"] / 100 for v in seen.values()), 2)
+        r["__sev"] = _sev_for(float(r.get("used_pct") or 0))   # hover tint; bar colours itself too
+    total = round(sum(float(r.get("total_phys_gb") or 0) for r in rows), 2)   # physical capacity
+    used = round(sum(float(r.get("used_gb") or 0) for r in rows), 2)
     free = round(total - used, 2)
     used_pct = round(used / total * 100, 1) if total else 0.0
-    breached = sorted({r["tablespace"] for r in rows if r["used_pct"] >= WARN_PCT})
+    breached = sorted({r["tablespace"] for r in rows if float(r.get("used_pct") or 0) >= WARN_PCT})
     return {
         "status": "success",
         "columns": [
-            {"key": "owner", "label": "Owner", "type": "mono"},
             {"key": "tablespace", "label": "Tablespace", "type": "mono"},
-            {"key": "total_gb", "label": "Total (GB)", "type": "num"},
+            {"key": "total_alloc_gb", "label": "Alloc max (GB)", "type": "num"},
+            {"key": "total_phys_gb", "label": "Physical Alloc (GB)", "type": "num"},
+            {"key": "total_free_gb", "label": "Total Free (GB)", "type": "num"},
             {"key": "used_gb", "label": "Used (GB)", "type": "num"},
             {"key": "free_gb", "label": "Free (GB)", "type": "num"},
             {"key": "used_pct", "label": "Used %", "type": "pct", "warn": WARN_PCT, "crit": CRIT_PCT},
