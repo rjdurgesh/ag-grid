@@ -110,7 +110,7 @@
 
               <!-- Detailed table below -->
               <app-dyn-table [model]="$any(sp)" [freezeFirst]="false" />
-              <p class="occ-note"><b>Note:</b> each row is one owner's usage inside a tablespace — <b>Used</b> is that owner's segments, <b>Total/Free</b> are the whole tablespace. Bar goes amber at {{ s.warn_pct }}%, red at {{ s.crit_pct }}%.</p>
+              <p class="occ-note"><b>Note:</b> per tablespace. <b>Free</b> = physical alloc − used (usable now); <b>Total Free</b> = alloc max − used (room before the autoextend ceiling). <b>Used %</b> = used ÷ physical alloc; the bar goes amber at {{ s.warn_pct }}%, red at {{ s.crit_pct }}%.</p>
             }
           }
         </div>
