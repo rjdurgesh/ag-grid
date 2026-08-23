@@ -204,16 +204,27 @@ def fetch_top_indexes(db_config: Any, owner: str, top_n: int, child_limit: int) 
         connection = connect(db_config)
         cursor = connection.cursor()
 
+        # Size the index segments FIRST (cheap group-by on one column against DBA_SEGMENTS),
+        # take the top-N, and only THEN join the heavy DBA_INDEXES view — for those N rows.
+        # The old shape joined DBA_INDEXES before grouping, so it was probed for every index
+        # segment (all partitions/subpartitions) in the schema, then aggregated: the join, not
+        # the size scan, was the cost. segment_name is unique per owner, so grouping by it alone
+        # is equivalent to the old (segment_name, table_name, index_type) group.
         cursor.execute("""
-            SELECT s.segment_name AS index_name, i.table_name, i.index_type AS kind,
-                   ROUND(SUM(s.bytes)/1024/1024/1024, 2) AS size_gb
-              FROM dba_segments s
-              JOIN dba_indexes  i ON i.owner = s.owner AND i.index_name = s.segment_name
-             WHERE s.owner = :owner
-               AND s.segment_type IN ('INDEX','INDEX PARTITION','INDEX SUBPARTITION')
-             GROUP BY s.segment_name, i.table_name, i.index_type
-             ORDER BY size_gb DESC
-             FETCH FIRST :lim ROWS ONLY
+            SELECT s.index_name, i.table_name, i.index_type AS kind, s.size_gb
+              FROM (
+                    SELECT segment_name AS index_name,
+                           ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
+                      FROM dba_segments
+                     WHERE owner = :owner
+                       AND segment_type IN ('INDEX','INDEX PARTITION','INDEX SUBPARTITION')
+                     GROUP BY segment_name
+                     ORDER BY SUM(bytes) DESC
+                     FETCH FIRST :lim ROWS ONLY
+                   ) s
+              JOIN dba_indexes i
+                ON i.owner = :owner AND i.index_name = s.index_name
+             ORDER BY s.size_gb DESC
         """, {"owner": owner, "lim": top_n})
         cols = [c[0].lower() for c in cursor.description]
         indexes = [dict(zip(cols, row)) for row in cursor.fetchall()]
