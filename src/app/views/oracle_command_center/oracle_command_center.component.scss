@@ -463,3 +463,9 @@ td.mono { font-family: var(--occ-mono); }
 .occ-res__v { font-size: 16px; font-weight: 800; font-family: var(--occ-mono); font-variant-numeric: tabular-nums; color: var(--cui-body-color); }
 .occ-res__tile--warn .occ-res__v { color: var(--occ-warn); }
 .occ-res__sub { margin: 14px 0 8px; font-size: 12px; font-weight: 700; color: var(--cui-body-color); }
+
+/* Collapsible raw DBMS_XPLAN text under the structured plan */
+.occ-rawplan { margin-top: 12px; }
+.occ-rawplan > summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--cui-secondary-color); padding: 4px 0; }
+.occ-rawplan > summary:hover { color: var(--occ-accent); }
+.occ-rawplan[open] > summary { margin-bottom: 8px; }

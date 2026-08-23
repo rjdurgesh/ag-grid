@@ -431,22 +431,18 @@ def fetch_sessions(db_config: Any, status: str) -> dict:
 
 
 # =============================================================================
-# Section 7 — SID deep-dive (facts + each panel on one connection, per-panel try/except)
+# Section 7 — SID deep-dive: each panel is its own self-contained fetch_session_* query;
+#             fetch_session_detail is a thin orchestrator that shares ONE connection across
+#             them (connect() passes a live connection through) and honours `panel` for per-tab refresh
 # =============================================================================
 
-def fetch_session_detail(db_config: Any, sid: int, serial: int, sql_id: str | None,
-                         owner: str, panel: str | None = None) -> dict:
-    """Raw deep-dive bundle on ONE connection. Keys: facts, and per panel plan/waits/binds/ash/
-    monitor/stats/locks/awr/rollback_pct. Each panel query is wrapped in its own try/except so a
-    single failure degrades only that panel (the API renders it unavailable). ``panel`` limits the
-    work to facts + that one panel (per-tab refresh)."""
+def fetch_session_base(db_config: Any, sid: int, serial: int) -> dict:
+    """Identity/status facts for one session (the deep-dive header). Empty dict if not found."""
     connection = None
     cursor = None
-    out: dict[str, Any] = {"errors": {}}
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-
         cursor.execute("""
             SELECT s.sid, s.serial# AS serial, s.username, s.status, s.machine, s.program,
                    s.sql_id, NVL(s.event, 'ON CPU') AS event, s.last_call_et AS secs,
@@ -454,66 +450,151 @@ def fetch_session_detail(db_config: Any, sid: int, serial: int, sql_id: str | No
               FROM v$session s WHERE s.sid = :sid AND s.serial# = :serial
         """, {"sid": sid, "serial": serial})
         cols = [c[0].lower() for c in cursor.description]
-        facts = [dict(zip(cols, row)) for row in cursor.fetchall()]
-        out["facts"] = facts[0] if facts else {}
-        eff_sql_id = sql_id or (out["facts"].get("sql_id") if out["facts"].get("sql_id") not in (None, "—") else None)
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        return rows[0] if rows else {}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        def want(key: str) -> bool:
-            return panel is None or panel == key
 
-        def run(key: str, sql: str, binds: dict, transform=None) -> None:
-            """Execute one panel's query; on any error record it and move on."""
-            if not want(key):
-                return
-            try:
-                cursor.execute(sql, binds)
-                cs = [c[0].lower() for c in cursor.description]
-                rows = [dict(zip(cs, row)) for row in cursor.fetchall()]
-                out[key] = transform(rows) if transform else rows
-            except Exception as exc:                    # one panel failing must not sink the rest
-                out["errors"][key] = str(exc)
+def fetch_session_plan(db_config: Any, sql_id: str | None) -> list | None:
+    """The live cursor's runtime plan (DBMS_XPLAN.DISPLAY_CURSOR ALLSTATS LAST). None without a sql_id."""
+    if not sql_id:
+        return None
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(:s, NULL, 'ALLSTATS LAST +PEEKED_BINDS'))",
+            {"s": sql_id})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)).get("plan_table_output") for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        if want("plan"):
-            if eff_sql_id:
-                run("plan",
-                    "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(:s, NULL, 'ALLSTATS LAST +PEEKED_BINDS'))",
-                    {"s": eff_sql_id}, transform=lambda rows: [r.get("plan_table_output") for r in rows])
-            else:
-                out["plan"] = None
 
-        run("waits",
-            "SELECT event, wait_class, time_waited, total_waits, average_wait FROM v$session_event WHERE sid = :sid ORDER BY time_waited DESC",
+def fetch_session_waits(db_config: Any, sid: int) -> list:
+    """Cumulative wait events for the session (v$session_event)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT event, wait_class, time_waited, total_waits, average_wait "
+            "FROM v$session_event WHERE sid = :sid ORDER BY time_waited DESC",
             {"sid": sid})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        if want("binds"):
-            if eff_sql_id:
-                run("binds",
-                    "SELECT name, position, datatype_string, value_string FROM v$sql_bind_capture WHERE sql_id = :s ORDER BY position",
-                    {"s": eff_sql_id})
-            else:
-                out["binds"] = None
 
-        run("ash", """
+def fetch_session_binds(db_config: Any, sql_id: str | None) -> list | None:
+    """Captured bind values for the SQL (v$sql_bind_capture). None without a sql_id."""
+    if not sql_id:
+        return None
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT name, position, datatype_string, value_string "
+            "FROM v$sql_bind_capture WHERE sql_id = :s ORDER BY position",
+            {"s": sql_id})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_session_ash(db_config: Any, sid: int) -> list:
+    """Last 10 min of ASH samples for the session (v$active_session_history)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
             SELECT TO_CHAR(sample_time,'HH24:MI:SS') AS sample_time, session_state, event, wait_class, sql_id
               FROM v$active_session_history
              WHERE session_id = :sid AND sample_time > SYSDATE - INTERVAL '10' MINUTE
              ORDER BY sample_time DESC FETCH FIRST 50 ROWS ONLY
         """, {"sid": sid})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        run("monitor",
+
+def fetch_session_monitor(db_config: Any, sid: int) -> str | None:
+    """Real-time SQL Monitor report for the session (DBMS_SQL_MONITOR.REPORT_SQL_MONITOR)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
             "SELECT DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>:sid, type=>'TEXT') AS report FROM dual",
-            {"sid": sid}, transform=lambda rows: (rows[0].get("report") if rows else None))
+            {"sid": sid})
+        cols = [c[0].lower() for c in cursor.description]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        return rows[0].get("report") if rows else None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        if want("stats"):
-            run("stats", """
-                SELECT table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
-                  FROM dba_tab_statistics
-                 WHERE owner = :owner AND object_type = 'TABLE'
-                   AND table_name IN (SELECT object_name FROM v$sql_plan
-                                       WHERE sql_id = :s AND object_owner = :owner AND object_type LIKE 'TABLE%')
-            """, {"owner": owner, "s": eff_sql_id or ""})
 
-        run("locks", """
+def fetch_session_stats(db_config: Any, owner: str, sql_id: str | None) -> list:
+    """Table stats health for the tables in this SQL's plan (dba_tab_statistics)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
+              FROM dba_tab_statistics
+             WHERE owner = :owner AND object_type = 'TABLE'
+               AND table_name IN (SELECT object_name FROM v$sql_plan
+                                   WHERE sql_id = :s AND object_owner = :owner AND object_type LIKE 'TABLE%')
+        """, {"owner": owner, "s": sql_id or ""})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_session_locks(db_config: Any, sid: int) -> list:
+    """TX/TM locks currently held by the session (v$lock)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
             SELECT DECODE(l.type,'TX','TX (Row)','TM','TM (DML)',l.type) AS type,
                    DECODE(l.lmode,6,'Exclusive (X)',5,'Row-X (SSX)',4,'Share (S)',3,'Row-X (RX)',2,'Row-S (RS)',TO_CHAR(l.lmode)) AS mode_held,
                    (SELECT o.owner||'.'||o.object_name FROM v$locked_object lo JOIN dba_objects o ON o.object_id = lo.object_id
@@ -521,30 +602,102 @@ def fetch_session_detail(db_config: Any, sid: int, serial: int, sql_id: str | No
                    CASE WHEN l.block = 1 THEN 'BLOCKING' ELSE 'HELD' END AS state
               FROM v$lock l WHERE l.sid = :sid AND l.type IN ('TX','TM') AND l.lmode > 0
         """, {"sid": sid})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
 
-        if want("awr"):
-            if eff_sql_id:
-                run("awr", """
-                    SELECT TO_CHAR(s.begin_interval_time,'DD-Mon HH24:MI') AS snap,
-                           st.elapsed_time_delta AS elapsed_time, st.cpu_time_delta AS cpu_time,
-                           st.buffer_gets_delta AS buffer_gets, st.executions_delta
-                      FROM dba_hist_sqlstat st JOIN dba_hist_snapshot s ON s.snap_id = st.snap_id
-                     WHERE st.sql_id = :s ORDER BY s.begin_interval_time DESC FETCH FIRST 8 ROWS ONLY
-                """, {"s": eff_sql_id})
-            else:
-                out["awr"] = None
 
-        run("rollback_pct", """
+def fetch_session_awr(db_config: Any, sql_id: str | None) -> list | None:
+    """Recent AWR history for the SQL (dba_hist_sqlstat). None without a sql_id."""
+    if not sql_id:
+        return None
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT TO_CHAR(s.begin_interval_time,'DD-Mon HH24:MI') AS snap,
+                   st.elapsed_time_delta AS elapsed_time, st.cpu_time_delta AS cpu_time,
+                   st.buffer_gets_delta AS buffer_gets, st.executions_delta
+              FROM dba_hist_sqlstat st JOIN dba_hist_snapshot s ON s.snap_id = st.snap_id
+             WHERE st.sql_id = :s ORDER BY s.begin_interval_time DESC FETCH FIRST 8 ROWS ONLY
+        """, {"s": sql_id})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_session_rollback(db_config: Any, sid: int) -> int:
+    """Rollback progress % for a KILLED session mid-rollback (v$session_longops). 0 if none."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
             SELECT NVL(ROUND(sofar * 100 / NULLIF(totalwork, 0)), 0) AS pct
               FROM v$session_longops
              WHERE sid = :sid AND opname = 'Transaction Rollback' AND sofar < totalwork
              ORDER BY start_time DESC FETCH FIRST 1 ROWS ONLY
-        """, {"sid": sid}, transform=lambda rows: (int(rows[0]["pct"]) if rows else 0))
-
-        return out
+        """, {"sid": sid})
+        cols = [c[0].lower() for c in cursor.description]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        return int(rows[0]["pct"]) if rows else 0
     finally:
         if cursor:
             cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_session_detail(db_config: Any, sid: int, serial: int, sql_id: str | None,
+                         owner: str, panel: str | None = None) -> dict:
+    """Deep-dive bundle assembled on ONE shared connection. Opens the connection once, then hands
+    that *live* connection to each ``fetch_session_*`` above (``connect()`` passes a live connection
+    straight through, so none of them re-connect or close it). Keys: ``facts`` plus, per panel,
+    ``plan/waits/binds/ash/monitor/stats/locks/awr/rollback_pct``; each panel call is wrapped in its
+    own try/except so one bad query degrades only that panel (``errors[key]``). ``panel`` limits the
+    work to facts + that one panel for per-tab refresh (the rollback tab accepts ``rollback`` too)."""
+    connection = None
+    out: dict[str, Any] = {"errors": {}}
+    try:
+        connection = connect(db_config)                       # opened ONCE for the whole bundle
+        out["facts"] = fetch_session_base(connection, sid, serial)
+        f = out["facts"]
+        eff_sql_id = sql_id or (f.get("sql_id") if f.get("sql_id") not in (None, "—") else None)
+
+        # key -> how to fetch that panel (each call reuses the shared, still-open `connection`)
+        panels = {
+            "plan":         lambda: fetch_session_plan(connection, eff_sql_id),
+            "waits":        lambda: fetch_session_waits(connection, sid),
+            "binds":        lambda: fetch_session_binds(connection, eff_sql_id),
+            "ash":          lambda: fetch_session_ash(connection, sid),
+            "monitor":      lambda: fetch_session_monitor(connection, sid),
+            "stats":        lambda: fetch_session_stats(connection, owner, eff_sql_id),
+            "locks":        lambda: fetch_session_locks(connection, sid),
+            "awr":          lambda: fetch_session_awr(connection, eff_sql_id),
+            "rollback_pct": lambda: fetch_session_rollback(connection, sid),
+        }
+        for key, fetch in panels.items():
+            # per-tab refresh sends one panel key; the rollback tab's key is 'rollback'
+            wanted = panel is None or panel == key or (key == "rollback_pct" and panel == "rollback")
+            if not wanted:
+                continue
+            try:
+                out[key] = fetch()
+            except Exception as exc:                 # one panel failing must not sink the rest
+                out["errors"][key] = str(exc)
+        return out
+    finally:
         if connection is not None and connection is not db_config:
             connection.close()
 

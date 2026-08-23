@@ -10,7 +10,7 @@ import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
 import {
   DynAction, DynColumn, DynTable, OracleTarget, SessionDetail, SessionFilter, SpaceSummary,
-  SqlFix, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
+  SqlFix, SqlMonitor, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
 } from '../../shared/oracle-models';
 import { OracleCcService } from './oracle-cc.service';
 
@@ -625,8 +625,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly sqlTabs: { key: string; label: string }[] = [
     { key: 'overview', label: 'Overview' }, { key: 'timeline', label: 'Plan Timeline' },
     { key: 'plans', label: 'Plans & Diff' }, { key: 'plan_analysis', label: 'Plan Analysis' },
-    { key: 'perf', label: 'Performance' }, { key: 'ash', label: 'ASH' },
-    { key: 'binds', label: 'Binds' }, { key: 'fix', label: 'Fix' }
+    { key: 'monitor', label: 'SQL Monitor' }, { key: 'perf', label: 'Performance' },
+    { key: 'ash', label: 'ASH' }, { key: 'binds', label: 'Binds' }, { key: 'fix', label: 'Fix' }
   ];
 
   /** Finder — locate a sql_id when you don't have it. */
@@ -657,6 +657,10 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly sqlPlanAnalysis = signal<SqlPlanAnalysis | null>(null);
   readonly sqlPlanAnalysisLoading = signal(false);
   readonly sqlPlanAnalysisError = signal(false);
+
+  readonly sqlMonitor = signal<SqlMonitor | null>(null);
+  readonly sqlMonitorLoading = signal(false);
+  readonly sqlMonitorError = signal(false);
 
   readonly sqlPerf = signal<DynTable | null>(null);
   readonly sqlPerfLoading = signal(false);
@@ -795,7 +799,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.sqlTab.set('overview');
     // reset the dossier caches so each tab re-fetches for the new sql_id
     this.sqlOverview.set(null); this.sqlTimeline.set(null); this.sqlPlans.set(null);
-    this.sqlPlanAnalysis.set(null);
+    this.sqlPlanAnalysis.set(null); this.sqlMonitor.set(null);
     this.sqlPerf.set(null); this.sqlAsh.set(null); this.sqlBinds.set(null); this.sqlFixData.set(null);
     this.planTextA.set(null); this.planTextB.set(null); this.diffA.set(null); this.diffB.set(null);
     // eager-load the landing tab (identity + verdict + the headline timeline chart)
@@ -819,8 +823,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   /** True while the SQL Intelligence header refresh should spin. */
   readonly sqliLoading = computed(() =>
     this.finderLoading() || this.sqlOverviewLoading() || this.sqlTimelineLoading()
-    || this.sqlPlansLoading() || this.sqlPlanAnalysisLoading() || this.sqlPerfLoading()
-    || this.sqlAshLoading() || this.sqlBindsLoading() || this.sqlFixLoading());
+    || this.sqlPlansLoading() || this.sqlPlanAnalysisLoading() || this.sqlMonitorLoading()
+    || this.sqlPerfLoading() || this.sqlAshLoading() || this.sqlBindsLoading() || this.sqlFixLoading());
 
   clearSql(): void {
     this.sqlId.set('');
@@ -834,6 +838,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     else if (tab === 'timeline' && !this.sqlTimeline()) { this.loadSqlTimeline(); }
     else if (tab === 'plans' && !this.sqlPlans()) { this.loadSqlPlans(); }
     else if (tab === 'plan_analysis' && !this.sqlPlanAnalysis()) { this.loadSqlPlanAnalysis(); }
+    else if (tab === 'monitor' && !this.sqlMonitor()) { this.loadSqlMonitor(); }
     else if (tab === 'perf' && !this.sqlPerf()) { this.loadSqlPerf(); }
     else if (tab === 'ash' && !this.sqlAsh()) { this.loadSqlAsh(); }
     else if (tab === 'binds' && !this.sqlBinds()) { this.loadSqlBinds(); }
@@ -888,6 +893,16 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.svc.sqlPlanAnalysis(db, id).subscribe({
       next: (d) => { this.sqlPlanAnalysis.set(d); this.sqlPlanAnalysisLoading.set(false); },
       error: () => { this.sqlPlanAnalysisError.set(true); this.sqlPlanAnalysisLoading.set(false); }
+    });
+  }
+
+  private loadSqlMonitor(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlMonitorLoading.set(true); this.sqlMonitorError.set(false);
+    this.svc.sqlMonitor(db, id).subscribe({
+      next: (d) => { this.sqlMonitor.set(d); this.sqlMonitorLoading.set(false); },
+      error: () => { this.sqlMonitorError.set(true); this.sqlMonitorLoading.set(false); }
     });
   }
 

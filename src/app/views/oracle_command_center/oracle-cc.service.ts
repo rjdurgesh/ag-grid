@@ -6,7 +6,7 @@ import { ApiDataService } from '../../shared/api-data.service';
 import { API } from '../../shared/api-endpoints';
 import {
   DynTable, OracleOverview, OracleTarget, SessionDetail, SessionFilter, SpaceSummary,
-  SqlApplyResult, SqlFix, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
+  SqlApplyResult, SqlFix, SqlMonitor, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
 } from '../../shared/oracle-models';
 
 /**
@@ -107,6 +107,11 @@ export class OracleCcService {
   /** Runtime plan — bottleneck + E/A-Rows misestimate + table stats health (live cursor). */
   sqlPlanAnalysis(db: string, sqlId: string): Observable<SqlPlanAnalysis> {
     return this.api.post<SqlPlanAnalysis>(API.oracle.sqlPlanAnalysis(db, sqlId), {});
+  }
+
+  /** Real-time SQL Monitor report (live/recent only; `monitored:false` otherwise). */
+  sqlMonitor(db: string, sqlId: string): Observable<SqlMonitor> {
+    return this.api.post<SqlMonitor>(API.oracle.sqlMonitor(db, sqlId), {});
   }
 
   /** One plan's DBMS_XPLAN text (call twice for a side-by-side diff). */

@@ -760,8 +760,11 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
                 diag = analysis.get("diagnosis") or {}
                 if diag.get("findings") or diag.get("hint"):
                     panel["diagnosis"] = diag
+                if (analysis.get("plan") or {}).get("rows"):
+                    panel["analysis"] = {"summary": analysis["summary"], "has_actual": analysis["has_actual"],
+                                         "plan": analysis["plan"], "stats": analysis["stats"]}
             except Exception as exc:
-                logger.warning("session-detail plan diagnosis failed (%s,%s): %s", sid, serial, exc)
+                logger.warning("session-detail plan analysis failed (%s,%s): %s", sid, serial, exc)
         return panel
 
     def waits_panel():

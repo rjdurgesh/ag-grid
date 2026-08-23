@@ -27,6 +27,7 @@ from oracle_cc_api import (
     _SQLI_FINDER_COLS,
     _SQLI_PERF_COLS,
     _WAIT_CLASS_SEV,
+    _sql_monitor_payload,
     _sqli_analyse,
     _sqli_fix_payload,
     _sqli_overview_payload,
@@ -368,11 +369,14 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
         {"snap": "16-Aug 11:00–12:00", "elapsed_s": 498.7, "cpu_s": 84.7, "buffer_gets": 41008120, "executions": 1190},
     ]
 
-    # Execution Plan panel + the generated Diagnosis card (reuses the plan-analysis dummy).
+    # Execution Plan panel + the generated Diagnosis card + the structured plan (reuses the
+    # plan-analysis dummy, so the deep-dive shows per-line E/A-Rows + Time% + "Spent on").
     plan_panel = _panel_text("plan", "Execution Plan", plan_text)
-    diag = sqli_plan_analysis_dummy(t, q.sql_id or "7ymz9qk4d3n1a").get("diagnosis")
-    if diag and (diag.get("findings") or diag.get("hint")):
-        plan_panel["diagnosis"] = diag
+    pa = sqli_plan_analysis_dummy(t, q.sql_id or "7ymz9qk4d3n1a")
+    if pa.get("diagnosis") and (pa["diagnosis"].get("findings") or pa["diagnosis"].get("hint")):
+        plan_panel["diagnosis"] = pa["diagnosis"]
+    plan_panel["analysis"] = {"summary": pa["summary"], "has_actual": pa["has_actual"],
+                              "plan": pa["plan"], "stats": pa["stats"]}
 
     panels = []
     # Killed sessions are (almost always) busy rolling back — surface that first.
@@ -540,7 +544,47 @@ def sqli_plan_analysis_dummy(t: OracleTarget, sql_id: str) -> dict:
         {"owner": "OLS", "table_name": "POSITIONS", "num_rows": 1180000, "stale_stats": "NO",
          "last_analyzed": "23-Aug 01:00", "age_days": 0},
     ]
-    return _sqli_plan_analysis_payload({"plan": plan, "stats": stats})
+    # Per-line ASH activity: the full scan (Id 2) is mostly User I/O; the join (Id 1) is CPU.
+    activity = [
+        {"line_id": 2, "bucket": "User I/O", "samples": 610},
+        {"line_id": 2, "bucket": "CPU", "samples": 90},
+        {"line_id": 1, "bucket": "CPU", "samples": 118},
+        {"line_id": 3, "bucket": "User I/O", "samples": 42},
+    ]
+    return _sqli_plan_analysis_payload({"plan": plan, "stats": stats, "activity": activity})
+
+
+def sqli_monitor_dummy(t: OracleTarget, sql_id: str) -> dict:
+    # Demo as a live/monitored execution so the report format is visible (real mode returns
+    # monitored:false with a message when the SQL isn't currently monitored).
+    report = (
+        "SQL Monitoring Report\n\n"
+        "SQL Text\n------------------------------\n"
+        "SELECT /*+ report */ t.trade_id, t.book, SUM(p.amount) FROM trade_events t JOIN positions p ...\n\n"
+        "Global Information\n------------------------------\n"
+        " Status              :  EXECUTING\n"
+        " Duration            :  32s\n"
+        " Instance ID         :  1\n"
+        " SQL Execution ID    :  16777216\n\n"
+        "Global Stats\n=====================================================\n"
+        "| Elapsed | Cpu   | IO      | Buffer | Read  | Read  |\n"
+        "| Time(s) | Time  | Waits(s)| Gets   | Reqs  | Bytes |\n"
+        "=====================================================\n"
+        "|    32   |  5.0  |  27     |  1.2M  | 120K  |  7GB  |\n\n"
+        "SQL Plan Monitoring Details (Plan Hash Value=3765430022)\n"
+        "==========================================================================================\n"
+        "| Id | Operation            | Name         | Rows(Actual) | Activity % | Activity detail |\n"
+        "==========================================================================================\n"
+        "|  0 | SELECT STATEMENT     |              |         1180 |            |                 |\n"
+        "|  1 |  HASH JOIN           |              |         1180 |     15.5   | Cpu (15%)       |\n"
+        "|  2 |   TABLE ACCESS FULL  | TRADE_EVENTS |         8.4M |     80.4   | db file scattd  |\n"
+        "|  3 |   TABLE ACCESS FULL  | POSITIONS    |         1.2M |      4.1   | db file scattd  |\n"
+        "==========================================================================================\n")
+    raw = {"monitored": True,
+           "overview": {"status": "EXECUTING", "elapsed_s": 32.0, "cpu_s": 5.0, "buffer_gets": 1200000,
+                        "disk_reads": 120000, "px": 0, "started": "23-Aug 05:41:07"},
+           "report": report}
+    return _sql_monitor_payload(raw)
 
 
 def sqli_perf_dummy(t: OracleTarget, sql_id: str) -> dict:

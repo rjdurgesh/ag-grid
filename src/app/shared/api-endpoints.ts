@@ -215,6 +215,8 @@ export const API = {
     sqlPlans: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plans`,
     /** Runtime plan: bottleneck (self-time) + E/A-Rows misestimate + stats health (live cursor). */
     sqlPlanAnalysis: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plan_analysis`,
+    /** Real-time SQL Monitor report (live/recent executions only). */
+    sqlMonitor: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/sql_monitor`,
     /** One plan's text. POST `{ plan_hash_value }`. */
     sqlPlanText: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plan_text`,
     /** Per-snapshot performance table. */

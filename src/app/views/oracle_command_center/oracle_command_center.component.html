@@ -491,6 +491,25 @@
                 }
               }
 
+              @case ('monitor') {
+                @if (sqlMonitorLoading() && !sqlMonitor()) { <app-loader variant="skeleton" [rows]="4" message="Checking SQL Monitor…" /> }
+                @else if (sqlMonitorError()) { <div class="occ-empty occ-empty--err">Couldn't read SQL Monitor. Try refresh.</div> }
+                @else if (sqlMonitor(); as m) {
+                  @if (m.monitored && m.overview; as ov) {
+                    <div class="occ-res__tiles">
+                      <div class="occ-res__tile"><span class="occ-res__l">Status</span><span class="occ-res__v">{{ ov.status }}</span></div>
+                      <div class="occ-res__tile"><span class="occ-res__l">Elapsed</span><span class="occ-res__v">{{ ov.elapsed_s === null ? '—' : ov.elapsed_s + 's' }}</span></div>
+                      <div class="occ-res__tile"><span class="occ-res__l">CPU</span><span class="occ-res__v">{{ ov.cpu_s === null ? '—' : ov.cpu_s + 's' }}</span></div>
+                      <div class="occ-res__tile"><span class="occ-res__l">Reads</span><span class="occ-res__v">{{ fmtNum(ov.disk_reads) }}</span></div>
+                    </div>
+                    <p class="occ-note">Real-time SQL Monitor report — the plan lines' <b>Activity %</b> shows where the running statement is spending time. Started {{ ov.started }}@if (ov.px) {, {{ ov.px }} PX servers}.</p>
+                    <pre class="occ-pre">{{ m.report }}</pre>
+                  } @else {
+                    <div class="occ-empty">{{ m.note }}</div>
+                  }
+                }
+              }
+
               @case ('perf') {
                 @if (sqlPerfLoading() && !sqlPerf()) { <app-loader variant="skeleton" [rows]="4" message="Reading per-snapshot metrics…" /> }
                 @else if (sqlPerfError()) { <div class="occ-empty occ-empty--err">Couldn't read performance. Try refresh.</div> }
@@ -709,7 +728,17 @@
                 @if (dg.hint) { <p class="occ-diag__hint"><b>Hint:</b> {{ dg.hint }}</p> }
               </div>
             }
-            <pre class="occ-pre">{{ p.text }}</pre>
+            @if (p.analysis; as an) {
+              @if (an.plan.rows.length) {
+                <div class="occ-res__sub">Runtime plan — Time % (bottleneck) · E-Rows vs A-Rows · Spent on</div>
+                <app-dyn-table [model]="an.plan" [freezeFirst]="false" />
+                @if (an.stats.rows.length) {
+                  <div class="occ-res__sub">Statistics of tables in this plan</div>
+                  <app-dyn-table [model]="an.stats" [freezeFirst]="false" />
+                }
+              }
+            }
+            <details class="occ-rawplan"><summary>Raw plan text (DBMS_XPLAN)</summary><pre class="occ-pre">{{ p.text }}</pre></details>
           } @else if (p.table) {
             <app-dyn-table [model]="p.table" />
           }

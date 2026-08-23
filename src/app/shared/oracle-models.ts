@@ -90,6 +90,31 @@ export interface PlanDiagnosis {
   hint: string | null;
 }
 
+/** `POST /sql/{id}/sql_monitor` — real-time SQL Monitor (live/recent executions only). */
+export interface SqlMonitor {
+  status: string;
+  monitored: boolean;
+  note?: string;
+  overview?: {
+    status: string;
+    elapsed_s: number | null;
+    cpu_s: number | null;
+    buffer_gets: number;
+    disk_reads: number;
+    px: number;
+    started: string;
+  };
+  report?: string;
+}
+
+/** The structured runtime plan carried on the deep-dive Execution Plan panel. */
+export interface PlanAnalysisEmbed {
+  summary: SqlPlanAnalysis['summary'];
+  has_actual: boolean;
+  plan: DynTable;
+  stats: DynTable;
+}
+
 /** Resource profile for the session (Resource Profile panel). */
 export interface ResourceProfile {
   pga_used_mb: number | null;
@@ -119,6 +144,7 @@ export interface DetailPanel {
   table?: DynTable;
   rollback?: RollbackStatus;
   diagnosis?: PlanDiagnosis;
+  analysis?: PlanAnalysisEmbed;
   resource?: ResourceProfile;
 }
 
