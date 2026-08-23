@@ -129,6 +129,11 @@
     color: var(--cc-crit);
     background: color-mix(in srgb, var(--cc-crit) 20%, transparent);
   }
+  /* Neutral slate while the estate is still being assessed (no false green/red). */
+  &--loading {
+    color: #93a1c4;
+    background: rgba(148, 163, 184, 0.14);
+  }
 }
 
 .cc-hero__sync {
@@ -213,6 +218,12 @@
   font-size: 2rem;
   font-weight: 800;
   color: #fff;
+
+  /* Placeholder glyph shown until the health index is computed. */
+  &--load {
+    color: #93a1c4;
+    letter-spacing: 2px;
+  }
 }
 
 .cc-score__pct {
@@ -289,6 +300,13 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* Holds a slim bar loader in a KPI tile until that feed lands (keeps the tile height stable). */
+.cc-kpi__load {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
 }
 
 .cc-chip {

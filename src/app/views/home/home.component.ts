@@ -4,6 +4,7 @@ import { RouterLink } from '@angular/router';
 import { forkJoin, interval } from 'rxjs';
 
 import { AuthService } from '../../auth/auth.service';
+import { LoaderComponent } from '../../components/loader/loader.component';
 import { INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoints';
 import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
@@ -57,7 +58,7 @@ interface AppRow {
   selector: 'app-home',
   templateUrl: './home.component.html',
   styleUrls: ['./home.component.scss'],
-  imports: [RouterLink]
+  imports: [RouterLink, LoaderComponent]
 })
 export class HomeComponent implements OnInit {
   private readonly infra = inject(InfraDataService);
@@ -66,7 +67,12 @@ export class HomeComponent implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
 
   readonly env = environment.appEnv;
-  readonly loading = signal(true);
+  // Per-stream loading so each section can show its own loader until its data lands (the three
+  // feeds resolve independently). `loading` = the overall flag the hero/Re-scan button uses.
+  readonly healthLoading = signal(true);
+  readonly servicesLoading = signal(true);
+  readonly oracleLoading = signal(true);
+  readonly loading = computed(() => this.healthLoading() || this.servicesLoading() || this.oracleLoading());
   /** Absolute timestamp of the last successful sync (shown as a hover tooltip). */
   readonly lastSync = signal<string>('');
   /** Same moment as a Date, plus a ticking clock, so the relative label re-computes. */
@@ -88,6 +94,16 @@ export class HomeComponent implements OnInit {
   readonly oracleBlocking = computed(() => this.oracleDbs().reduce((n, d) => n + d.blocking, 0));
 
   readonly user = this.auth.user;
+
+  // First-load flags: true only while a stream is loading AND has no data yet → show a skeleton.
+  // On a refresh the data is still present, so we keep showing it (no skeleton flash over content).
+  readonly infraFirstLoad = computed(() => this.healthLoading() && !this.healthByApp().length);
+  readonly servicesFirstLoad = computed(() => this.servicesLoading() && !this.servicesByApp().length);
+  readonly oracleFirstLoad = computed(() => this.oracleLoading() && !this.oracleDbs().length);
+  /** The matrix + hero score/posture need BOTH feeds; skeleton until either arrives. */
+  readonly matrixFirstLoad = computed(() =>
+    (this.healthLoading() || this.servicesLoading()) && !this.healthByApp().length && !this.servicesByApp().length);
+  readonly estateLoading = computed(() => this.infraFirstLoad() || this.servicesFirstLoad());
 
   readonly greeting = computed(() => {
     const hour = new Date().getHours();
@@ -175,8 +191,11 @@ export class HomeComponent implements OnInit {
     }
   });
 
-  /** Conic gauge for the health score. */
+  /** Conic gauge for the health score (a flat neutral ring until the estate data lands). */
   readonly scoreGauge = computed(() => {
+    if (this.estateLoading()) {
+      return 'conic-gradient(rgba(148,163,184,0.18) 360deg, rgba(148,163,184,0.18) 0deg)';
+    }
     const p = this.healthScore();
     const color = this.posture() === 'critical' ? '#ef4444' : this.posture() === 'degraded' ? '#f59e0b' : '#22c55e';
     return `conic-gradient(${color} ${p * 3.6}deg, rgba(148,163,184,0.18) 0deg)`;
@@ -227,9 +246,12 @@ export class HomeComponent implements OnInit {
       .subscribe(() => this.nowTick.set(Date.now()));
   }
 
-  /** Pull health + services for every app (1 shared config call + agent fan-out). */
+  /** Pull health + services + Oracle for every app (1 shared config call + agent fan-out). Each
+   *  feed clears its own loading flag as it lands, so every section drops its skeleton independently. */
   load(): void {
-    this.loading.set(true);
+    this.healthLoading.set(true);
+    this.servicesLoading.set(true);
+    this.oracleLoading.set(true);
     this.infra.reloadConfig();
 
     forkJoin(INFRA_APPS.map((app) => this.infra.health(app)))
@@ -241,21 +263,33 @@ export class HomeComponent implements OnInit {
           this.lastSyncAt.set(at);
           this.lastSync.set(formatDateTime(at));
           this.nowTick.set(at.getTime());
-          this.loading.set(false);
+          this.healthLoading.set(false);
         },
-        error: () => this.loading.set(false)
+        error: () => this.healthLoading.set(false)
       });
 
     forkJoin(INFRA_APPS.map((app) => this.infra.services(app)))
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((list) => this.servicesByApp.set(list));
+      .subscribe({
+        next: (list) => {
+          this.servicesByApp.set(list);
+          this.servicesLoading.set(false);
+        },
+        error: () => this.servicesLoading.set(false)
+      });
 
     // Oracle snapshot (one call powers the whole strip).
     this.oracle.overview()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (list) => this.oracleDbs.set(list),
-        error: () => this.oracleDbs.set([])
+        next: (list) => {
+          this.oracleDbs.set(list);
+          this.oracleLoading.set(false);
+        },
+        error: () => {
+          this.oracleDbs.set([]);
+          this.oracleLoading.set(false);
+        }
       });
   }
 

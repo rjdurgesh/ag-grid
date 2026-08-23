@@ -3,8 +3,8 @@
   <div class="cc-hero" [class]="'cc-hero--' + posture()">
     <div class="cc-hero__left">
       <h1 class="cc-hero__title">{{ greeting() }}</h1>
-      <div class="cc-posture" [class]="'cc-posture--' + posture()">
-        <span class="cc-posture__pulse"></span>{{ postureText() }}
+      <div class="cc-posture" [class]="estateLoading() ? 'cc-posture--loading' : 'cc-posture--' + posture()">
+        <span class="cc-posture__pulse"></span>{{ estateLoading() ? 'Assessing estate…' : postureText() }}
       </div>
       <p class="cc-hero__sync">
         @if (loading()) {
@@ -23,10 +23,14 @@
     </div>
 
     <div class="cc-score">
-      <div class="cc-score__gauge" [style.background]="scoreGauge()">
+      <div class="cc-score__gauge" [class.is-loading]="estateLoading()" [style.background]="scoreGauge()">
         <div class="cc-score__inner">
-          <span class="cc-score__num">{{ healthScore() }}</span>
-          <span class="cc-score__pct">/ 100</span>
+          @if (estateLoading()) {
+            <span class="cc-score__num cc-score__num--load">··</span>
+          } @else {
+            <span class="cc-score__num">{{ healthScore() }}</span>
+            <span class="cc-score__pct">/ 100</span>
+          }
         </div>
       </div>
       <span class="cc-score__label">Health Index</span>
@@ -37,32 +41,44 @@
   <div class="cc-kpis">
     <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--srv">▦</span> Servers</div>
-      <div class="cc-kpi__value">{{ serverTotal() }}</div>
-      <div class="cc-kpi__break">
-        <span class="cc-chip cc-chip--ok">{{ serverCounts().ok }} Healthy</span>
-        @if (serverCounts().warn) { <span class="cc-chip cc-chip--warn">{{ serverCounts().warn }} Warning</span> }
-        @if (serverCounts().crit) { <span class="cc-chip cc-chip--crit">{{ serverCounts().crit }} Critical</span> }
-      </div>
+      @if (infraFirstLoad()) {
+        <div class="cc-kpi__load"><app-loader variant="bar" /></div>
+      } @else {
+        <div class="cc-kpi__value">{{ serverTotal() }}</div>
+        <div class="cc-kpi__break">
+          <span class="cc-chip cc-chip--ok">{{ serverCounts().ok }} Healthy</span>
+          @if (serverCounts().warn) { <span class="cc-chip cc-chip--warn">{{ serverCounts().warn }} Warning</span> }
+          @if (serverCounts().crit) { <span class="cc-chip cc-chip--crit">{{ serverCounts().crit }} Critical</span> }
+        </div>
+      }
     </a>
 
     <a class="cc-kpi" routerLink="/infra_pulse/service_console" title="Go to Service Console">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--svc">⚙</span> Services</div>
-      <div class="cc-kpi__value">{{ serviceCounts().total }}</div>
-      <div class="cc-kpi__break">
-        <span class="cc-chip cc-chip--ok">{{ serviceCounts().running }} running</span>
-        @if (serviceCounts().down) { <span class="cc-chip cc-chip--crit">{{ serviceCounts().down }} down</span> }
-        @if (serviceCounts().unaccessible) { <span class="cc-chip cc-chip--unacc">{{ serviceCounts().unaccessible }} n/a</span> }
-      </div>
+      @if (servicesFirstLoad()) {
+        <div class="cc-kpi__load"><app-loader variant="bar" /></div>
+      } @else {
+        <div class="cc-kpi__value">{{ serviceCounts().total }}</div>
+        <div class="cc-kpi__break">
+          <span class="cc-chip cc-chip--ok">{{ serviceCounts().running }} running</span>
+          @if (serviceCounts().down) { <span class="cc-chip cc-chip--crit">{{ serviceCounts().down }} down</span> }
+          @if (serviceCounts().unaccessible) { <span class="cc-chip cc-chip--unacc">{{ serviceCounts().unaccessible }} n/a</span> }
+        </div>
+      }
     </a>
 
     <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--share">▤</span> Share Drives</div>
-      <div class="cc-kpi__value">{{ shareTotal() }}</div>
-      <div class="cc-kpi__break">
-        <span class="cc-chip cc-chip--ok">{{ shareCounts().ok }} within limits</span>
-        @if (shareCounts().warn) { <span class="cc-chip cc-chip--warn">{{ shareCounts().warn }} warn</span> }
-        @if (shareCounts().crit) { <span class="cc-chip cc-chip--crit">{{ shareCounts().crit }} full</span> }
-      </div>
+      @if (infraFirstLoad()) {
+        <div class="cc-kpi__load"><app-loader variant="bar" /></div>
+      } @else {
+        <div class="cc-kpi__value">{{ shareTotal() }}</div>
+        <div class="cc-kpi__break">
+          <span class="cc-chip cc-chip--ok">{{ shareCounts().ok }} within limits</span>
+          @if (shareCounts().warn) { <span class="cc-chip cc-chip--warn">{{ shareCounts().warn }} warn</span> }
+          @if (shareCounts().crit) { <span class="cc-chip cc-chip--crit">{{ shareCounts().crit }} full</span> }
+        </div>
+      }
     </a>
 
     <div class="cc-kpi cc-kpi--static">
@@ -80,7 +96,9 @@
       <a class="cc-card__link" routerLink="/oracle_command_center" title="Go to Oracle Command Center">Open →</a>
     </div>
 
-    @if (oracleDbs().length) {
+    @if (oracleFirstLoad()) {
+      <app-loader variant="skeleton" [rows]="2" message="Reading Oracle snapshot…" />
+    } @else if (oracleDbs().length) {
       <div class="cc-ora__grid">
         @for (db of oracleDbs(); track db.key) {
           <a class="cc-ora__tile" [class]="'cc-ora__tile--' + db.storage_sev" routerLink="/oracle_command_center" [queryParams]="{ db: db.key }" [title]="'Go to Oracle Command Center — ' + db.label + (db.sub ? ' ' + db.sub : '')">
@@ -133,6 +151,9 @@
       </span>
     </div>
 
+    @if (matrixFirstLoad()) {
+      <app-loader variant="skeleton" [rows]="5" message="Polling applications…" />
+    } @else {
     <div class="cc-apps__list">
       @for (row of appRows(); track row.app) {
         <div class="cc-app" [class]="'cc-app--' + row.posture">
@@ -172,6 +193,7 @@
         </div>
       }
     </div>
+    }
   </div>
 
   <!-- ATTENTION -->
@@ -181,7 +203,9 @@
         Needs Attention · Servers Health
         <a class="cc-card__link" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">Open →</a>
       </div>
-      @if (!attentionServers().length) {
+      @if (infraFirstLoad()) {
+        <app-loader variant="skeleton" [rows]="3" message="Checking servers…" />
+      } @else if (!attentionServers().length) {
         <div class="cc-empty cc-empty--good">✓ Every server is within healthy limits.</div>
       } @else {
         <div class="cc-attn__list">
@@ -217,7 +241,9 @@
         Needs Attention · Services
         <a class="cc-card__link" routerLink="/infra_pulse/service_console" title="Go to Service Console">Open →</a>
       </div>
-      @if (!attentionServices().length) {
+      @if (servicesFirstLoad()) {
+        <app-loader variant="skeleton" [rows]="3" message="Checking services…" />
+      } @else if (!attentionServices().length) {
         <div class="cc-empty cc-empty--good">✓ All monitored services are running.</div>
       } @else {
         <div class="cc-attn__list">
