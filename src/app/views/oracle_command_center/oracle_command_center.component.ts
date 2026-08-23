@@ -8,7 +8,10 @@ import { ErrorReportService } from '../../components/error-report/error-report.s
 import { RbacService } from '../../auth/rbac.service';
 import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
-import { DynAction, DynColumn, DynTable, OracleTarget, SessionDetail, SessionFilter, SpaceSummary } from '../../shared/oracle-models';
+import {
+  DynAction, DynColumn, DynTable, OracleTarget, SessionDetail, SessionFilter, SpaceSummary,
+  SqlFix, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
+} from '../../shared/oracle-models';
 import { OracleCcService } from './oracle-cc.service';
 
 /** Auto-refresh choices (minutes); default comes from environment.ts. */
@@ -174,7 +177,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
 
   /** Collapse state per section (all expanded by default). */
   readonly collapsed = signal<Record<string, boolean>>({
-    space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false, sessions: false
+    space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false, sessions: false,
+    sqli: false
   });
 
   ngOnInit(): void {
@@ -187,6 +191,9 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.clearTimer();
     if (this.toastTimer) {
       clearTimeout(this.toastTimer);
+    }
+    if (this.copiedTimer) {
+      clearTimeout(this.copiedTimer);
     }
     if (this.clockTimer) {
       clearInterval(this.clockTimer);
@@ -229,11 +236,28 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     if (this.detailOpen()) {
       this.closeDetail();   // the drawer belonged to the old DB's session
     }
+    this.clearSql();        // SQL Intelligence investigation belonged to the old DB
+    this.finder.set(null);
     this.refreshAll();
+    this.loadFinder();      // repopulate the "find a SQL_ID" list for the new DB
     this.armTimer();
   }
 
   // --- Refresh --------------------------------------------------------------
+  /** True while ANY section is fetching → spins the masthead "Refresh all" button. */
+  readonly anyLoading = computed(() =>
+    this.spaceLoading() || this.topSegLoading() || this.topIdxLoading() || this.idxHealthLoading()
+    || this.locksLoading() || this.blockingLoading() || this.sessionsLoading());
+
+  /** Per-section loading flag by stamp key — drives the "Refreshing…" label in each header. */
+  sectionLoading(key: string): boolean {
+    return ({
+      space: this.spaceLoading(), top: this.topSegLoading(), topidx: this.topIdxLoading(),
+      idxhealth: this.idxHealthLoading(), locks: this.locksLoading(),
+      blocking: this.blockingLoading(), sessions: this.sessionsLoading(),
+    } as Record<string, boolean>)[key] ?? false;
+  }
+
   refreshAll(): void {
     this.loadSpace();
     this.loadTopSegments();
@@ -587,6 +611,394 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+  }
+
+  // --- Section 8: SQL Intelligence ------------------------------------------
+  // Investigate a sql_id (session may be long gone). Everything historical is a 5-day AWR/ASH
+  // window on the backend. The recommend-only fix is shown to everyone; the Apply button is
+  // admin-only (canApplyFix) AND server-flagged (fix.allow_apply).
+
+  readonly sqlIdInput = signal<string>('');           // the "Investigate by SQL_ID" box
+  readonly sqlId = signal<string>('');                // the sql_id currently under investigation
+  readonly hasSql = computed(() => !!this.sqlId());
+  readonly sqlTab = signal<string>('overview');       // overview|timeline|plans|perf|ash|binds|fix
+  readonly sqlTabs: { key: string; label: string }[] = [
+    { key: 'overview', label: 'Overview' }, { key: 'timeline', label: 'Plan Timeline' },
+    { key: 'plans', label: 'Plans & Diff' }, { key: 'plan_analysis', label: 'Plan Analysis' },
+    { key: 'perf', label: 'Performance' }, { key: 'ash', label: 'ASH' },
+    { key: 'binds', label: 'Binds' }, { key: 'fix', label: 'Fix' }
+  ];
+
+  /** Finder — locate a sql_id when you don't have it. */
+  readonly finderQ = signal<string>('');
+  readonly finderOrder = signal<string>('elapsed');
+  readonly finder = signal<DynTable | null>(null);
+  readonly finderLoading = signal(false);
+  readonly finderError = signal(false);
+  readonly finderActions: DynAction[] = [{ key: 'open', label: 'Investigate', tone: 'primary', title: 'Open the dossier for this SQL_ID' }];
+  readonly finderOrders: { key: string; label: string }[] = [
+    { key: 'elapsed', label: 'Slowest' }, { key: 'execs', label: 'Most run' },
+    { key: 'reads', label: 'Most reads' }, { key: 'last', label: 'Most recent' }
+  ];
+
+  /** Dossier panels (lazily loaded per tab). */
+  readonly sqlOverview = signal<SqlOverview | null>(null);
+  readonly sqlOverviewLoading = signal(false);
+  readonly sqlOverviewError = signal(false);
+
+  readonly sqlTimeline = signal<SqlTimeline | null>(null);
+  readonly sqlTimelineLoading = signal(false);
+  readonly sqlTimelineError = signal(false);
+
+  readonly sqlPlans = signal<DynTable<SqlPlansSummary> | null>(null);
+  readonly sqlPlansLoading = signal(false);
+  readonly sqlPlansError = signal(false);
+
+  readonly sqlPlanAnalysis = signal<SqlPlanAnalysis | null>(null);
+  readonly sqlPlanAnalysisLoading = signal(false);
+  readonly sqlPlanAnalysisError = signal(false);
+
+  readonly sqlPerf = signal<DynTable | null>(null);
+  readonly sqlPerfLoading = signal(false);
+  readonly sqlPerfError = signal(false);
+
+  readonly sqlAsh = signal<DynTable | null>(null);
+  readonly sqlAshLoading = signal(false);
+  readonly sqlAshError = signal(false);
+
+  readonly sqlBinds = signal<DynTable | null>(null);
+  readonly sqlBindsLoading = signal(false);
+  readonly sqlBindsError = signal(false);
+
+  readonly sqlFixData = signal<SqlFix | null>(null);
+  readonly sqlFixLoading = signal(false);
+  readonly sqlFixError = signal(false);
+  readonly applyingFix = signal(false);
+  readonly copied = signal<string>('');               // which script key was just copied
+  private copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Plan diff — two plan_hash_values selected side by side. */
+  readonly diffA = signal<number | null>(null);
+  readonly diffB = signal<number | null>(null);
+  readonly planTextA = signal<SqlPlanText | null>(null);
+  readonly planTextB = signal<SqlPlanText | null>(null);
+  readonly planTextALoading = signal(false);
+  readonly planTextBLoading = signal(false);
+
+  /** Apply-fix is a WRITE — same admin gate as kill-session. */
+  readonly canApplyFix = computed(() => this.rbac.canActTechnical());
+
+  /** Distinct plan_hash_values available for the diff selectors. */
+  readonly planPhvs = computed<number[]>(() =>
+    (this.sqlPlans()?.rows ?? []).map((r) => Number(r['plan_hash_value'])).filter((n) => Number.isFinite(n)));
+
+  /**
+   * SVG geometry for the plan-instability timeline (static — no animation, so it also serves
+   * the office reduced-motion env). Colours points/segments by plan: best = green, current-if-
+   * regressed = red, others = amber; a dashed marker sits at the flip.
+   */
+  readonly sqlChart = computed(() => {
+    const tl = this.sqlTimeline();
+    if (!tl || !tl.points.length) {
+      return null;
+    }
+    const W = 720, H = 190, padL = 46, padR = 14, padT = 14, padB = 30;
+    const pts = tl.points;
+    const n = pts.length;
+    const maxY = Math.max(...pts.map((p) => p.elapsed_per_exec_s), 0.001);
+    const xAt = (i: number) => padL + (n === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (n - 1));
+    const yAt = (v: number) => padT + (H - padT - padB) * (1 - v / maxY);
+    const colFor = (phv: number) => (phv === tl.best_phv ? '#22c55e' : phv === tl.current_phv ? '#ef4444' : '#f59e0b');
+    const nodes = pts.map((p, i) => ({
+      x: xAt(i), y: yAt(p.elapsed_per_exec_s), color: colFor(p.plan_hash_value),
+      phv: p.plan_hash_value, label: p.label, val: p.elapsed_per_exec_s
+    }));
+    const segs: { x1: number; y1: number; x2: number; y2: number; color: string }[] = [];
+    for (let i = 1; i < n; i++) {
+      segs.push({ x1: nodes[i - 1].x, y1: nodes[i - 1].y, x2: nodes[i].x, y2: nodes[i].y, color: nodes[i].color });
+    }
+    let flipX: number | null = null;
+    if (tl.flip) {
+      const idx = pts.findIndex((p) => p.label === tl.flip!.label);
+      if (idx >= 0) {
+        flipX = xAt(idx);
+      }
+    }
+    const ticks = [0, maxY / 2, maxY].map((v) => ({ y: yAt(v), label: v < 10 ? v.toFixed(1) : v.toFixed(0) }));
+    return {
+      W, H, padL, baseY: H - padB, nodes, segs, flipX, ticks,
+      firstLabel: pts[0].label, lastLabel: pts[n - 1].label
+    };
+  });
+
+  /** Colour a plan_hash_value the same way the chart does (best/current/other). */
+  phvColor(phv: number | null | undefined): string {
+    const tl = this.sqlTimeline() ?? this.sqlPlans()?.summary;
+    const best = (tl as { best_phv?: number | null })?.best_phv;
+    const current = (tl as { current_phv?: number | null })?.current_phv;
+    return phv === best ? '#22c55e' : phv === current ? '#ef4444' : '#f59e0b';
+  }
+
+  // --- finder ---
+  loadFinder(): void {
+    const db = this.activeKey();
+    if (!db) {
+      return;
+    }
+    this.finderLoading.set(true);
+    this.finderError.set(false);
+    this.svc.sqlFinder(db, this.finderQ() || undefined, this.finderOrder()).subscribe({
+      next: (d) => { this.finder.set(d); this.finderLoading.set(false); },
+      error: () => { this.finderError.set(true); this.finderLoading.set(false); }
+    });
+  }
+
+  setFinderOrder(o: string): void {
+    if (o === this.finderOrder()) {
+      return;
+    }
+    this.finderOrder.set(o);
+    this.loadFinder();
+  }
+
+  onFinderAction(evt: { key: string; row: Record<string, unknown> }): void {
+    if (evt.key === 'open') {
+      this.investigate(String(evt.row['sql_id'] ?? ''));
+    }
+  }
+
+  /** Click-through: a SQL_ID in Sessions / Locks / Blocking → open it in SQL Intelligence.
+   *  Accepts any sql_id-style column (`sql_id`, `victim_sql_id`, …). */
+  onSqlCell(evt: { column: string; value: string; row: Record<string, unknown> }): void {
+    const id = (evt.value || '').trim();
+    if (!/sql_id$/.test(evt.column) || !id || id === '—') {
+      return;
+    }
+    this.collapsed.update((m) => ({ ...m, sqli: false }));   // make sure the section is open
+    this.investigate(id);
+    // scroll the section into view once it has rendered (respect reduced-motion)
+    setTimeout(() => {
+      const el = document.querySelector('.occ-sqli');
+      const smooth = !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      el?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+    }, 60);
+  }
+
+  // --- investigate a sql_id ---
+  investigate(id: string): void {
+    const sqlId = (id || '').trim();
+    if (!sqlId) {
+      return;
+    }
+    this.sqlId.set(sqlId);
+    this.sqlIdInput.set(sqlId);
+    this.sqlTab.set('overview');
+    // reset the dossier caches so each tab re-fetches for the new sql_id
+    this.sqlOverview.set(null); this.sqlTimeline.set(null); this.sqlPlans.set(null);
+    this.sqlPlanAnalysis.set(null);
+    this.sqlPerf.set(null); this.sqlAsh.set(null); this.sqlBinds.set(null); this.sqlFixData.set(null);
+    this.planTextA.set(null); this.planTextB.set(null); this.diffA.set(null); this.diffB.set(null);
+    // eager-load the landing tab (identity + verdict + the headline timeline chart)
+    this.loadSqlOverview();
+    this.loadSqlTimeline();
+  }
+
+  investigateFromInput(): void {
+    this.investigate(this.sqlIdInput());
+  }
+
+  /** Header refresh: re-run whatever's on screen (the finder, or the whole dossier). */
+  refreshSqli(): void {
+    if (this.hasSql()) {
+      this.investigate(this.sqlId());
+    } else {
+      this.loadFinder();
+    }
+  }
+
+  /** True while the SQL Intelligence header refresh should spin. */
+  readonly sqliLoading = computed(() =>
+    this.finderLoading() || this.sqlOverviewLoading() || this.sqlTimelineLoading()
+    || this.sqlPlansLoading() || this.sqlPlanAnalysisLoading() || this.sqlPerfLoading()
+    || this.sqlAshLoading() || this.sqlBindsLoading() || this.sqlFixLoading());
+
+  clearSql(): void {
+    this.sqlId.set('');
+    this.sqlIdInput.set('');
+  }
+
+  setSqlTab(tab: string): void {
+    this.sqlTab.set(tab);
+    // lazy-load the tab the first time it's opened (each is a separate, possibly slow query)
+    if (tab === 'overview' && !this.sqlOverview()) { this.loadSqlOverview(); }
+    else if (tab === 'timeline' && !this.sqlTimeline()) { this.loadSqlTimeline(); }
+    else if (tab === 'plans' && !this.sqlPlans()) { this.loadSqlPlans(); }
+    else if (tab === 'plan_analysis' && !this.sqlPlanAnalysis()) { this.loadSqlPlanAnalysis(); }
+    else if (tab === 'perf' && !this.sqlPerf()) { this.loadSqlPerf(); }
+    else if (tab === 'ash' && !this.sqlAsh()) { this.loadSqlAsh(); }
+    else if (tab === 'binds' && !this.sqlBinds()) { this.loadSqlBinds(); }
+    else if (tab === 'fix' && !this.sqlFixData()) { this.loadSqlFix(); }
+  }
+
+  private loadSqlOverview(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlOverviewLoading.set(true); this.sqlOverviewError.set(false);
+    this.svc.sqlOverview(db, id).subscribe({
+      next: (d) => { this.sqlOverview.set(d); this.sqlOverviewLoading.set(false); },
+      error: () => { this.sqlOverviewError.set(true); this.sqlOverviewLoading.set(false); }
+    });
+  }
+
+  private loadSqlTimeline(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlTimelineLoading.set(true); this.sqlTimelineError.set(false);
+    this.svc.sqlPlanTimeline(db, id).subscribe({
+      next: (d) => { this.sqlTimeline.set(d); this.sqlTimelineLoading.set(false); },
+      error: () => { this.sqlTimelineError.set(true); this.sqlTimelineLoading.set(false); }
+    });
+  }
+
+  private loadSqlPlans(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlPlansLoading.set(true); this.sqlPlansError.set(false);
+    this.svc.sqlPlans(db, id).subscribe({
+      next: (d) => {
+        this.sqlPlans.set(d);
+        this.sqlPlansLoading.set(false);
+        // default the diff to best (A) vs current (B), then pull both plan texts
+        const best = d.summary?.best_phv ?? null;
+        const current = d.summary?.current_phv ?? null;
+        const phvs = (d.rows ?? []).map((r) => Number(r['plan_hash_value']));
+        this.diffA.set(best ?? phvs[0] ?? null);
+        this.diffB.set((current && current !== best) ? current : (phvs[1] ?? phvs[0] ?? null));
+        if (this.diffA() != null) { this.loadPlanText('A', this.diffA()!); }
+        if (this.diffB() != null) { this.loadPlanText('B', this.diffB()!); }
+      },
+      error: () => { this.sqlPlansError.set(true); this.sqlPlansLoading.set(false); }
+    });
+  }
+
+  private loadSqlPlanAnalysis(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlPlanAnalysisLoading.set(true); this.sqlPlanAnalysisError.set(false);
+    this.svc.sqlPlanAnalysis(db, id).subscribe({
+      next: (d) => { this.sqlPlanAnalysis.set(d); this.sqlPlanAnalysisLoading.set(false); },
+      error: () => { this.sqlPlanAnalysisError.set(true); this.sqlPlanAnalysisLoading.set(false); }
+    });
+  }
+
+  private loadSqlPerf(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlPerfLoading.set(true); this.sqlPerfError.set(false);
+    this.svc.sqlPerf(db, id).subscribe({
+      next: (d) => { this.sqlPerf.set(d); this.sqlPerfLoading.set(false); },
+      error: () => { this.sqlPerfError.set(true); this.sqlPerfLoading.set(false); }
+    });
+  }
+
+  private loadSqlAsh(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlAshLoading.set(true); this.sqlAshError.set(false);
+    this.svc.sqlAsh(db, id).subscribe({
+      next: (d) => { this.sqlAsh.set(d); this.sqlAshLoading.set(false); },
+      error: () => { this.sqlAshError.set(true); this.sqlAshLoading.set(false); }
+    });
+  }
+
+  private loadSqlBinds(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlBindsLoading.set(true); this.sqlBindsError.set(false);
+    this.svc.sqlBinds(db, id).subscribe({
+      next: (d) => { this.sqlBinds.set(d); this.sqlBindsLoading.set(false); },
+      error: () => { this.sqlBindsError.set(true); this.sqlBindsLoading.set(false); }
+    });
+  }
+
+  private loadSqlFix(): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    this.sqlFixLoading.set(true); this.sqlFixError.set(false);
+    this.svc.sqlFix(db, id).subscribe({
+      next: (d) => { this.sqlFixData.set(d); this.sqlFixLoading.set(false); },
+      error: () => { this.sqlFixError.set(true); this.sqlFixLoading.set(false); }
+    });
+  }
+
+  // --- plan diff ---
+  onDiff(which: 'A' | 'B', phv: number): void {
+    if (!Number.isFinite(phv)) { return; }
+    (which === 'A' ? this.diffA : this.diffB).set(phv);
+    this.loadPlanText(which, phv);
+  }
+
+  private loadPlanText(which: 'A' | 'B', phv: number): void {
+    const db = this.activeKey(), id = this.sqlId();
+    if (!db || !id) { return; }
+    const loading = which === 'A' ? this.planTextALoading : this.planTextBLoading;
+    const target = which === 'A' ? this.planTextA : this.planTextB;
+    loading.set(true);
+    this.svc.sqlPlanText(db, id, phv).subscribe({
+      next: (d) => { target.set(d); loading.set(false); },
+      error: () => { target.set({ status: 'error', plan_hash_value: phv, source: '', text: '(could not load plan)' }); loading.set(false); }
+    });
+  }
+
+  // --- fix: copy + apply ---
+  copyScript(script: { key: string; sql: string }): void {
+    const done = () => {
+      this.copied.set(script.key);
+      if (this.copiedTimer) { clearTimeout(this.copiedTimer); }
+      this.copiedTimer = setTimeout(() => this.copied.set(''), 1600);
+    };
+    const nav = navigator as Navigator & { clipboard?: { writeText(t: string): Promise<void> } };
+    if (nav.clipboard?.writeText) {
+      nav.clipboard.writeText(script.sql).then(done).catch(() => this.notify(false, 'Could not copy — select the text manually.'));
+    } else {
+      this.notify(false, 'Clipboard unavailable — select the text manually.');
+    }
+  }
+
+  /** Apply the recommended fix (admin only + confirm + server SQLI_ALLOW_APPLY). WRITE. */
+  async applyFix(): Promise<void> {
+    const fix = this.sqlFixData();
+    const db = this.activeKey(), id = this.sqlId();
+    const phv = fix?.recommended?.plan_hash_value;
+    if (!fix || !db || !id || phv == null || !this.canApplyFix() || !fix.allow_apply) {
+      return;
+    }
+    const dbName = this.activeTarget()?.instance ?? db;
+    const ok = await this.confirm.ask({
+      title: 'Apply SQL fix',
+      message: `Pin plan ${phv} for SQL_ID ${id} on ${dbName} as a fixed SQL Plan Baseline?\n\n${fix.warning}`,
+      confirmLabel: 'Apply fix',
+      cancelLabel: 'Cancel',
+      tone: 'danger'
+    });
+    if (!ok) {
+      return;
+    }
+    this.applyingFix.set(true);
+    this.svc.sqlApplyFix(db, id, phv).subscribe({
+      next: (res) => {
+        this.applyingFix.set(false);
+        this.notify(res.success !== false, res.message || 'Fix submitted.');
+      },
+      error: () => {
+        this.applyingFix.set(false);
+        this.errorReport.show({
+          title: 'Apply fix failed',
+          message: `Could not pin plan ${phv} for ${id} on ${dbName}. It must run on a privileged, audited connection.\n\nPlease reach out to OLS Team on ${this.supportEmail}.`,
+          userId: environment.username
+        });
+      }
+    });
   }
 
   // --- Collapse -------------------------------------------------------------

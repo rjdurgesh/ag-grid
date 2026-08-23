@@ -38,6 +38,8 @@
 .occ__stamp { margin: 8px 2px 14px; font-size: 11px; color: var(--cui-secondary-color); font-variant-numeric: tabular-nums; }
 /* Per-section / per-panel "last fetched · N ago" line, sits just left of the refresh icon. */
 .occ-hstamp { font-size: 10.5px; color: var(--cui-secondary-color); font-variant-numeric: tabular-nums; white-space: nowrap; margin-right: 2px; }
+/* Shown while a section is refreshing (data may still be the previous fetch). */
+.occ-hstamp--load { color: var(--cui-primary); font-weight: 700; animation: occ-blink 1s ease-in-out infinite; }
 *:focus-visible { outline: 2px solid var(--occ-accent); outline-offset: 2px; }
 
 /* ---- DB tabs ---- */
@@ -120,7 +122,7 @@
 .occ-apitag { font-family: var(--occ-mono); font-size: 10px; color: var(--cui-secondary-color); background: var(--occ-surface2); border: 1px dashed var(--occ-line); border-radius: 6px; padding: 2px 7px; }
 .occ-ibtn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--occ-line); background: var(--occ-surface2); color: var(--cui-secondary-color); cursor: pointer; display: inline-grid; place-items: center; }
 .occ-ibtn:hover { color: var(--occ-accent); border-color: var(--occ-accent); }
-.occ-ibtn.is-spin svg { animation: occ-spin 0.9s linear infinite; }
+.occ-ibtn.is-spin svg, .occ__icon-btn.is-spin svg { animation: occ-spin 0.9s linear infinite; }
 .occ-chev svg { transition: transform 0.2s ease; }
 .occ-panel.is-collapsed .occ-chev svg { transform: rotate(-90deg); }
 .occ-panel__body { padding: 14px; }
@@ -311,6 +313,153 @@ td.mono { font-family: var(--occ-mono); }
 
 @keyframes occ-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .occ-ibtn.is-spin svg, .occ-gauge__val, .occ-chev svg,
+  .occ-ibtn.is-spin svg, .occ__icon-btn.is-spin svg, .occ-hstamp--load, .occ-gauge__val, .occ-chev svg,
   .occ-drawer, .occ-drawer-backdrop, .occ-toast, .occ-rb__bar > i { animation: none; transition: none; }
 }
+
+/* ============================================================================
+   Section 8 — SQL Intelligence
+   ============================================================================ */
+.occ-badge--muted { color: var(--cui-secondary-color); background: var(--occ-surface2); }
+.occ-sqli__idbadge { font-family: var(--occ-mono); }
+
+/* Search */
+.occ-sqli__search { margin-bottom: 14px; }
+.occ-sqli__searchrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.occ-sqli__input {
+  flex: 1 1 260px; min-width: 200px; padding: 9px 12px; border-radius: 9px;
+  border: 1px solid var(--occ-line); background: var(--cui-body-bg); color: var(--cui-body-color);
+  font-family: var(--occ-mono); font-size: 13px;
+}
+.occ-sqli__input:focus-visible { border-color: var(--occ-accent); }
+.occ-sqli__go {
+  padding: 9px 16px; border-radius: 9px; border: 1px solid var(--occ-accent);
+  background: var(--occ-accent); color: #fff; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.occ-sqli__go:disabled { opacity: 0.5; cursor: not-allowed; }
+.occ-sqli__clear {
+  padding: 9px 14px; border-radius: 9px; border: 1px solid var(--occ-line);
+  background: var(--occ-surface2); color: var(--cui-secondary-color); font-weight: 600; font-size: 13px; cursor: pointer;
+}
+.occ-sqli__hint { margin-top: 8px; }
+
+/* Finder */
+.occ-sqli__finderhead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.occ-sqli__findertitle { font-size: 12.5px; font-weight: 700; color: var(--cui-body-color); }
+.occ-seg--sm .occ-seg__btn { padding: 4px 10px; font-size: 11px; }
+
+/* Verdict banner */
+.occ-sqli__tabs { margin: 14px 0 12px; flex-wrap: wrap; }
+.occ-sqli__verdict {
+  display: flex; gap: 11px; align-items: flex-start; padding: 12px 14px; border-radius: 11px;
+  border: 1px solid var(--occ-line); background: var(--occ-surface2); margin-bottom: 4px;
+}
+.occ-sqli__verdict p { margin: 3px 0 0; font-size: 12px; color: var(--cui-secondary-color); }
+.occ-sqli__verdict b { color: var(--cui-body-color); font-size: 13.5px; }
+.occ-sqli__vic { font-size: 17px; line-height: 1.2; flex: 0 0 auto; }
+.occ-sqli__verdict--ok   { border-color: color-mix(in srgb, var(--occ-ok) 34%, transparent);   background: color-mix(in srgb, var(--occ-ok) 8%, transparent); }
+.occ-sqli__verdict--ok   .occ-sqli__vic { color: var(--occ-ok); }
+.occ-sqli__verdict--warn { border-color: color-mix(in srgb, var(--occ-warn) 40%, transparent); background: color-mix(in srgb, var(--occ-warn) 10%, transparent); }
+.occ-sqli__verdict--warn .occ-sqli__vic { color: var(--occ-warn); }
+.occ-sqli__verdict--crit { border-color: color-mix(in srgb, var(--occ-crit) 42%, transparent); background: color-mix(in srgb, var(--occ-crit) 10%, transparent); }
+.occ-sqli__verdict--crit .occ-sqli__vic { color: var(--occ-crit); }
+
+/* Overview */
+.occ-sqli__ov { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .occ-sqli__ov { grid-template-columns: 1fr; } }
+.occ-sqli__idcard { display: flex; flex-direction: column; gap: 6px; }
+.occ-sqli__idrow { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--cui-body-color); }
+.occ-sqli__k { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); flex: 0 0 74px; }
+.occ-sqli__mono { font-family: var(--occ-mono); font-weight: 700; }
+.occ-sqli__sqltext { margin-top: 6px; max-height: 220px; }
+.occ-sqli__kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.occ-sqli__kpi {
+  display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid var(--occ-line); background: var(--occ-surface2);
+}
+.occ-sqli__kpil { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); }
+.occ-sqli__kpiv { font-size: 19px; font-weight: 800; font-family: var(--occ-mono); font-variant-numeric: tabular-nums; color: var(--cui-body-color); }
+.occ-sqli__kpi--warn .occ-sqli__kpiv { color: var(--occ-warn); }
+.occ-sqli__kpi--crit .occ-sqli__kpiv { color: var(--occ-crit); }
+.occ-sqli__kpi--ok   .occ-sqli__kpiv { color: var(--occ-ok); }
+
+/* Timeline chart (static SVG) */
+.occ-sqli__chartwrap { display: flex; flex-direction: column; gap: 8px; }
+.occ-sqli__chart { width: 100%; height: auto; display: block; border: 1px solid var(--occ-line); border-radius: 10px; background: var(--occ-surface2); padding: 4px; }
+.occ-sqli__grid { stroke: var(--occ-line); stroke-width: 1; }
+.occ-sqli__axt { fill: var(--cui-secondary-color); font-size: 9px; font-family: var(--occ-mono); }
+.occ-sqli__flip { stroke: var(--occ-crit); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.75; }
+.occ-sqli__legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--cui-secondary-color); align-items: center; }
+.occ-sqli__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.occ-sqli__sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.occ-sqli__flipnote { border-left-color: var(--occ-crit); }
+
+/* Plan diff */
+.occ-sqli__diff { margin-top: 14px; }
+.occ-sqli__difftitle { font-size: 12.5px; font-weight: 700; color: var(--cui-body-color); }
+.occ-sqli__diffcols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+@media (max-width: 900px) { .occ-sqli__diffcols { grid-template-columns: 1fr; } }
+.occ-sqli__diffcol { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.occ-sqli__difflbl { font-size: 11px; font-weight: 700; color: var(--cui-secondary-color); display: flex; align-items: center; gap: 8px; }
+.occ-sqli__sel {
+  padding: 5px 9px; border-radius: 8px; border: 1px solid var(--occ-line);
+  background: var(--cui-body-bg); color: var(--cui-body-color); font-family: var(--occ-mono); font-size: 12px;
+}
+
+/* Fix */
+.occ-sqli__fix { display: flex; flex-direction: column; gap: 12px; }
+.occ-sqli__reco { padding: 12px 14px; border-radius: 11px; border: 1px solid var(--occ-line); background: var(--occ-surface2); }
+.occ-sqli__reco p { margin: 6px 0 0; font-size: 12px; color: var(--cui-secondary-color); }
+.occ-sqli__recohd { display: flex; align-items: center; gap: 10px; }
+.occ-sqli__recophv { font-size: 15px; font-weight: 800; }
+.occ-sqli__exists { font-style: italic; }
+.occ-sqli__script { border: 1px solid var(--occ-line); border-radius: 10px; overflow: hidden; }
+.occ-sqli__scripthd { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--occ-surface2); font-size: 12px; font-weight: 700; color: var(--cui-body-color); border-bottom: 1px solid var(--occ-line); }
+.occ-sqli__script .occ-pre { border: none; border-radius: 0; }
+.occ-sqli__copy { width: auto; padding: 0 10px; height: 26px; font-size: 11px; font-weight: 700; }
+.occ-sqli__advisor { padding: 11px 14px; border-radius: 10px; border: 1px dashed var(--occ-line); }
+.occ-sqli__advisor ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--cui-secondary-color); }
+.occ-sqli__advisor li { margin: 2px 0; }
+.occ-sqli__applybar { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: 11px; border: 1px solid color-mix(in srgb, var(--occ-crit) 30%, transparent); background: color-mix(in srgb, var(--occ-crit) 7%, transparent); }
+.occ-sqli__warn { margin: 0; font-size: 11.5px; color: var(--cui-secondary-color); }
+.occ-sqli__warn b { color: var(--occ-crit); }
+.occ-sqli__apply { align-self: flex-start; }
+.occ-sqli__applyoff { font-size: 11.5px; color: var(--cui-secondary-color); font-style: italic; }
+
+/* Plan Analysis — estimate vs actual strip */
+.occ-pa__cmp { display: flex; align-items: stretch; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.occ-pa__side {
+  flex: 1 1 200px; min-width: 180px; display: flex; flex-direction: column; gap: 4px;
+  padding: 11px 14px; border-radius: 11px; border: 1px solid var(--occ-line); background: var(--occ-surface2);
+}
+.occ-pa__side--actual { border-color: color-mix(in srgb, var(--occ-crit) 35%, transparent); background: color-mix(in srgb, var(--occ-crit) 7%, transparent); }
+.occ-pa__sidehd { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); margin-bottom: 2px; }
+.occ-pa__kv { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: var(--cui-secondary-color); }
+.occ-pa__kv b { font-family: var(--occ-mono); font-variant-numeric: tabular-nums; font-size: 15px; color: var(--cui-body-color); }
+.occ-pa__side--actual .occ-pa__kv b { color: var(--occ-crit); }
+.occ-pa__arrow { align-self: center; font-size: 20px; color: var(--cui-secondary-color); flex: 0 0 auto; }
+.occ-pa__note { border-left-color: var(--occ-warn); }
+.occ-pa__statshd { margin: 16px 0 8px; font-size: 12.5px; font-weight: 700; color: var(--cui-body-color); }
+
+/* Deep-dive: Diagnosis card on the Execution Plan panel */
+.occ-diag { border: 1px solid var(--occ-line); border-radius: 11px; padding: 11px 14px; margin-bottom: 12px; background: var(--occ-surface2); }
+.occ-diag--warn { border-color: color-mix(in srgb, var(--occ-warn) 40%, transparent); background: color-mix(in srgb, var(--occ-warn) 9%, transparent); }
+.occ-diag--crit { border-color: color-mix(in srgb, var(--occ-crit) 42%, transparent); background: color-mix(in srgb, var(--occ-crit) 8%, transparent); }
+.occ-diag__hd { display: flex; align-items: center; gap: 7px; font-weight: 800; font-size: 12.5px; color: var(--cui-body-color); margin-bottom: 6px; }
+.occ-diag--crit .occ-diag__ic { color: var(--occ-crit); }
+.occ-diag--warn .occ-diag__ic { color: var(--occ-warn); }
+.occ-diag--ok .occ-diag__ic { color: var(--occ-ok); }
+.occ-diag__list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; color: var(--cui-body-color); }
+.occ-diag__list li { margin: 2px 0; }
+.occ-diag__hint { margin: 8px 0 0; font-size: 12px; color: var(--cui-secondary-color); border-top: 1px dashed var(--occ-line); padding-top: 7px; }
+.occ-diag__hint b { color: var(--cui-body-color); }
+
+/* Deep-dive: Resource Profile */
+.occ-res__tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+@media (max-width: 640px) { .occ-res__tiles { grid-template-columns: repeat(2, 1fr); } }
+.occ-res__tile { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--occ-line); background: var(--occ-surface2); }
+.occ-res__tile--warn { border-color: color-mix(in srgb, var(--occ-warn) 40%, transparent); background: color-mix(in srgb, var(--occ-warn) 10%, transparent); }
+.occ-res__l { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--cui-secondary-color); }
+.occ-res__v { font-size: 16px; font-weight: 800; font-family: var(--occ-mono); font-variant-numeric: tabular-nums; color: var(--cui-body-color); }
+.occ-res__tile--warn .occ-res__v { color: var(--occ-warn); }
+.occ-res__sub { margin: 14px 0 8px; font-size: 12px; font-weight: 700; color: var(--cui-body-color); }

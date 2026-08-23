@@ -1,4 +1,4 @@
-import { Component, computed, input, output, signal } from '@angular/core';
+import { Component, ElementRef, computed, inject, input, output, signal } from '@angular/core';
 
 import { DynAction, DynColumn, DynTable } from '../../shared/oracle-models';
 
@@ -34,6 +34,12 @@ export class DynTableComponent {
   readonly actions = input<DynAction[]>([]);
   /** Fired when a row action button is clicked. */
   readonly action = output<{ key: string; row: Record<string, unknown> }>();
+
+  /** Column keys whose cells render as an inline clickable link (e.g. `['sql_id']` to jump to
+   *  SQL Intelligence). A cell links only when its value is present (not empty / `—`). */
+  readonly linkColumns = input<string[]>([]);
+  /** Fired when a linked cell is clicked → `{ column, value, row }`. */
+  readonly cellClick = output<{ column: string; value: string; row: Record<string, unknown> }>();
 
   /** Cap the visible rows: past this many the table gets a vertical scrollbar (sticky header
    *  stays). Null = grow to fit. Horizontal scroll for wide/extra columns is always on. */
@@ -166,6 +172,74 @@ export class DynTableComponent {
   onAction(key: string, row: Record<string, unknown>, ev: Event): void {
     ev.stopPropagation();
     this.action.emit({ key, row });
+  }
+
+  // --- CLOB cells (long text — e.g. full SQL statement) ---------------------
+  /** The full-text popup currently open (null = closed). */
+  readonly clobOpen = signal<{ label: string; text: string } | null>(null);
+  /** Transient "copied" flag for the popup's Copy button. */
+  readonly clobCopied = signal(false);
+  private clobCopyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Short inline preview of a long value — first ~18 words, then an ellipsis if trimmed. */
+  clobPreview(value: unknown): string {
+    const s = String(value ?? '').replace(/\s+/g, ' ').trim();
+    if (!s) {
+      return '';
+    }
+    const words = s.split(' ');
+    return words.length <= 10 ? s : words.slice(0, 10).join(' ');
+  }
+
+  /** Is there more text than the preview shows (→ worth a popup)? */
+  clobHasMore(value: unknown): boolean {
+    const s = String(value ?? '').replace(/\s+/g, ' ').trim();
+    return !!s && s !== '—' && s.split(' ').length > 10;
+  }
+
+  private readonly host = inject(ElementRef<HTMLElement>);
+
+  openClob(label: string, value: unknown): void {
+    this.clobCopied.set(false);
+    this.clobOpen.set({ label, text: String(value ?? '') });
+    // Portal the popup to <body> so no ancestor stacking context (e.g. the section row's
+    // z-index) can trap it — otherwise a later section paints over it while scrolling. The @if
+    // still owns the nodes; on close Ivy removes them from their CURRENT parent (body), cleanly.
+    setTimeout(() => {
+      const el = this.host.nativeElement;
+      const backdrop = el.querySelector('.dt-clob-backdrop');
+      const modal = el.querySelector('.dt-clob-modal');
+      if (backdrop) { document.body.appendChild(backdrop); }
+      if (modal) { document.body.appendChild(modal); }
+    });
+  }
+  closeClob(): void {
+    this.clobOpen.set(null);
+  }
+  copyClob(): void {
+    const t = this.clobOpen()?.text ?? '';
+    const nav = navigator as Navigator & { clipboard?: { writeText(s: string): Promise<void> } };
+    if (nav.clipboard?.writeText) {
+      nav.clipboard.writeText(t).then(() => {
+        this.clobCopied.set(true);
+        if (this.clobCopyTimer) { clearTimeout(this.clobCopyTimer); }
+        this.clobCopyTimer = setTimeout(() => this.clobCopied.set(false), 1600);
+      }).catch(() => undefined);
+    }
+  }
+
+  /** True when this cell should render as a clickable link (column opted in + value present). */
+  isLink(col: DynColumn, row: Record<string, unknown>): boolean {
+    if (!this.linkColumns().includes(col.key)) {
+      return false;
+    }
+    const v = String(row[col.key] ?? '').trim();
+    return v !== '' && v !== '—';
+  }
+
+  onCell(col: DynColumn, row: Record<string, unknown>, ev: Event): void {
+    ev.stopPropagation();
+    this.cellClick.emit({ column: col.key, value: String(row[col.key] ?? ''), row });
   }
 
   /** Total column count incl. the action column (for the empty-state colspan). */

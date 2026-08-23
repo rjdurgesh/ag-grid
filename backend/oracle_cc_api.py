@@ -37,6 +37,7 @@ from env_loader import env_bool, env_int  # importing also loads backend/.env in
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+import database  # data layer — ALL SQL lives here; this module only massages it for the UI
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -62,6 +63,19 @@ OCC_SCHEMA = os.getenv("ORACLE_CC_SCHEMA", "OLS")
 # in real deployments — reachability is otherwise driven by the live connection. e.g.
 # ORACLE_CC_FORCE_DOWN=retail_reporting
 _FORCE_DOWN = {s.strip() for s in os.getenv("ORACLE_CC_FORCE_DOWN", "").split(",") if s.strip()}
+
+# --- Section 8 · SQL Intelligence tunables -----------------------------------
+#   SQLI_USE_DUMMY     canned SQL-Intelligence data (defaults to the OCC dummy switch).
+#   SQLI_HISTORY_DAYS  how far back every historical query looks (AWR window). Fixed to 5 per
+#                      the requirement — every plan-timeline / perf / ASH / finder query is
+#                      capped to SYSTIMESTAMP - INTERVAL '<days>' DAY. Needs AWR retention >= this.
+#   SQLI_ALLOW_APPLY   show the ADMIN-only in-app "Apply fix" button. The recommended plan +
+#                      copy-ready SQL is ALWAYS shown to everyone; this flag ONLY controls whether
+#                      the app itself can write the change (via a separate privileged/audited
+#                      connection). Set SQLI_ALLOW_APPLY=0 to make the tool recommend-only.
+SQLI_USE_DUMMY = env_bool("SQLI_USE_DUMMY", ORACLE_CC_USE_DUMMY)
+SQLI_HISTORY_DAYS = env_int("SQLI_HISTORY_DAYS", 5)
+SQLI_ALLOW_APPLY = env_bool("SQLI_ALLOW_APPLY", True)
 
 
 # --- config-driven DB targets ------------------------------------------------
@@ -148,29 +162,13 @@ def list_targets(request: Request) -> dict:
 
 @router.get("/overview")
 def overview(request: Request) -> dict:
-    """Compact per-DB snapshot for the Home 'Oracle Databases' strip — storage %, blocking
-    sessions, active sessions, and the largest segment. ONE call powers every tile."""
-    return overview_dummy(request) if ORACLE_CC_USE_DUMMY else overview_real(request)
-
-
-def overview_real(request: Request | None = None) -> dict:
-    """One light query per target (kept cheap for Home): max tablespace used %
-    (DBA_TABLESPACE_USAGE_METRICS), COUNT blocking sessions (V$SESSION.blocking_session),
-    COUNT active USER sessions (V$SESSION), and the largest segment (DBA_SEGMENTS)."""
-    snap_sql = """
-        SELECT (SELECT ROUND(MAX(used_percent), 1) FROM dba_tablespace_usage_metrics)        AS storage_pct,
-               (SELECT COUNT(*) FROM v$session WHERE blocking_session IS NOT NULL)            AS blocking,
-               (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE')     AS active
-          FROM dual
-    """
-    top_sql = """
-        SELECT segment_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
-          FROM dba_segments
-         WHERE owner = :owner
-         GROUP BY segment_name
-         ORDER BY size_gb DESC
-         FETCH FIRST 1 ROWS ONLY
-    """
+    """Compact per-DB snapshot for the Home 'Oracle Databases' strip — storage %, blocking +
+    active sessions, largest segment. ONE call powers every tile. Dummy → canned; else one light
+    snapshot per target (SQL in `database.fetch_overview`); a single down DB degrades to a grey
+    tile, never failing the whole strip."""
+    if ORACLE_CC_USE_DUMMY:
+        return overview_dummy(request)
+    cfgs = request.app.state.db_configs or {}
     data = []
     for key in _enabled_target_keys(request):
         tgt = TARGET_CATALOG[key]
@@ -180,8 +178,8 @@ def overview_real(request: Request | None = None) -> dict:
                 "blocking": 0, "active": 0, "top_object": "—", "top_gb": 0.0}
         if reachable:
             try:  # a single down DB must not fail the whole strip
-                snap = (_run(tgt, snap_sql) or [{}])[0]
-                top = (_run(tgt, top_sql, {"owner": OCC_SCHEMA}) or [{}])[0]
+                raw = database.fetch_overview(cfgs.get(key), OCC_SCHEMA)
+                snap, top = raw.get("snap") or {}, raw.get("top") or {}
                 pct = float(snap.get("storage_pct") or 0)
                 tile.update({"storage_pct": pct, "storage_sev": _sev_for(pct),
                              "blocking": int(snap.get("blocking") or 0), "active": int(snap.get("active") or 0),
@@ -198,49 +196,24 @@ def overview_real(request: Request | None = None) -> dict:
 # =============================================================================
 
 @router.post("/{db}/space")
-def space(db: str) -> dict:
-    """Consolidated space (gauge) + per-tablespace breakdown (alloc/physical/used/free + State)."""
+def space(request: Request, db: str) -> dict:
+    """Consolidated space gauge + per-tablespace breakdown. Free + Used % are vs PHYSICAL alloc
+    (free = physical − used); Total Free is vs the autoextend-aware Alloc max. Massages
+    `database.fetch_space` into the contract."""
     t = _target(db)
-    return space_dummy(t) if ORACLE_CC_USE_DUMMY else space_real(t)
-
-
-# --- Section 1: real (the actual query) ----------------------------------------
-
-def space_real(t: OracleTarget) -> dict:
-    """Per-tablespace space: allocated (autoextend-aware max) + physical bytes from
-    DBA_DATA_FILES, used from DBA_SEGMENTS, and free GB / free % of the autoextend max."""
-    sql = """
-        WITH c1 AS (
-            SELECT a.tablespace_name,
-                   ROUND(a.bytes_alloc     / (1024*1024*1024), 2) AS total_alloc_gb,
-                   ROUND(a.physical_bytes  / (1024*1024*1024), 2) AS total_phys_gb,
-                   ROUND(NVL(b.tot_used,0) / (1024*1024*1024), 2) AS used_gb
-              FROM (SELECT tablespace_name,
-                           SUM(bytes) AS physical_bytes,
-                           SUM(DECODE(autoextensible, 'NO', bytes, 'YES', maxbytes)) AS bytes_alloc
-                      FROM dba_data_files
-                     GROUP BY tablespace_name) a
-              LEFT JOIN (SELECT tablespace_name, SUM(bytes) AS tot_used
-                           FROM dba_segments
-                          GROUP BY tablespace_name) b
-                ON a.tablespace_name = b.tablespace_name
-        )
-        SELECT tablespace_name, total_alloc_gb, total_phys_gb, used_gb,
-               ROUND(total_phys_gb  - used_gb, 2)                   AS free_gb,
-               ROUND(total_alloc_gb - used_gb, 2)                   AS total_free_gb,
-               ROUND((used_gb / NULLIF(total_phys_gb, 0)) * 100, 2) AS used_pct
-          FROM c1
-         ORDER BY used_pct DESC
-    """
-    # Free + Used % are vs PHYSICAL alloc (free = physical - used); Total Free is vs the
-    # autoextend-aware Alloc max (= alloc max - used, i.e. room left before the ceiling).
-    rows = [
-        {"tablespace": r["tablespace_name"], "total_alloc_gb": r["total_alloc_gb"],
-         "total_phys_gb": r["total_phys_gb"], "used_gb": r["used_gb"], "free_gb": r["free_gb"],
-         "total_free_gb": r["total_free_gb"], "used_pct": r["used_pct"]}
-        for r in _run(t, sql)
-    ]
-    return _space_payload(rows)
+    if ORACLE_CC_USE_DUMMY:
+        return space_dummy(t)
+    try:
+        rows = [
+            {"tablespace": r["tablespace_name"], "total_alloc_gb": r["total_alloc_gb"],
+             "total_phys_gb": r["total_phys_gb"], "used_gb": r["used_gb"], "free_gb": r["free_gb"],
+             "total_free_gb": r["total_free_gb"], "used_pct": r["used_pct"]}
+            for r in database.fetch_space(request.app.state.db_configs.get(db))
+        ]
+        return _space_payload(rows)
+    except Exception:
+        logger.exception("space failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _sev_for(pct: float) -> str:
@@ -280,9 +253,42 @@ def _space_payload(rows: list[dict]) -> dict:
 # =============================================================================
 
 @router.post("/{db}/top_segments")
-def top_segments(db: str) -> dict:
+def top_segments(request: Request, db: str) -> dict:
+    """Top tables by segment bytes → their top-N partitions (tree), with a stale-stats chip.
+    Massages `database.fetch_top_segments`."""
     t = _target(db)
-    return top_segments_dummy(t) if ORACLE_CC_USE_DUMMY else top_segments_real(t)
+    if ORACLE_CC_USE_DUMMY:
+        return top_segments_dummy(t)
+    try:
+        raw = database.fetch_top_segments(request.app.state.db_configs.get(db), OCC_SCHEMA, 10, TOP_CHILD_LIMIT)
+        tables = raw.get("tables") or []
+        if not tables:
+            return {"status": "success", "columns": _TOP_COLS, "rows": []}
+        stats = {(s["table_name"], s.get("partition_name")): s for s in raw.get("stats") or []}
+        parts_by_table: dict[str, list[dict]] = {}
+        for p in raw.get("partitions") or []:
+            parts_by_table.setdefault(p["segment_name"], []).append(p)
+
+        def cells(table: str, part: str | None = None) -> dict:
+            s = stats.get((table, part), {})
+            fresh = (s.get("stale_stats") or "NO") != "YES"
+            return {"num_rows": s.get("num_rows"), "last_analyzed": s.get("last_analyzed") or "—", **_stats_cell(fresh)}
+
+        rows = []
+        for tb in tables:
+            seg = tb["segment_name"]
+            row = {"object": seg, "kind": "Table", "size_gb": tb["size_gb"], **cells(seg)}
+            children = [
+                {"object": p["partition_name"], "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, p["partition_name"])}
+                for p in parts_by_table.get(seg, [])
+            ]
+            if children:
+                row["__children"] = children
+            rows.append(row)
+        return {"status": "success", "columns": _TOP_COLS, "rows": rows}
+    except Exception:
+        logger.exception("top_segments failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _TOP_COLS = [
@@ -304,92 +310,9 @@ def _stats_cell(fresh: bool) -> dict:
     return cell
 
 
-def top_segments_real(t: OracleTarget) -> dict:
-    """Top-10 tables by DATA segment bytes (owner = the monitored schema), each drilling into
-    its **top-{n} partitions by size**, and each partition into its **top-{n} subpartitions by
-    size** — NOT every partition (a table can have hundreds; only the biggest consumers matter).
-    Size = allocated segment bytes. Uses DBA_SEGMENTS (TABLE / TABLE PARTITION / TABLE
-    SUBPARTITION) + DBA_TAB_STATISTICS for the stale flag; assemble the 3-level tree in Python,
-    applying `FETCH FIRST {n} ROWS ONLY` (ordered by size DESC) at each child level.""".format(n=TOP_CHILD_LIMIT)
-    owner = OCC_SCHEMA
-    # 1) Top-N tables by total data-segment bytes (sums table + its partitions/subpartitions).
-    tables = _run(t, """
-        SELECT segment_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
-          FROM dba_segments
-         WHERE owner = :owner
-           AND segment_type IN ('TABLE','TABLE PARTITION','TABLE SUBPARTITION')
-         GROUP BY segment_name
-         ORDER BY size_gb DESC
-         FETCH FIRST :lim ROWS ONLY
-    """, {"owner": owner, "lim": 10})
-    names = [r["segment_name"] for r in tables]
-    if not names:
-        return {"status": "success", "columns": _TOP_COLS, "rows": []}
-
-    # Bind the top-N table names as an IN-list (:n0, :n1, …) so the next two queries touch ONLY
-    # those tables — never the whole schema's stats/segments (which can be huge in production).
-    # The placeholders are generated tokens; the names go in as bind VALUES → injection-safe.
-    ph = ", ".join(f":n{i}" for i in range(len(names)))
-    name_binds = {f"n{i}": n for i, n in enumerate(names)}
-
-    # 2) Stats (num_rows / last_analyzed / stale) for JUST those tables + their partitions.
-    stats: dict[tuple, dict] = {}
-    for s in _run(t, f"""
-        SELECT object_type, table_name, partition_name, num_rows, stale_stats,
-               TO_CHAR(last_analyzed, 'DD-Mon HH24:MI') AS last_analyzed
-          FROM dba_tab_statistics
-         WHERE owner = :owner AND object_type IN ('TABLE','PARTITION')
-           AND table_name IN ({ph})
-    """, {"owner": owner, **name_binds}):
-        stats[(s["table_name"], s.get("partition_name"))] = s
-
-    # 3) Top-N partitions PER table in ONE windowed query (ROW_NUMBER per segment) — not a
-    #    query per table — again scoped to the same top-N names.
-    parts_by_table: dict[str, list[dict]] = {}
-    for p in _run(t, f"""
-        SELECT segment_name, partition_name, size_gb FROM (
-            SELECT segment_name, partition_name,
-                   ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
-                   ROW_NUMBER() OVER (PARTITION BY segment_name ORDER BY SUM(bytes) DESC) AS rn
-              FROM dba_segments
-             WHERE owner = :owner AND segment_name IN ({ph})
-               AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
-             GROUP BY segment_name, partition_name
-        ) WHERE rn <= :lim
-        ORDER BY segment_name, size_gb DESC
-    """, {"owner": owner, "lim": TOP_CHILD_LIMIT, **name_binds}):
-        parts_by_table.setdefault(p["segment_name"], []).append(p)
-
-    def cells(table: str, part: str | None = None) -> dict:
-        s = stats.get((table, part), {})
-        fresh = (s.get("stale_stats") or "NO") != "YES"
-        return {"num_rows": s.get("num_rows"), "last_analyzed": s.get("last_analyzed") or "—", **_stats_cell(fresh)}
-
-    # 4) Assemble the tree (table → its top-N partitions). (Add a subpartition level the same
-    #    way — a windowed query over segment_type='TABLE SUBPARTITION' — if you use them.)
-    rows = []
-    for tb in tables:
-        seg = tb["segment_name"]
-        row = {"object": seg, "kind": "Table", "size_gb": tb["size_gb"], **cells(seg)}
-        children = [
-            {"object": p["partition_name"], "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, p["partition_name"])}
-            for p in parts_by_table.get(seg, [])
-        ]
-        if children:
-            row["__children"] = children
-        rows.append(row)
-    return {"status": "success", "columns": _TOP_COLS, "rows": rows}
-
-
 # =============================================================================
 # Section 3 — Top index storage consumers
 # =============================================================================
-
-@router.post("/{db}/top_indexes")
-def top_indexes(db: str) -> dict:
-    t = _target(db)
-    return top_indexes_dummy(t) if ORACLE_CC_USE_DUMMY else top_indexes_real(t)
-
 
 _IDX_COLS = [
     {"key": "index_name", "label": "Index", "type": "mono"},
@@ -399,73 +322,43 @@ _IDX_COLS = [
 ]
 
 
-def top_indexes_real(t: OracleTarget) -> dict:
-    """Top-5 indexes by allocated bytes (DBA_SEGMENTS INDEX / INDEX PARTITION / INDEX
-    SUBPARTITION), joined to DBA_INDEXES for table + type. Each partitioned index drills into
-    its **top-{n} partitions by size** (ordered DESC, `FETCH FIRST {n} ROWS ONLY`), not every
-    partition. Same {{columns, rows}} shape (partitions as __children).""".format(n=TOP_CHILD_LIMIT)
-    owner = OCC_SCHEMA
-    # 1) Top-5 indexes by allocated bytes.
-    idx = _run(t, """
-        SELECT s.segment_name AS index_name, i.table_name, i.index_type AS kind,
-               ROUND(SUM(s.bytes)/1024/1024/1024, 2) AS size_gb
-          FROM dba_segments s
-          JOIN dba_indexes  i ON i.owner = s.owner AND i.index_name = s.segment_name
-         WHERE s.owner = :owner
-           AND s.segment_type IN ('INDEX','INDEX PARTITION','INDEX SUBPARTITION')
-         GROUP BY s.segment_name, i.table_name, i.index_type
-         ORDER BY size_gb DESC
-         FETCH FIRST 5 ROWS ONLY
-    """, {"owner": owner})
-    names = [ix["index_name"] for ix in idx]
-    if not names:
-        return {"status": "success", "columns": _IDX_COLS, "rows": []}
+@router.post("/{db}/top_indexes")
+def top_indexes(request: Request, db: str) -> dict:
+    """Top indexes by allocated bytes → their top-N partitions (tree). Massages
+    `database.fetch_top_indexes`."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return top_indexes_dummy(t)
+    try:
+        raw = database.fetch_top_indexes(request.app.state.db_configs.get(db), OCC_SCHEMA, 5, TOP_CHILD_LIMIT)
+        idx = raw.get("indexes") or []
+        if not idx:
+            return {"status": "success", "columns": _IDX_COLS, "rows": []}
+        parts_by_index: dict[str, list[dict]] = {}
+        for p in raw.get("partitions") or []:
+            parts_by_index.setdefault(p["segment_name"], []).append(p)
 
-    # 2) Top-N partitions PER index in ONE windowed query (ROW_NUMBER per segment), scoped to
-    #    just the top-5 index names (:n0…:n4) — not a query per index. Placeholders are tokens;
-    #    the names bind as VALUES → injection-safe.
-    ph = ", ".join(f":n{i}" for i in range(len(names)))
-    name_binds = {f"n{i}": n for i, n in enumerate(names)}
-    parts_by_index: dict[str, list[dict]] = {}
-    for p in _run(t, f"""
-        SELECT segment_name, partition_name, size_gb FROM (
-            SELECT segment_name, partition_name,
-                   ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
-                   ROW_NUMBER() OVER (PARTITION BY segment_name ORDER BY SUM(bytes) DESC) AS rn
-              FROM dba_segments
-             WHERE owner = :owner AND segment_name IN ({ph})
-               AND segment_type IN ('INDEX PARTITION','INDEX SUBPARTITION')
-             GROUP BY segment_name, partition_name
-        ) WHERE rn <= :lim
-        ORDER BY segment_name, size_gb DESC
-    """, {"owner": owner, "lim": TOP_CHILD_LIMIT, **name_binds}):
-        parts_by_index.setdefault(p["segment_name"], []).append(p)
-
-    # 3) Assemble the tree (index → its top-N partitions).
-    rows = []
-    for ix in idx:
-        name = ix["index_name"]
-        row = {"index_name": name, "table_name": ix["table_name"], "kind": ix["kind"], "size_gb": ix["size_gb"]}
-        children = [
-            {"index_name": p["partition_name"], "table_name": ix["table_name"],
-             "kind": "Index partition", "size_gb": p["size_gb"]}
-            for p in parts_by_index.get(name, [])
-        ]
-        if children:
-            row["__children"] = children
-        rows.append(row)
-    return {"status": "success", "columns": _IDX_COLS, "rows": rows}
+        rows = []
+        for ix in idx:
+            name = ix["index_name"]
+            row = {"index_name": name, "table_name": ix["table_name"], "kind": ix["kind"], "size_gb": ix["size_gb"]}
+            children = [
+                {"index_name": p["partition_name"], "table_name": ix["table_name"],
+                 "kind": "Index partition", "size_gb": p["size_gb"]}
+                for p in parts_by_index.get(name, [])
+            ]
+            if children:
+                row["__children"] = children
+            rows.append(row)
+        return {"status": "success", "columns": _IDX_COLS, "rows": rows}
+    except Exception:
+        logger.exception("top_indexes failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =============================================================================
 # Section 4 — Index Health & Stability
 # =============================================================================
-
-@router.post("/{db}/index_health")
-def index_health(db: str) -> dict:
-    t = _target(db)
-    return index_health_dummy(t) if ORACLE_CC_USE_DUMMY else index_health_real(t)
-
 
 _IDXH_COLS = [
     {"key": "index_name", "label": "Index", "type": "mono"},
@@ -476,40 +369,33 @@ _IDXH_COLS = [
 ]
 
 
-def index_health_real(t: OracleTarget) -> dict:
-    """Unstable / offline indexes: UNUSABLE (DBA_INDEXES.status='UNUSABLE' and partition-level
-    DBA_IND_PARTITIONS.status), INVISIBLE (DBA_INDEXES.visibility='INVISIBLE' — maintained but
-    optimizer-hidden), and stale-stats (DBA_TAB_STATISTICS.stale_stats='YES'). One row each,
-    with a state chip. Same {columns, rows} shape."""
-    sql = """
-        SELECT index_name, table_name,
-               CASE WHEN status = 'UNUSABLE' THEN 'UNUSABLE'
-                    WHEN visibility = 'INVISIBLE' THEN 'INVISIBLE'
-                    ELSE 'STALE STATS' END AS state,
-               TO_CHAR(last_analyzed, 'DD-Mon') AS last_analyzed
-          FROM dba_indexes
-         WHERE owner = :owner
-           AND (status = 'UNUSABLE' OR visibility = 'INVISIBLE'
-                OR index_name IN (SELECT object_name FROM dba_tab_statistics
-                                   WHERE owner = :owner AND object_type LIKE 'INDEX%' AND stale_stats = 'YES'))
-         ORDER BY state
-    """
+@router.post("/{db}/index_health")
+def index_health(request: Request, db: str) -> dict:
+    """UNUSABLE / INVISIBLE / STALE-STATS indexes, with a state chip. Massages
+    `database.fetch_index_health`."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return index_health_dummy(t)
     sev = {"UNUSABLE": "crit", "INVISIBLE": "warn", "STALE STATS": "warn"}
     detail = {
         "UNUSABLE": "Offline — not maintained; rebuild required",
         "INVISIBLE": "Maintained but hidden from the optimizer",
         "STALE STATS": "Stats out of date; gather to refresh",
     }
-    rows = []
-    for r in _run(t, sql, {"owner": OCC_SCHEMA}):
-        st = r["state"]
-        s = sev.get(st, "warn")
-        rows.append({
-            "index_name": r["index_name"], "table_name": r["table_name"],
-            "state": st, "state__sev": s, "detail": detail.get(st, ""),
-            "last_analyzed": r.get("last_analyzed") or "—", "__sev": s,
-        })
-    return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
+    try:
+        rows = []
+        for r in database.fetch_index_health(request.app.state.db_configs.get(db), OCC_SCHEMA):
+            st = r["state"]
+            s = sev.get(st, "warn")
+            rows.append({
+                "index_name": r["index_name"], "table_name": r["table_name"],
+                "state": st, "state__sev": s, "detail": detail.get(st, ""),
+                "last_analyzed": r.get("last_analyzed") or "—", "__sev": s,
+            })
+        return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
+    except Exception:
+        logger.exception("index_health failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =============================================================================
@@ -517,40 +403,80 @@ def index_health_real(t: OracleTarget) -> dict:
 # =============================================================================
 
 @router.post("/{db}/locks")
-def locks(db: str) -> dict:
-    """Enqueue locks that matter to a DBA: TX row locks and TM DML locks, flagged
-    BLOCKING / WAITING / HELD. Each row is killable (admin only, enforced in the UI)."""
+def locks(request: Request, db: str) -> dict:
+    """Enqueue locks that matter to a DBA: TX row + TM DML locks, flagged BLOCKING/WAITING/HELD;
+    each row killable (admin, UI-gated). Massages `database.fetch_locks` into the lock-row contract."""
     t = _target(db)
-    return locks_dummy(t) if ORACLE_CC_USE_DUMMY else locks_real(t)
+    if ORACLE_CC_USE_DUMMY:
+        return locks_dummy(t)
+    try:
+        rows = [
+            _lock_row(
+                locked_object=r.get("locked_object") or "—", object_type=r.get("object_type") or "—",
+                lock_type=r.get("lock_type") or "—", lock_mode=r.get("lock_mode") or "—",
+                sid=int(r["sid"]), serial=int(r["serial_no"]),
+                username=r.get("username") or "—", machine=r.get("machine") or "—",
+                held_for=_fmt_dur(_dur_secs(r)), state=r.get("session_state") or "HELD",
+                sql_id=r.get("sql_id") or "—",
+                firstname=r.get("firstname"), surname=r.get("surname"),
+                sql_text=r.get("sql_text"), bind_values=r.get("bind_values"),
+            )
+            for r in database.fetch_locks(request.app.state.db_configs.get(db))
+        ]
+        return _locks_payload(rows)
+    except Exception:
+        logger.exception("locks failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _LOCK_COLS = [
-    {"key": "object", "label": "Locked object", "type": "mono"},
+    {"key": "locked_object", "label": "Locked object", "type": "mono"},
+    {"key": "object_type", "label": "Object type", "type": "text"},
     {"key": "lock_type", "label": "Lock", "type": "text"},
-    {"key": "mode_held", "label": "Mode held", "type": "text"},
+    {"key": "lock_mode", "label": "Mode held", "type": "text"},
     {"key": "sid_serial", "label": "SID,Serial#", "type": "mono"},
     {"key": "username", "label": "User", "type": "mono"},
+    {"key": "firstname", "label": "First name", "type": "text"},
+    {"key": "surname", "label": "Surname", "type": "text"},
     {"key": "machine", "label": "Machine", "type": "text"},
     {"key": "held_for", "label": "Held for", "type": "text"},
     {"key": "state", "label": "State", "type": "chip"},
     {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
+    {"key": "sql_text", "label": "SQL text", "type": "clob"},
 ]
 
 # State → row/chip severity. BLOCKING is the one to act on.
 _LOCK_SEV = {"BLOCKING": "crit", "WAITING": "warn", "HELD": "ok"}
 
 
-def _lock_row(object_: str, lock_type: str, mode_held: str, sid: int, serial: int,
-              username: str, machine: str, held_for: str, state: str, sql_id: str) -> dict:
-    """One lock row. `sid`/`serial` are carried as data (not columns) so the kill action
-    has what it needs; `__actions:['kill']` tells the dyn-table to show the Kill button."""
+def _append_binds(sql_text: str | None, bind_values: str | None) -> str:
+    """SQL text with the captured bind values appended (Oracle stores placeholders `:1` in the SQL
+    and the actual values separately in v$sql_bind_capture — so we show both, not a fake inline
+    substitution). Shown in the CLOB popup."""
+    s = (sql_text or "").rstrip()
+    bv = (bind_values or "").strip()
+    if bv:
+        s = f"{s}\n\n-- Bind variables (captured):\n{bind_values.rstrip()}" if s else bind_values.rstrip()
+    return s or "—"
+
+
+def _lock_row(*, locked_object: str, object_type: str, lock_type: str, lock_mode: str,
+              sid: int, serial: int, username: str, machine: str, held_for: str, state: str,
+              sql_id: str, firstname: str | None = None, surname: str | None = None,
+              sql_text: str | None = None, bind_values: str | None = None) -> dict:
+    """One lock row (keyword-only). `sid`/`serial` are carried as data (not columns) so the kill
+    action has what it needs; `__actions:['kill']` shows the Kill button. `sql_text` gets the
+    captured bind values appended (see `_append_binds`)."""
     sev = _LOCK_SEV.get(state, "ok")
     # `__sev` drives the hover-reveal tint (BLOCKING → red, WAITING → amber on hover); rows
     # stay white at rest — the STATE chip carries the meaning.
     return {
-        "object": object_, "lock_type": lock_type, "mode_held": mode_held,
+        "locked_object": locked_object, "object_type": object_type or "—",
+        "lock_type": lock_type, "lock_mode": lock_mode,
         "sid_serial": f"{sid},{serial}", "username": username, "machine": machine,
         "held_for": held_for, "state": state, "state__sev": sev, "sql_id": sql_id,
+        "firstname": firstname or "—", "surname": surname or "—",
+        "sql_text": _append_binds(sql_text, bind_values),
         "__sev": sev, "__actions": ["kill"], "sid": sid, "serial": serial,
     }
 
@@ -562,36 +488,19 @@ def _locks_payload(rows: list[dict]) -> dict:
             "summary": {"blocking": blocking, "waiting": waiting, "total": len(rows)}}
 
 
-def locks_real(t: OracleTarget) -> dict:
-    """Held/blocking enqueue locks. V$LOCK (held rows: LMODE>0) joined to V$LOCKED_OBJECT +
-    DBA_OBJECTS for the object name and V$SESSION for user/machine/sql; BLOCKING derived from
-    V$SESSION.BLOCKING_SESSION_STATUS / V$LOCK.BLOCK. Same {columns, rows} shape as the dummy."""
-    sql = """
-        SELECT o.owner || '.' || o.object_name        AS object,
-               DECODE(l.type, 'TX','TX (Row)', 'TM','TM (DML)', l.type) AS lock_type,
-               DECODE(l.lmode, 6,'Exclusive (X)', 5,'Row-X (SSX)', 4,'Share (S)',
-                               3,'Row-X (RX)', 2,'Row-S (RS)', TO_CHAR(l.lmode)) AS mode_held,
-               s.sid, s.serial# AS serial, s.username, s.machine,
-               l.ctime AS held_secs,
-               CASE WHEN l.block = 1 THEN 'BLOCKING'
-                    WHEN s.blocking_session IS NOT NULL THEN 'WAITING'
-                    ELSE 'HELD' END AS state,
-               s.sql_id
-          FROM v$lock l
-          JOIN v$session s        ON s.sid = l.sid
-          LEFT JOIN v$locked_object lo ON lo.session_id = l.sid
-          LEFT JOIN dba_objects o      ON o.object_id = lo.object_id
-         WHERE l.type IN ('TX','TM')
-           AND l.lmode > 0
-         ORDER BY DECODE(state,'BLOCKING',0,'WAITING',1,2), l.ctime DESC
-    """
-    rows = [
-        _lock_row(r["object"] or "—", r["lock_type"], r["mode_held"],
-                  int(r["sid"]), int(r["serial"]), r["username"] or "—", r["machine"] or "—",
-                  _fmt_dur(r.get("held_secs")), r["state"], r["sql_id"] or "—")
-        for r in _run(t, sql)
-    ]
-    return _locks_payload(rows)
+def _dur_secs(r: dict) -> int | None:
+    """Held duration in seconds — prefer the raw `held_secs` (l.ctime); fall back to parsing the
+    `held_duration` INTERVAL (oracledb returns it as a timedelta)."""
+    v = r.get("held_secs")
+    if v is not None:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+    d = r.get("held_duration")
+    if hasattr(d, "total_seconds"):
+        return int(d.total_seconds())
+    return None
 
 
 class KillRequest(BaseModel):
@@ -602,109 +511,78 @@ class KillRequest(BaseModel):
 
 @router.post("/{db}/kill-session")
 def kill_session(db: str, body: KillRequest) -> dict:
-    """Kill one session (used by Locks / Blocking / Sessions). Destructive — the UI gates
-    this behind an admin role + an explicit confirm before calling it."""
+    """Kill one session (Locks / Blocking / Sessions). Destructive — UI-gated behind admin + a
+    confirm. The real kill needs a SEPARATE privileged, audited connection (ALTER SYSTEM), which
+    the read-only monitor deliberately lacks — wire it here; never widen the monitor grant."""
     t = _target(db)
-    return kill_session_dummy(t, body) if ORACLE_CC_USE_DUMMY else kill_session_real(t, body)
-
-
-def kill_session_real(t: OracleTarget, body: KillRequest) -> dict:
-    """`ALTER SYSTEM KILL SESSION` takes no bind variables, so sid/serial are interpolated —
-    they are ints validated by Pydantic, so this is injection-safe. NOTE: this needs ALTER
-    SYSTEM, which the read-only monitor account deliberately lacks; run kills through a
-    separate, privileged (and audited) connection alias — never widen the monitor grant."""
+    if ORACLE_CC_USE_DUMMY:
+        return kill_session_dummy(t, body)
+    # ALTER SYSTEM KILL SESSION takes no binds; sid/serial are Pydantic-validated ints (injection-safe).
     stmt = f"ALTER SYSTEM KILL SESSION '{int(body.sid)},{int(body.serial)}'" + (" IMMEDIATE" if body.immediate else "")
     _ = stmt
-    raise RuntimeError("kill_session_real: wire a privileged connection (ALTER SYSTEM) — not the read-only monitor")
+    raise RuntimeError("kill_session: wire a privileged connection (ALTER SYSTEM) — not the read-only monitor")
 
 
 # =============================================================================
 # Section 6 — Blocking sessions (blocker → waiter tree)
 # =============================================================================
 
-@router.post("/{db}/blocking")
-def blocking(db: str) -> dict:
-    """The blocking hierarchy: each root is a final blocker, its `__children` are the sessions
-    it blocks (recursively, so chained blocking shows as a tree). Every node is killable."""
-    t = _target(db)
-    return blocking_dummy(t) if ORACLE_CC_USE_DUMMY else blocking_real(t)
-
-
 _BLK_COLS = [
-    {"key": "session", "label": "Session (SID,Serial#)", "type": "mono"},
-    {"key": "role", "label": "Role", "type": "chip"},
-    {"key": "username", "label": "User", "type": "mono"},
-    {"key": "object", "label": "Contended object", "type": "mono"},
-    {"key": "event", "label": "Wait event", "type": "text"},
+    {"key": "blocker", "label": "Blocker (SID,Serial#)", "type": "mono"},
+    {"key": "blocker_user", "label": "Blocker user", "type": "mono"},
+    {"key": "blocker_name", "label": "Blocker name", "type": "text"},
+    {"key": "blocker_machine", "label": "Blocker machine", "type": "text"},
+    {"key": "object_being_held", "label": "Object held", "type": "mono"},
+    {"key": "blocker_object_type", "label": "Object type", "type": "text"},
+    {"key": "blocker_sql_id", "label": "Blocker SQL_ID", "type": "mono"},
+    {"key": "blocker_sql_text", "label": "Blocker SQL text", "type": "clob"},
+    {"key": "victim", "label": "Victim (SID,Serial#)", "type": "mono"},
+    {"key": "victim_user", "label": "Victim user", "type": "mono"},
+    {"key": "victim_name", "label": "Victim name", "type": "text"},
+    {"key": "wait_event", "label": "Wait event", "type": "text"},
     {"key": "wait_time", "label": "Waiting", "type": "text"},
-    {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
-    {"key": "machine", "label": "Machine", "type": "text"},
+    {"key": "victim_sql_id", "label": "Victim SQL_ID", "type": "mono"},
+    {"key": "victim_sql_text", "label": "Victim SQL text", "type": "clob"},
 ]
 
 
-def _blk_node(sid: int, serial: int, role: str, username: str, object_: str, event: str,
-              wait_time: str, sql_id: str, machine: str, children: list[dict] | None = None) -> dict:
-    sev = "crit" if role == "BLOCKER" else "warn"
-    # `__sev` drives the hover-reveal tint (blocker → red, waiter → amber on hover); rows
-    # stay white at rest — the Role chip carries the meaning.
-    node = {
-        "session": f"{sid},{serial}", "role": role, "role__sev": sev,
-        "username": username, "object": object_, "event": event,
-        "wait_time": wait_time, "sql_id": sql_id, "machine": machine,
-        "__sev": sev, "__actions": ["kill"], "sid": sid, "serial": serial,
+def _blk_row(r: dict) -> dict:
+    """One blocker↔victim row. The Kill action targets the BLOCKER (killing it frees the victim),
+    so `sid`/`serial` carry the blocker's; the whole row hover-tints red (it's always critical)."""
+    bsid, bser = int(r["blocker_sid"]), int(r["blocker_serial"])
+    return {
+        "blocker": f"{bsid},{bser}", "blocker_user": r.get("blocker_user") or "—",
+        "blocker_name": r.get("blocker_name") or "—", "blocker_machine": r.get("blocker_machine") or "—",
+        "object_being_held": r.get("object_being_held") or "—",
+        "blocker_object_type": r.get("blocker_object_type") or "—",
+        "blocker_sql_id": r.get("blocker_sql_id") or "—",
+        "blocker_sql_text": _append_binds(r.get("blocker_sql_text"), r.get("blocker_bind_values")),
+        "victim": f"{int(r['victim_sid'])},{int(r['victim_serial'])}", "victim_user": r.get("victim_user") or "—",
+        "victim_name": r.get("victim_name") or "—", "wait_event": r.get("wait_event") or "—",
+        "wait_time": _fmt_dur(r.get("wait_time_seconds")), "victim_sql_id": r.get("victim_sql_id") or "—",
+        "victim_sql_text": _append_binds(r.get("victim_sql_text"), r.get("victim_bind_values")),
+        "__sev": "crit", "__actions": ["kill"], "sid": bsid, "serial": bser,
     }
-    if children:
-        node["__children"] = children
-    return node
 
 
 def _blocking_payload(rows: list[dict]) -> dict:
-    def _count(nodes: list[dict]) -> int:
-        n = 0
-        for r in nodes:
-            n += 1 + _count(r.get("__children", []))
-        return n
-    waiters = _count(rows) - len(rows)
+    blockers = len({r["blocker"] for r in rows})
     return {"status": "success", "columns": _BLK_COLS, "rows": rows,
-            "summary": {"chains": len(rows), "waiters": waiters}}
+            "summary": {"chains": blockers, "waiters": len(rows)}}
 
 
-def blocking_real(t: OracleTarget) -> dict:
-    """Build the blocker→waiter tree from V$SESSION.BLOCKING_SESSION (+ V$WAIT_CHAINS for
-    depth if available). Roots = sessions blocking others but not blocked themselves; children
-    = sessions whose BLOCKING_SESSION points at the parent. Same {columns, rows} shape."""
-    sql = """
-        SELECT s.sid, s.serial# AS serial, s.username, s.machine, s.sql_id,
-               s.blocking_session AS blocked_by,
-               s.event, s.seconds_in_wait,
-               (SELECT o.owner || '.' || o.object_name
-                  FROM v$locked_object lo JOIN dba_objects o ON o.object_id = lo.object_id
-                 WHERE lo.session_id = s.sid AND ROWNUM = 1) AS object
-          FROM v$session s
-         WHERE s.blocking_session IS NOT NULL
-            OR s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
-    """
-    # Assemble the tree in Python: index rows by sid, group waiters under their blocker,
-    # then the un-blocked blockers are the roots.
-    raw = _run(t, sql)
-    by_sid = {int(r["sid"]): r for r in raw}
-    kids: dict[int, list[dict]] = {}
-    for r in raw:
-        blocker = r.get("blocked_by")
-        if blocker:                       # this session is waiting behind `blocker`
-            kids.setdefault(int(blocker), []).append(r)
-
-    def build(r: dict, role: str, visited: set[int]) -> dict:
-        sid = int(r["sid"])
-        seen = visited | {sid}
-        children = [build(c, "WAITER", seen) for c in kids.get(sid, []) if int(c["sid"]) not in seen]
-        return _blk_node(sid, int(r["serial"]), role, r.get("username") or "—",
-                         r.get("object") or "—", r.get("event") or "—",
-                         _fmt_dur(r.get("seconds_in_wait")), r.get("sql_id") or "—",
-                         r.get("machine") or "—", children or None)
-
-    roots = [by_sid[sid] for sid in kids if not (by_sid.get(sid) or {}).get("blocked_by") and sid in by_sid]
-    return _blocking_payload([build(r, "BLOCKER", set()) for r in roots])
+@router.post("/{db}/blocking")
+def blocking(request: Request, db: str) -> dict:
+    """Flat blocker↔victim pairs (one row per blocking relationship); kill targets the blocker.
+    Massages `database.fetch_blocking`."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return blocking_dummy(t)
+    try:
+        return _blocking_payload([_blk_row(r) for r in database.fetch_blocking(request.app.state.db_configs.get(db))])
+    except Exception:
+        logger.exception("blocking failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # =============================================================================
@@ -717,12 +595,32 @@ class SessionsQuery(BaseModel):
 
 
 @router.post("/{db}/sessions")
-def sessions(db: str, body: SessionsQuery | None = None) -> dict:
-    """Session inventory filtered by state. The `summary` always carries the full per-state
-    counts (regardless of the filter) so the UI can label the Active/Inactive/Killed/All tabs."""
+def sessions(request: Request, db: str, body: SessionsQuery | None = None) -> dict:
+    """Session inventory filtered by state; `summary` carries the full per-state counts (for the
+    Active/Inactive/Killed/All tab badges) regardless of the filter. Massages
+    `database.fetch_sessions`."""
     t = _target(db)
     status = (body.status if body else "active").lower()
-    return sessions_dummy(t, status) if ORACLE_CC_USE_DUMMY else sessions_real(t, status)
+    if ORACLE_CC_USE_DUMMY:
+        return sessions_dummy(t, status)
+    try:
+        raw = database.fetch_sessions(request.app.state.db_configs.get(db), status)
+        rows = [
+            _sess_row(int(r["sid"]), int(r["serial"]), r["username"] or "—", (r["status"] or "").upper(),
+                      r["machine"] or "—", r["program"] or "—", r.get("sql_id"),
+                      r.get("event") or "ON CPU", _fmt_dur(r.get("secs")), int(r.get("secs") or 0))
+            for r in raw.get("rows") or []
+        ]
+        counts = {"active": 0, "inactive": 0, "killed": 0, "total": 0}
+        for c in raw.get("counts") or []:
+            n = int(c["c"] or 0)
+            counts["total"] += n
+            if c["st"] in counts:
+                counts[c["st"]] = n
+        return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
+    except Exception:
+        logger.exception("sessions failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _SESS_COLS = [
@@ -771,33 +669,6 @@ def _sess_row(sid: int, serial: int, username: str, status: str, machine: str, p
     return r
 
 
-def sessions_real(t: OracleTarget, status: str) -> dict:
-    """V$SESSION (type='USER') for the inventory; STATUS is ACTIVE/INACTIVE/KILLED. `last_call`
-    from LAST_CALL_ET. Full per-state counts computed with COUNT(*) GROUP BY status. Same shape."""
-    sql = """
-        SELECT s.sid, s.serial# AS serial, s.username, s.status, s.machine, s.program,
-               s.sql_id, NVL(s.event, 'ON CPU') AS event, s.last_call_et AS secs
-          FROM v$session s
-         WHERE s.type = 'USER'
-           AND (:status = 'all' OR LOWER(s.status) = :status)
-         ORDER BY DECODE(s.status,'ACTIVE',0,'INACTIVE',1,2), s.last_call_et DESC
-    """
-    rows = [
-        _sess_row(int(r["sid"]), int(r["serial"]), r["username"] or "—", (r["status"] or "").upper(),
-                  r["machine"] or "—", r["program"] or "—", r.get("sql_id"),
-                  r.get("event") or "ON CPU", _fmt_dur(r.get("secs")), int(r.get("secs") or 0))
-        for r in _run(t, sql, {"status": status})
-    ]
-    # Full per-state counts (independent of the filter) so the UI can label every tab.
-    counts = {"active": 0, "inactive": 0, "killed": 0, "total": 0}
-    for c in _run(t, "SELECT LOWER(status) AS st, COUNT(*) AS c FROM v$session WHERE type='USER' GROUP BY LOWER(status)"):
-        n = int(c["c"] or 0)
-        counts["total"] += n
-        if c["st"] in counts:
-            counts[c["st"]] = n
-    return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
-
-
 class SessionDetailQuery(BaseModel):
     sid: int
     serial: int
@@ -807,13 +678,196 @@ class SessionDetailQuery(BaseModel):
 
 
 @router.post("/{db}/session-detail")
-def session_detail(db: str, body: SessionDetailQuery) -> dict:
-    """The SID deep-dive: a self-describing list of panels (plan / ASH / SQL Monitor / stats /
-    locks / AWR). Panels are either `kind:'text'` (monospace block) or `kind:'table'` (a normal
-    dyn-table payload). A panel comes back `available:false` only if its own query fails (each
-    panel is built independently), never for licensing."""
+def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
+    """The SID deep-dive: a self-describing list of panels (plan / waits / binds / ASH / SQL
+    Monitor / stats / locks / AWR, + rollback for KILLED). Massages `database.fetch_session_detail`
+    (facts + raw per-panel data). The data layer runs each panel's SQL in its own try/except — one
+    bad query degrades only that panel to `available:false` — and honours `body.panel` for per-tab
+    refresh. Panels are `kind:'text'` (monospace), `kind:'table'`, or `kind:'rollback'`."""
     t = _target(db)
-    return session_detail_dummy(t, body) if ORACLE_CC_USE_DUMMY else session_detail_real(t, body)
+    if ORACLE_CC_USE_DUMMY:
+        return session_detail_dummy(t, body)
+    q = body
+    sid, serial = int(q.sid), int(q.serial)
+    cfg = request.app.state.db_configs.get(db)
+    try:
+        raw = database.fetch_session_detail(cfg, sid, serial, q.sql_id, OCC_SCHEMA, q.panel)
+    except Exception:
+        logger.exception("session-detail failed for %s (%s,%s)", db, sid, serial)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    errors = raw.get("errors") or {}
+    f = raw.get("facts") or {}
+    status = (f.get("status") or "ACTIVE").upper()
+    sql_id = q.sql_id or (f.get("sql_id") if f.get("sql_id") not in (None, "—") else None)
+    session = {
+        "sid": sid, "serial": serial, "session": f"{sid},{serial}",
+        "username": f.get("username") or "—", "status": status,
+        "machine": f.get("machine") or "—", "program": f.get("program") or "—",
+        "logon_time": f.get("logon_time") or "—", "sql_id": sql_id or "—",
+        "osuser": f.get("osuser") or "—", "module": f.get("module") or "—",
+        "last_call": _fmt_dur(f.get("secs")),
+    }
+
+    def got(key: str) -> bool:
+        """The data layer fetched this panel and produced usable data (not None, not errored)."""
+        return key in raw and raw[key] is not None and key not in errors
+
+    def emit(key: str) -> bool:
+        """Include this panel in the response (all panels, or just the one asked for)."""
+        return q.panel is None or q.panel == key
+
+    waits_cols = [{"key": "event", "label": "Wait event", "type": "mono"},
+                  {"key": "wait_class", "label": "Class", "type": "chip"},
+                  {"key": "time_waited_s", "label": "Time waited (s)", "type": "num"},
+                  {"key": "waits", "label": "Waits", "type": "num"},
+                  {"key": "avg_ms", "label": "Avg (ms)", "type": "num"}]
+    binds_cols = [{"key": "name", "label": "Bind", "type": "mono"},
+                  {"key": "pos", "label": "Pos", "type": "num"},
+                  {"key": "datatype", "label": "Datatype", "type": "text"},
+                  {"key": "value", "label": "Peeked value", "type": "mono"}]
+    ash_cols = [{"key": "sample_time", "label": "Sample", "type": "text"},
+                {"key": "session_state", "label": "State", "type": "chip"},
+                {"key": "event", "label": "Event", "type": "text"},
+                {"key": "wait_class", "label": "Wait class", "type": "text"},
+                {"key": "sql_id", "label": "SQL_ID", "type": "mono"}]
+    stats_cols = [{"key": "object", "label": "Object", "type": "mono"},
+                  {"key": "num_rows", "label": "Rows", "type": "num"},
+                  {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
+                  {"key": "state", "label": "Stats", "type": "chip"}]
+    locks_cols = [{"key": "type", "label": "Lock", "type": "text"},
+                  {"key": "mode_held", "label": "Mode held", "type": "text"},
+                  {"key": "object", "label": "Object", "type": "mono"},
+                  {"key": "state", "label": "State", "type": "chip"}]
+    awr_cols = [{"key": "snap", "label": "Snap window", "type": "text"},
+                {"key": "elapsed_s", "label": "Elapsed (s)", "type": "num"},
+                {"key": "cpu_s", "label": "CPU (s)", "type": "num"},
+                {"key": "buffer_gets", "label": "Buffer gets", "type": "num"},
+                {"key": "executions", "label": "Execs", "type": "num"}]
+    _WAIT_SEV = {"Application": "crit", "Concurrency": "crit", "User I/O": "warn", "System I/O": "warn",
+                 "Cluster": "warn", "Commit": "ok", "CPU": "ok", "Idle": "muted"}
+
+    def plan_panel():
+        if not got("plan"):
+            return _panel_text("plan", "Execution Plan", "", available=False)
+        text = "\n".join(str(x or "") for x in (raw.get("plan") or []))
+        panel = _panel_text("plan", "Execution Plan", text or "(no plan in the cursor cache for this SQL_ID)")
+        # Attach a generated Diagnosis (misestimate / bottleneck / I/O + cautious index hint) from
+        # the same V$SQL_PLAN_STATISTICS_ALL engine SQL Intelligence uses. Best-effort — a failure
+        # here just leaves the raw plan without the card.
+        if sql_id:
+            try:
+                analysis = _sqli_plan_analysis_payload(database.fetch_sql_plan_analysis(cfg, sql_id))
+                diag = analysis.get("diagnosis") or {}
+                if diag.get("findings") or diag.get("hint"):
+                    panel["diagnosis"] = diag
+            except Exception as exc:
+                logger.warning("session-detail plan diagnosis failed (%s,%s): %s", sid, serial, exc)
+        return panel
+
+    def waits_panel():
+        if not got("waits"):
+            return _panel_table("waits", "Wait Events", waits_cols, [], available=False)
+        rows = []
+        for r in raw["waits"]:
+            wc = r.get("wait_class") or "—"
+            row = {"event": r["event"], "wait_class": wc, "wait_class__sev": _WAIT_SEV.get(wc, "muted"),
+                   "time_waited_s": round((r.get("time_waited") or 0) / 100, 1),
+                   "waits": int(r.get("total_waits") or 0), "avg_ms": round((r.get("average_wait") or 0) * 10, 1)}
+            if _WAIT_SEV.get(wc) in ("crit", "warn"):
+                row["__sev"] = _WAIT_SEV[wc]
+            rows.append(row)
+        return _panel_table("waits", "Wait Events", waits_cols, rows)
+
+    def binds_panel():
+        if not got("binds"):
+            return _panel_table("binds", "Bind Variables", binds_cols, [], available=False)
+        rows = [{"name": r.get("name"), "pos": r.get("position"), "datatype": r.get("datatype_string") or "",
+                 "value": str(r.get("value_string") or "")} for r in raw["binds"]]
+        return _panel_table("binds", "Bind Variables", binds_cols, rows)
+
+    def ash_panel():
+        if not got("ash"):
+            return _panel_table("ash", "Active Session History", ash_cols, [], available=False)
+        rows = [{"sample_time": r.get("sample_time"), "session_state": r.get("session_state"),
+                 "session_state__sev": "ok" if r.get("session_state") == "ON CPU" else "warn",
+                 "event": r.get("event") or "—", "wait_class": r.get("wait_class") or "CPU", "sql_id": r.get("sql_id") or "—"}
+                for r in raw["ash"]]
+        return _panel_table("ash", "Active Session History", ash_cols, rows)
+
+    def monitor_panel():
+        if not got("monitor"):
+            return _panel_text("monitor", "SQL Monitor", "", available=False)
+        return _panel_text("monitor", "SQL Monitor", str(raw["monitor"]) or "(no active SQL Monitor report)")
+
+    def stats_panel():
+        if not got("stats"):
+            return _panel_table("stats", "Object Statistics", stats_cols, [], available=False)
+        rows = [{"object": r["table_name"], "num_rows": r.get("num_rows"), "last_analyzed": r.get("last_analyzed") or "—",
+                 "state": "STALE" if r.get("stale_stats") == "YES" else "FRESH",
+                 "state__sev": "warn" if r.get("stale_stats") == "YES" else "ok"} for r in raw["stats"]]
+        return _panel_table("stats", "Object Statistics", stats_cols, rows)
+
+    def locks_panel():
+        if not got("locks"):
+            return _panel_table("locks", "Locks Held", locks_cols, [], available=False)
+        rows = []
+        for r in raw["locks"]:
+            st = r["state"]
+            rows.append({"type": r["type"], "mode_held": r["mode_held"], "object": r.get("object") or "—",
+                         "state": st, "state__sev": "crit" if st == "BLOCKING" else "ok"})
+        return _panel_table("locks", "Locks Held", locks_cols, rows)
+
+    def awr_panel():
+        if not got("awr"):
+            return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, [], available=False)
+        rows = [{"snap": r.get("snap"), "elapsed_s": round((r.get("elapsed_time") or 0) / 1e6, 1),
+                 "cpu_s": round((r.get("cpu_time") or 0) / 1e6, 1), "buffer_gets": int(r.get("buffer_gets") or 0),
+                 "executions": int(r.get("executions_delta") or 0)} for r in raw["awr"]]
+        return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, rows)
+
+    def resource_panel():
+        try:
+            res = database.fetch_session_resource(cfg, sid, serial)
+        except Exception as exc:
+            logger.warning("session-detail resource failed (%s,%s): %s", sid, serial, exc)
+            return {"key": "resource", "label": "Resource Profile", "kind": "resource", "available": False}
+        act = res.get("activity") or []
+        total = sum(int(r.get("samples") or 0) for r in act) or 1
+        act_sev = {"CPU": "ok", "User I/O": "warn", "System I/O": "warn", "Concurrency": "crit",
+                   "Application": "crit", "Cluster": "warn", "Commit": "ok", "Configuration": "warn",
+                   "Scheduler": "warn", "Other": "muted"}
+        act_cols = [{"key": "bucket", "label": "Resource", "type": "chip"},
+                    {"key": "seconds", "label": "~Seconds", "type": "num"},
+                    {"key": "pct", "label": "Share", "type": "pct", "warn": 40, "crit": 70}]
+        act_rows = [{"bucket": r.get("bucket"), "bucket__sev": act_sev.get(r.get("bucket"), "muted"),
+                     "seconds": int(r.get("samples") or 0),
+                     "pct": round(int(r.get("samples") or 0) / total * 100, 1)} for r in act]
+        wa_cols = [{"key": "operation", "label": "Work area", "type": "mono"},
+                   {"key": "mem_mb", "label": "Mem (MB)", "type": "num"},
+                   {"key": "max_mb", "label": "Max (MB)", "type": "num"},
+                   {"key": "passes", "label": "Passes", "type": "num"},
+                   {"key": "temp_mb", "label": "Temp (MB)", "type": "num"}]
+        wa_rows = [{"operation": r.get("operation"), "mem_mb": r.get("mem_mb"), "max_mb": r.get("max_mb"),
+                    "passes": int(r.get("passes") or 0), "temp_mb": r.get("temp_mb"),
+                    "__sev": ("warn" if int(r.get("passes") or 0) >= 1 else "")} for r in res.get("workareas") or []]
+        pga = res.get("pga") or {}
+        resource = {
+            "pga_used_mb": pga.get("pga_used_mb"), "pga_alloc_mb": pga.get("pga_alloc_mb"),
+            "pga_max_mb": pga.get("pga_max_mb"), "temp_mb": res.get("temp_mb"),
+            "activity": {"status": "success", "columns": act_cols, "rows": act_rows},
+            "workareas": {"status": "success", "columns": wa_cols, "rows": wa_rows},
+        }
+        return {"key": "resource", "label": "Resource Profile", "kind": "resource", "available": True, "resource": resource}
+
+    panels = []
+    if status == "KILLED" and emit("rollback"):
+        pct = raw.get("rollback_pct")
+        panels.append(_panel_rollback(int(pct) if pct is not None else 0))
+    builders = [("plan", plan_panel), ("waits", waits_panel), ("binds", binds_panel),
+                ("ash", ash_panel), ("resource", resource_panel), ("monitor", monitor_panel),
+                ("stats", stats_panel), ("locks", locks_panel), ("awr", awr_panel)]
+    panels += [build() for key, build in builders if emit(key)]
+    return {"status": "success", "session": session, "panels": panels}
 
 
 def _panel_text(key: str, label: str, text: str, *, requires: str | None = None, available: bool = True) -> dict:
@@ -854,241 +908,686 @@ def _panel_rollback(percent: int = 63) -> dict:
     }
 
 
-def session_detail_real(t: OracleTarget, q: SessionDetailQuery) -> dict:
-    """Assemble the deep-dive from, per panel:
-      * rollback— (killed sessions) V$SESSION_LONGOPS WHERE opname='Transaction Rollback'
-                  (sofar/totalwork/time_remaining) + V$TRANSACTION.USED_UREC/USED_UBLK for the
-                  undo still to apply. Include only when the session is KILLED / rolling back.
-      * plan    — DBMS_XPLAN.DISPLAY_CURSOR(sql_id, child, 'ALLSTATS LAST +PEEKED_BINDS')
-                  (Starts / E-Rows vs A-Rows / A-Time / Buffers / Reads pinpoint the bottleneck)
-      * waits   — V$SESSION_EVENT for the SID (cumulative time per wait event + wait class)
-      * binds   — DBMS_XPLAN peeked binds / V$SQL_BIND_CAPTURE (bind peeking / data skew)
-      * ash     — V$ACTIVE_SESSION_HISTORY (last N min for the SID)
-      * monitor — DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>sid, type=>'TEXT')
-      * stats   — DBA_TAB_STATISTICS for the objects in the plan
-      * locks   — V$LOCK / V$LOCKED_OBJECT for the SID
-      * awr     — DBA_HIST_SQLSTAT for the sql_id
+# =============================================================================
+# Section 8 — SQL Intelligence (investigate a SQL_ID after the session is gone)
+# =============================================================================
+#
+# Anchored on a sql_id (the only mandatory input) so a completed session can still be
+# investigated. Everything historical reads AWR/ASH (DBA_HIST_*) and is HARD-CAPPED to the
+# last SQLI_HISTORY_DAYS days. The centrepiece is plan instability: "same SQL, different plan
+# tomorrow" shows up as a plan_hash_value change with an elapsed/exec jump.
+#
+# Fix policy: the recommended plan + copy-ready SQL is returned to EVERY user (read-only). The
+# in-app "apply" is admin-only AND behind SQLI_ALLOW_APPLY, and (like kill-session) must run on
+# a separate privileged/audited connection — never the read-only monitor.
 
-    NOTE: this is a lot of version/edition-specific V$/DBA SQL — it's wired to the exact panel
-    contract (keys/columns) the UI expects, but verify the view/column names against your Oracle
-    version. Each panel is built inside its own try/except so one bad query degrades that panel
-    to `available:false` instead of failing the whole deep-dive."""
-    sid, serial = int(q.sid), int(q.serial)
+_WAIT_CLASS_SEV = {"Application": "crit", "Concurrency": "crit", "User I/O": "warn",
+                   "System I/O": "warn", "Cluster": "warn", "Commit": "ok", "CPU": "ok",
+                   "Scheduler": "warn", "Configuration": "warn", "Idle": "muted"}
 
-    facts = _run(t, """
-        SELECT s.sid, s.serial# AS serial, s.username, s.status, s.machine, s.program,
-               s.sql_id, NVL(s.event, 'ON CPU') AS event, s.last_call_et AS secs,
-               s.osuser, s.module, TO_CHAR(s.logon_time, 'DD-Mon HH24:MI') AS logon_time
-          FROM v$session s WHERE s.sid = :sid AND s.serial# = :serial
-    """, {"sid": sid, "serial": serial})
-    f = facts[0] if facts else {}
-    status = (f.get("status") or "ACTIVE").upper()
-    sql_id = q.sql_id or (f.get("sql_id") if f.get("sql_id") not in (None, "—") else None)
-    session = {
-        "sid": sid, "serial": serial, "session": f"{sid},{serial}",
-        "username": f.get("username") or "—", "status": status,
-        "machine": f.get("machine") or "—", "program": f.get("program") or "—",
-        "logon_time": f.get("logon_time") or "—", "sql_id": sql_id or "—",
-        "osuser": f.get("osuser") or "—", "module": f.get("module") or "—",
-        "last_call": _fmt_dur(f.get("secs")),
+
+class SqlFinderQuery(BaseModel):
+    q: str | None = None          # optional text/sql_id/module filter
+    order: str = "elapsed"        # elapsed | execs | reads | last
+
+
+class PhvBody(BaseModel):
+    plan_hash_value: int
+
+
+class SqlFixApply(BaseModel):
+    sql_id: str
+    plan_hash_value: int
+    method: str = "baseline"      # baseline | profile
+
+
+_SQLI_FINDER_COLS = [
+    {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
+    {"key": "sql_text", "label": "SQL text", "type": "clob"},
+    {"key": "module", "label": "Module", "type": "text"},
+    {"key": "plans", "label": "Plans", "type": "num"},
+    {"key": "execs", "label": "Execs", "type": "num"},
+    {"key": "elapsed_per_exec_s", "label": "Elapsed/exec (s)", "type": "num", "warn": 1, "crit": 5},
+    {"key": "last_active", "label": "Last active", "type": "text"},
+    {"key": "flip", "label": "Plans", "type": "chip"},
+]
+_SQLI_PLANS_COLS = [
+    {"key": "plan_hash_value", "label": "Plan hash", "type": "mono"},
+    {"key": "source", "label": "Source", "type": "text"},
+    {"key": "first_seen", "label": "First seen", "type": "text"},
+    {"key": "last_seen", "label": "Last seen", "type": "text"},
+    {"key": "execs", "label": "Execs", "type": "num"},
+    {"key": "elapsed_per_exec_s", "label": "Elapsed/exec (s)", "type": "num", "warn": 1, "crit": 5},
+    {"key": "buffer_gets_per_exec", "label": "Gets/exec", "type": "num"},
+    {"key": "status", "label": "Status", "type": "chip"},
+]
+_SQLI_PERF_COLS = [
+    {"key": "snap", "label": "Snap window", "type": "text"},
+    {"key": "plan_hash_value", "label": "Plan hash", "type": "mono"},
+    {"key": "execs", "label": "Execs", "type": "num"},
+    {"key": "elapsed_per_exec_s", "label": "Elapsed/exec (s)", "type": "num", "warn": 1, "crit": 5},
+    {"key": "cpu_per_exec_s", "label": "CPU/exec (s)", "type": "num"},
+    {"key": "buffer_gets_per_exec", "label": "Gets/exec", "type": "num"},
+    {"key": "disk_reads_per_exec", "label": "Reads/exec", "type": "num"},
+    {"key": "rows_per_exec", "label": "Rows/exec", "type": "num"},
+]
+_SQLI_ASH_COLS = [
+    {"key": "event", "label": "Event", "type": "mono"},
+    {"key": "wait_class", "label": "Wait class", "type": "chip"},
+    {"key": "samples", "label": "Samples", "type": "num"},
+    {"key": "pct", "label": "% of activity", "type": "pct"},
+]
+_SQLI_BINDS_COLS = [
+    {"key": "captured", "label": "Captured", "type": "text"},
+    {"key": "name", "label": "Bind", "type": "mono"},
+    {"key": "position", "label": "Pos", "type": "num"},
+    {"key": "datatype", "label": "Datatype", "type": "text"},
+    {"key": "value", "label": "Value", "type": "mono"},
+    {"key": "plan_hash_value", "label": "Plan hash", "type": "mono"},
+]
+
+
+def _sqli_analyse(aggs: list[dict]) -> dict:
+    """From per-plan aggregates decide best plan, current plan, whether the plan flipped, and a
+    plain-language verdict. Shared by real + dummy so the story is identical. Each agg needs:
+    plan_hash_value, execs, elapsed_per_exec_s, last_seen_ts (sortable)."""
+    usable = [p for p in aggs if (p.get("execs") or 0) > 0 and p.get("elapsed_per_exec_s") is not None]
+    if not usable:
+        return {"best_phv": None, "current_phv": None, "flip": False,
+                "verdict": {"sev": "ok", "headline": "No execution history",
+                            "detail": f"No AWR rows for this SQL_ID in the last {SQLI_HISTORY_DAYS} days."}}
+    best = min(usable, key=lambda p: p["elapsed_per_exec_s"])
+    current = max(usable, key=lambda p: p.get("last_seen_ts", 0))
+    flip = len({p["plan_hash_value"] for p in usable}) > 1
+    best_e = best["elapsed_per_exec_s"] or 0.0
+    cur_e = current["elapsed_per_exec_s"] or 0.0
+    ratio = (cur_e / best_e) if best_e else 1.0
+    if flip and current["plan_hash_value"] != best["plan_hash_value"] and ratio >= 2:
+        verdict = {"sev": "crit" if ratio >= 5 else "warn",
+                   "headline": f"Plan regression — current plan is {ratio:.1f}× slower than the best seen",
+                   "detail": (f"Best plan {best['plan_hash_value']} ran {best_e:.2f}s/exec; the current plan "
+                              f"{current['plan_hash_value']} runs {cur_e:.2f}s/exec. Pinning the best plan "
+                              f"stabilises it.")}
+    elif flip:
+        verdict = {"sev": "warn", "headline": "Multiple plans in use",
+                   "detail": (f"{len({p['plan_hash_value'] for p in usable})} distinct plans in the last "
+                              f"{SQLI_HISTORY_DAYS} days; currently running on the best (or near-best) plan.")}
+    else:
+        verdict = {"sev": "ok", "headline": "Stable single plan",
+                   "detail": f"One plan in the last {SQLI_HISTORY_DAYS} days, steady at {best_e:.2f}s/exec."}
+    return {"best_phv": best["plan_hash_value"], "current_phv": current["plan_hash_value"],
+            "flip": flip, "verdict": verdict}
+
+
+def _sqli_overview_payload(sql_id: str, sql_text: str, meta: dict, aggs: list[dict]) -> dict:
+    a = _sqli_analyse(aggs)
+    usable = [p for p in aggs if (p.get("execs") or 0) > 0]
+    best_e = min((p["elapsed_per_exec_s"] for p in usable), default=0.0)
+    cur = next((p for p in aggs if p["plan_hash_value"] == a["current_phv"]), None)
+    cur_e = cur["elapsed_per_exec_s"] if cur else 0.0
+    kpis = [
+        {"label": "Distinct plans", "value": len({p["plan_hash_value"] for p in aggs}),
+         "sev": "warn" if a["flip"] else "ok"},
+        {"label": f"Executions · {SQLI_HISTORY_DAYS}d", "value": sum(p["execs"] for p in aggs)},
+        {"label": "Best elapsed/exec", "value": f"{best_e:.2f}s", "sev": "ok"},
+        {"label": "Current elapsed/exec", "value": f"{cur_e:.2f}s", "sev": a["verdict"]["sev"]},
+    ]
+    return {"status": "success",
+            "identity": {"sql_id": sql_id, "sql_text": (sql_text or "").strip() or "(SQL text not in AWR)",
+                         "schema": meta.get("schema") or "—", "module": meta.get("module") or "—",
+                         "first_seen": meta.get("first_seen") or "—", "last_seen": meta.get("last_seen") or "—",
+                         "executions": int(meta.get("execs") or sum(p["execs"] for p in aggs))},
+            "verdict": a["verdict"], "best_phv": a["best_phv"], "current_phv": a["current_phv"], "kpis": kpis}
+
+
+def _sqli_plans_payload(aggs: list[dict], mgmt: dict) -> dict:
+    a = _sqli_analyse(aggs)
+    baseline_phvs = set(mgmt.get("baseline_phvs") or [])
+    rows = []
+    for p in sorted(aggs, key=lambda x: x.get("last_seen_ts", 0), reverse=True):
+        phv = p["plan_hash_value"]
+        if phv == a["best_phv"]:
+            status, sev = "BEST", "ok"
+        elif a["flip"] and phv == a["current_phv"] and phv != a["best_phv"]:
+            status, sev = "CURRENT ⚠", "crit"
+        else:
+            status, sev = "—", "muted"
+        if phv in baseline_phvs:
+            status = "BASELINE" if status == "—" else status + " · BASELINE"
+        rows.append({"plan_hash_value": phv, "source": p.get("source", "AWR"),
+                     "first_seen": p.get("first_seen") or "—", "last_seen": p.get("last_seen") or "—",
+                     "execs": p["execs"], "elapsed_per_exec_s": p["elapsed_per_exec_s"],
+                     "buffer_gets_per_exec": p.get("buffer_gets_per_exec", 0),
+                     "status": status, "status__sev": sev,
+                     "__phv": phv, "__best": phv == a["best_phv"]})
+    return {"status": "success", "columns": _SQLI_PLANS_COLS, "rows": rows,
+            "summary": {"best_phv": a["best_phv"], "current_phv": a["current_phv"], "flip": a["flip"]}}
+
+
+def _sqli_timeline_payload(pts: list[dict], aggs: list[dict]) -> dict:
+    a = _sqli_analyse(aggs)
+    order: dict[int, int] = {}
+    for p in pts:
+        order.setdefault(p["plan_hash_value"], len(order))
+    plans = [{"plan_hash_value": phv, "idx": i, "best": phv == a["best_phv"]} for phv, i in order.items()]
+    flip = None
+    for i in range(1, len(pts)):
+        if pts[i]["plan_hash_value"] != pts[i - 1]["plan_hash_value"]:
+            flip = {"label": pts[i]["label"], "from_phv": pts[i - 1]["plan_hash_value"],
+                    "to_phv": pts[i]["plan_hash_value"]}
+            break
+    return {"status": "success", "points": pts, "plans": plans, "flip": flip,
+            "verdict": a["verdict"], "best_phv": a["best_phv"], "current_phv": a["current_phv"]}
+
+
+def _sqli_fix_scripts(sql_id: str, best_phv, days: int) -> list[dict]:
+    """Copy-ready SQL shown to everyone. Version-specific — treat as a validated starting point."""
+    return [
+        {"key": "baseline",
+         "label": f"Pin plan {best_phv} as a SQL Plan Baseline (from AWR)",
+         "sql": (f"-- Load plan {best_phv} for {sql_id} from AWR as an ACCEPTED, FIXED baseline.\n"
+                 f"-- Run as a privileged user; validate in non-prod first.\n"
+                 f"DECLARE n PLS_INTEGER;\nBEGIN\n"
+                 f"  n := DBMS_SPM.LOAD_PLANS_FROM_AWR(\n"
+                 f"         begin_snap   => (SELECT MIN(snap_id) FROM dba_hist_snapshot\n"
+                 f"                           WHERE begin_interval_time >= SYSTIMESTAMP - INTERVAL '{days}' DAY),\n"
+                 f"         end_snap     => (SELECT MAX(snap_id) FROM dba_hist_snapshot),\n"
+                 f"         basic_filter => q'[sql_id = '{sql_id}' AND plan_hash_value = {best_phv}]');\n"
+                 f"  DBMS_OUTPUT.PUT_LINE('Plans loaded: '||n);\nEND;\n/")},
+        {"key": "advisor",
+         "label": "Run SQL Tuning Advisor (Tuning Pack) for recommendations",
+         "sql": (f"-- Creates + runs a tuning task, then prints the report.\n"
+                 f"DECLARE tname VARCHAR2(64);\nBEGIN\n"
+                 f"  tname := DBMS_SQLTUNE.CREATE_TUNING_TASK(sql_id => '{sql_id}', task_name => 'sqli_{sql_id}');\n"
+                 f"  DBMS_SQLTUNE.EXECUTE_TUNING_TASK('sqli_{sql_id}');\nEND;\n/\n"
+                 f"SET LONG 1000000 LONGCHUNKSIZE 1000000 PAGESIZE 0 LINESIZE 200\n"
+                 f"SELECT DBMS_SQLTUNE.REPORT_TUNING_TASK('sqli_{sql_id}') AS recommendations FROM dual;")},
+    ]
+
+
+def _sqli_fix_payload(sql_id: str, analysis: dict, exists: dict, advisor: dict) -> dict:
+    best = analysis.get("best_phv")
+    return {
+        "status": "success",
+        "recommended": {"plan_hash_value": best, "sev": analysis["verdict"]["sev"],
+                        "rationale": analysis["verdict"]["detail"]},
+        "verdict": analysis["verdict"],
+        "exists": exists,                       # {baseline, profile, detail}
+        "scripts": _sqli_fix_scripts(sql_id, best, SQLI_HISTORY_DAYS),
+        "advisor": advisor,                     # {available, note, findings?}
+        "allow_apply": SQLI_ALLOW_APPLY,        # admin-only apply button visible?
+        "warning": ("Applying a fix changes the optimizer's plan choice for this SQL. It runs on a "
+                    "separate privileged, audited connection. Validate the chosen plan in non-prod first."),
     }
 
-    def _safe(build, fallback):
-        try:
-            return build()
-        except Exception as exc:  # one panel's SQL failing shouldn't kill the drawer
-            logger.warning("session-detail panel failed (%s): %s", getattr(fallback, "get", lambda k: "?")("key"), exc)
-            return fallback
 
-    waits_cols = [{"key": "event", "label": "Wait event", "type": "mono"},
-                  {"key": "wait_class", "label": "Class", "type": "chip"},
-                  {"key": "time_waited_s", "label": "Time waited (s)", "type": "num"},
-                  {"key": "waits", "label": "Waits", "type": "num"},
-                  {"key": "avg_ms", "label": "Avg (ms)", "type": "num"}]
-    binds_cols = [{"key": "name", "label": "Bind", "type": "mono"},
-                  {"key": "pos", "label": "Pos", "type": "num"},
-                  {"key": "datatype", "label": "Datatype", "type": "text"},
-                  {"key": "value", "label": "Peeked value", "type": "mono"}]
-    ash_cols = [{"key": "sample_time", "label": "Sample", "type": "text"},
-                {"key": "session_state", "label": "State", "type": "chip"},
-                {"key": "event", "label": "Event", "type": "text"},
-                {"key": "wait_class", "label": "Wait class", "type": "text"},
-                {"key": "sql_id", "label": "SQL_ID", "type": "mono"}]
-    stats_cols = [{"key": "object", "label": "Object", "type": "mono"},
-                  {"key": "num_rows", "label": "Rows", "type": "num"},
-                  {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
-                  {"key": "state", "label": "Stats", "type": "chip"}]
-    locks_cols = [{"key": "type", "label": "Lock", "type": "text"},
-                  {"key": "mode_held", "label": "Mode held", "type": "text"},
-                  {"key": "object", "label": "Object", "type": "mono"},
-                  {"key": "state", "label": "State", "type": "chip"}]
-    awr_cols = [{"key": "snap", "label": "Snap window", "type": "text"},
-                {"key": "elapsed_s", "label": "Elapsed (s)", "type": "num"},
-                {"key": "cpu_s", "label": "CPU (s)", "type": "num"},
-                {"key": "buffer_gets", "label": "Buffer gets", "type": "num"},
-                {"key": "executions", "label": "Execs", "type": "num"}]
-    _WAIT_SEV = {"Application": "crit", "Concurrency": "crit", "User I/O": "warn", "System I/O": "warn",
-                 "Cluster": "warn", "Commit": "ok", "CPU": "ok", "Idle": "muted"}
-
-    def plan_panel():
-        if not sql_id:
-            return _panel_text("plan", "Execution Plan", "", available=False)
-        out = _run(t, "SELECT plan_table_output FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(:sql_id, NULL, 'ALLSTATS LAST +PEEKED_BINDS'))",
-                   {"sql_id": sql_id})
-        text = "\n".join(str(r.get("plan_table_output") or "") for r in out)
-        return _panel_text("plan", "Execution Plan", text or "(no plan in the cursor cache for this SQL_ID)")
-
-    def waits_panel():
-        rows = []
-        for r in _run(t, "SELECT event, wait_class, time_waited, total_waits, average_wait FROM v$session_event WHERE sid = :sid ORDER BY time_waited DESC",
-                      {"sid": sid}):
-            wc = r.get("wait_class") or "—"
-            row = {"event": r["event"], "wait_class": wc, "wait_class__sev": _WAIT_SEV.get(wc, "muted"),
-                   "time_waited_s": round((r.get("time_waited") or 0) / 100, 1),
-                   "waits": int(r.get("total_waits") or 0), "avg_ms": round((r.get("average_wait") or 0) * 10, 1)}
-            if _WAIT_SEV.get(wc) in ("crit", "warn"):
-                row["__sev"] = _WAIT_SEV[wc]
-            rows.append(row)
-        return _panel_table("waits", "Wait Events", waits_cols, rows)
-
-    def binds_panel():
-        if not sql_id:
-            return _panel_table("binds", "Bind Variables", binds_cols, [], available=False)
-        rows = [{"name": r.get("name"), "pos": r.get("position"), "datatype": r.get("datatype_string") or "",
-                 "value": str(r.get("value_string") or "")}
-                for r in _run(t, "SELECT name, position, datatype_string, value_string FROM v$sql_bind_capture WHERE sql_id = :sql_id ORDER BY position",
-                              {"sql_id": sql_id})]
-        return _panel_table("binds", "Bind Variables", binds_cols, rows)
-
-    def ash_panel():
-        rows = [{"sample_time": r.get("sample_time"), "session_state": r.get("session_state"),
-                 "session_state__sev": "ok" if r.get("session_state") == "ON CPU" else "warn",
-                 "event": r.get("event") or "—", "wait_class": r.get("wait_class") or "CPU", "sql_id": r.get("sql_id") or "—"}
-                for r in _run(t, """
-                    SELECT TO_CHAR(sample_time,'HH24:MI:SS') AS sample_time, session_state, event, wait_class, sql_id
-                      FROM v$active_session_history
-                     WHERE session_id = :sid AND sample_time > SYSDATE - INTERVAL '10' MINUTE
-                     ORDER BY sample_time DESC FETCH FIRST 50 ROWS ONLY
-                """, {"sid": sid})]
-        return _panel_table("ash", "Active Session History", ash_cols, rows)
-
-    def monitor_panel():
-        out = _run(t, "SELECT DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>:sid, type=>'TEXT') AS report FROM dual", {"sid": sid})
-        return _panel_text("monitor", "SQL Monitor", (str(out[0].get("report")) if out else "") or "(no active SQL Monitor report)")
-
-    def stats_panel():
-        rows = [{"object": r["table_name"], "num_rows": r.get("num_rows"), "last_analyzed": r.get("last_analyzed") or "—",
-                 "state": "STALE" if r.get("stale_stats") == "YES" else "FRESH",
-                 "state__sev": "warn" if r.get("stale_stats") == "YES" else "ok"}
-                for r in _run(t, """
-                    SELECT table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
-                      FROM dba_tab_statistics
-                     WHERE owner = :owner AND object_type = 'TABLE'
-                       AND table_name IN (SELECT object_name FROM v$sql_plan
-                                           WHERE sql_id = :sql_id AND object_owner = :owner AND object_type LIKE 'TABLE%')
-                """, {"owner": OCC_SCHEMA, "sql_id": sql_id or ""})]
-        return _panel_table("stats", "Object Statistics", stats_cols, rows)
-
-    def locks_panel():
-        rows = []
-        for r in _run(t, """
-            SELECT DECODE(l.type,'TX','TX (Row)','TM','TM (DML)',l.type) AS type,
-                   DECODE(l.lmode,6,'Exclusive (X)',5,'Row-X (SSX)',4,'Share (S)',3,'Row-X (RX)',2,'Row-S (RS)',TO_CHAR(l.lmode)) AS mode_held,
-                   (SELECT o.owner||'.'||o.object_name FROM v$locked_object lo JOIN dba_objects o ON o.object_id = lo.object_id
-                     WHERE lo.session_id = l.sid AND ROWNUM = 1) AS object,
-                   CASE WHEN l.block = 1 THEN 'BLOCKING' ELSE 'HELD' END AS state
-              FROM v$lock l WHERE l.sid = :sid AND l.type IN ('TX','TM') AND l.lmode > 0
-        """, {"sid": sid}):
-            st = r["state"]
-            rows.append({"type": r["type"], "mode_held": r["mode_held"], "object": r.get("object") or "—",
-                         "state": st, "state__sev": "crit" if st == "BLOCKING" else "ok"})
-        return _panel_table("locks", "Locks Held", locks_cols, rows)
-
-    def awr_panel():
-        if not sql_id:
-            return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, [], available=False)
-        rows = [{"snap": r.get("snap"), "elapsed_s": round((r.get("elapsed_time") or 0) / 1e6, 1),
-                 "cpu_s": round((r.get("cpu_time") or 0) / 1e6, 1), "buffer_gets": int(r.get("buffer_gets") or 0),
-                 "executions": int(r.get("executions_delta") or 0)}
-                for r in _run(t, """
-                    SELECT TO_CHAR(s.begin_interval_time,'DD-Mon HH24:MI') AS snap,
-                           st.elapsed_time_delta AS elapsed_time, st.cpu_time_delta AS cpu_time,
-                           st.buffer_gets_delta AS buffer_gets, st.executions_delta
-                      FROM dba_hist_sqlstat st JOIN dba_hist_snapshot s ON s.snap_id = st.snap_id
-                     WHERE st.sql_id = :sql_id ORDER BY s.begin_interval_time DESC FETCH FIRST 8 ROWS ONLY
-                """, {"sql_id": sql_id})]
-        return _panel_table("awr", "AWR (DBA_HIST)", awr_cols, rows)
-
-    def rollback_panel():
-        rb = _run(t, """
-            SELECT NVL(ROUND(sofar * 100 / NULLIF(totalwork, 0)), 0) AS pct
-              FROM v$session_longops
-             WHERE sid = :sid AND opname = 'Transaction Rollback' AND sofar < totalwork
-             ORDER BY start_time DESC FETCH FIRST 1 ROWS ONLY
-        """, {"sid": sid})
-        return _panel_rollback(int(rb[0]["pct"]) if rb else 0)
-
-    panels = []
-    if status == "KILLED":
-        panels.append(_safe(rollback_panel, _panel_rollback(0)))
-    panels += [
-        _safe(plan_panel, _panel_text("plan", "Execution Plan", "", available=False)),
-        _safe(waits_panel, _panel_table("waits", "Wait Events", waits_cols, [], available=False)),
-        _safe(binds_panel, _panel_table("binds", "Bind Variables", binds_cols, [], available=False)),
-        _safe(ash_panel, _panel_table("ash", "Active Session History", ash_cols, [], available=False)),
-        _safe(monitor_panel, _panel_text("monitor", "SQL Monitor", "", available=False)),
-        _safe(stats_panel, _panel_table("stats", "Object Statistics", stats_cols, [], available=False)),
-        _safe(locks_panel, _panel_table("locks", "Locks Held", locks_cols, [], available=False)),
-        _safe(awr_panel, _panel_table("awr", "AWR (DBA_HIST)", awr_cols, [], available=False)),
-    ]
-    if q.panel:  # per-tab refresh → just the requested panel
-        panels = [p for p in panels if p["key"] == q.panel]
-    return {"status": "success", "session": session, "panels": panels}
+_PLAN_COLS = [
+    {"key": "id", "label": "Id", "type": "num"},
+    {"key": "operation", "label": "Operation", "type": "mono"},
+    {"key": "object", "label": "Object", "type": "mono"},
+    {"key": "e_rows", "label": "E-Rows", "type": "num"},
+    {"key": "a_rows", "label": "A-Rows", "type": "num"},
+    {"key": "estimate", "label": "Est. accuracy", "type": "chip"},
+    {"key": "time_pct", "label": "Time %", "type": "pct", "warn": 25, "crit": 50},
+    {"key": "dominant", "label": "Spent on", "type": "chip"},
+]
+# ASH activity bucket → chip severity (CPU is fine; I/O amber; contention red).
+_ACT_SEV = {"CPU": "ok", "User I/O": "warn", "System I/O": "warn", "Cluster": "warn",
+            "Concurrency": "crit", "Application": "crit", "Commit": "ok", "Configuration": "warn",
+            "Scheduler": "warn", "Other": "muted"}
+_PLAN_STATS_COLS = [
+    {"key": "object", "label": "Table", "type": "mono"},
+    {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
+    {"key": "age_days", "label": "Age (days)", "type": "num"},
+    {"key": "num_rows", "label": "Stats say (rows)", "type": "num"},
+    {"key": "actual_rows", "label": "Actual (A-Rows)", "type": "num"},
+    {"key": "state", "label": "Stats", "type": "chip"},
+]
+# Flag a plan line only when the volume matters AND the estimate is badly off.
+_MISEST_MIN_ROWS = env_int("SQLI_MISESTIMATE_MIN_ROWS", 1000)
+_MISEST_WARN = env_int("SQLI_MISESTIMATE_WARN", 10)
+_MISEST_CRIT = env_int("SQLI_MISESTIMATE_CRIT", 100)
+_STATS_STALE_DAYS = env_int("SQLI_STATS_STALE_DAYS", 7)
 
 
-# --- DB access boundary -------------------------------------------------------
-#
-# `_run` is the ONE place that touches the DB. Every *_real above is just "SQL + shape the
-# dicts", because `_run` returns rows as **dicts keyed by lowercased column name** — so the
-# mapping is by name (robust to column order), e.g. row["used_pct"], not row[5].
-#
-# The connection comes from what your `connect_db(scope)` stored in app.state.db_configs;
-# app.py wires it once via `set_db_configs(app.state.db_configs)` so the (t)-only *_real
-# functions can reach it without threading `request` everywhere.
-
-_DB_CONFIGS: dict[str, Any] = {}
+def _fmt_ratio(ratio: float) -> str:
+    if ratio >= 1:
+        return f"{int(round(ratio)):,}×"
+    return f"{ratio:.2f}×"
 
 
-def set_db_configs(cfgs: dict[str, Any] | None) -> None:
-    """Register the per-scope connections so `_run` can resolve one by `t.connection`.
-    Call once from app.py after building app.state.db_configs."""
-    global _DB_CONFIGS
-    _DB_CONFIGS = cfgs or {}
+def _sqli_plan_analysis_payload(raw: dict) -> dict:
+    """Shape the runtime plan (V$SQL_PLAN_STATISTICS_ALL) + table stats into the Plan-Analysis
+    contract: a per-line plan with the estimate-accuracy chip + a self-time bar (the biggest bar =
+    the bottleneck), and a stats-health table correlating each table's staleness with actual rows.
+    Shared by the live route + the dummy so both render identically."""
+    plan_raw = raw.get("plan") or []
+    stats_raw = raw.get("stats") or []
+    has_actual = any(r.get("a_rows") is not None for r in plan_raw)
+
+    root = next((r for r in plan_raw if int(r.get("id") or 0) == 0), None)
+    total_us = float(root.get("elapsed_us") or 0) if root else 0.0
+
+    # self-time per line = own elapsed − sum(direct children elapsed) → isolates the true hotspot.
+    child_us: dict = {}
+    for r in plan_raw:
+        pid = r.get("parent_id")
+        if pid is not None:
+            child_us[pid] = child_us.get(pid, 0.0) + float(r.get("elapsed_us") or 0)
+    self_us = {r.get("id"): max(float(r.get("elapsed_us") or 0) - child_us.get(r.get("id"), 0.0), 0.0)
+               for r in plan_raw}
+    bottleneck_id = (max(self_us, key=self_us.get) if self_us and has_actual and total_us > 0 else None)
+
+    # Per-line ASH activity → which line spent the resource, and on what (CPU vs a wait class).
+    act_rows = raw.get("activity") or []
+    act_total = sum(int(a.get("samples") or 0) for a in act_rows) or 0
+    line_samples: dict = {}
+    line_buckets: dict = {}
+    for a in act_rows:
+        lid = a.get("line_id")
+        s = int(a.get("samples") or 0)
+        line_samples[lid] = line_samples.get(lid, 0) + s
+        line_buckets.setdefault(lid, {})[a.get("bucket")] = line_buckets.get(lid, {}).get(a.get("bucket"), 0) + s
+    line_dominant = {lid: max(b, key=b.get) for lid, b in line_buckets.items() if b}
+    # If rowsource stats are missing, fall back to ASH sample share for the Time % bar.
+    if not (has_actual and total_us > 0) and act_total > 0 and not bottleneck_id:
+        bottleneck_id = max(line_samples, key=line_samples.get) if line_samples else None
+
+    rows = []
+    actual_by_obj: dict = {}
+    for r in plan_raw:
+        rid = r.get("id")
+        e = float(r.get("e_rows") or 0)
+        starts = int(r.get("starts") or 1) or 1
+        est_total = e * starts                       # E-Rows is per-start; A-Rows is the total
+        a = r.get("a_rows")
+        op = ("  " * int(r.get("depth") or 0)) + " ".join(x for x in (r.get("operation"), r.get("options")) if x)
+        obj = (f'{r.get("object_owner")}.{r.get("object_name")}'
+               if r.get("object_owner") and r.get("object_name") else "—")
+        if r.get("object_owner") and r.get("object_name") and a is not None:
+            key = (r["object_owner"], r["object_name"])
+            actual_by_obj[key] = max(actual_by_obj.get(key, 0), int(a))
+        if has_actual and total_us > 0:
+            time_pct = round(self_us.get(rid, 0.0) / total_us * 100, 1)
+        elif act_total > 0:                          # no rowsource stats → use ASH sample share
+            time_pct = round(line_samples.get(rid, 0) / act_total * 100, 1)
+        else:
+            time_pct = 0.0
+        dom = line_dominant.get(rid)
+        row = {"id": rid, "operation": op or "—", "object": obj, "e_rows": int(e),
+               "a_rows": (int(a) if a is not None else None), "time_pct": time_pct,
+               "dominant": dom or "—", "dominant__sev": (_ACT_SEV.get(dom, "muted") if dom else "muted")}
+        if a is None:
+            row["estimate"], row["estimate__sev"] = "N/A", "muted"
+        else:
+            ratio = (a / est_total) if est_total > 0 else float(a or 1)
+            off = max(ratio, (1 / ratio) if ratio > 0 else 1)
+            if a >= _MISEST_MIN_ROWS and off >= _MISEST_CRIT:
+                row["estimate"], row["estimate__sev"] = _fmt_ratio(ratio), "crit"
+            elif a >= _MISEST_MIN_ROWS and off >= _MISEST_WARN:
+                row["estimate"], row["estimate__sev"] = _fmt_ratio(ratio), "warn"
+            else:
+                row["estimate"], row["estimate__sev"] = "OK", "ok"
+        if rid == bottleneck_id:
+            row["operation"] = "🔥 " + row["operation"]
+            row["__sev"] = "crit"
+        elif row.get("estimate__sev") in ("warn", "crit"):
+            row["__sev"] = row["estimate__sev"]
+        rows.append(row)
+
+    srows = []
+    for s in stats_raw:
+        owner, name = s.get("owner"), s.get("table_name")
+        age = int(s.get("age_days") or 0)
+        stale = (s.get("stale_stats") == "YES") or age > _STATS_STALE_DAYS
+        srows.append({"object": f"{owner}.{name}", "last_analyzed": s.get("last_analyzed") or "—",
+                      "age_days": age, "num_rows": int(s.get("num_rows") or 0),
+                      "actual_rows": actual_by_obj.get((owner, name)),
+                      "state": "STALE" if stale else "FRESH", "state__sev": "warn" if stale else "ok",
+                      "__sev": "warn" if stale else ""})
+
+    summary = {
+        "e_rows": int(root.get("e_rows") or 0) if root else 0,
+        "cost": int(root.get("cost") or 0) if root else 0,
+        "a_rows": (int(root.get("a_rows")) if root and root.get("a_rows") is not None else None),
+        "elapsed_s": round(total_us / 1e6, 2) if total_us else None,
+        "buffer_gets": int(root.get("buffer_gets") or 0) if root else 0,
+        "disk_reads": int(root.get("disk_reads") or 0) if root else 0,
+    }
+    note = None if has_actual else (
+        "Row-source statistics weren't collected for this cursor, so A-Rows / timings aren't "
+        "available (only the optimizer's estimates). Re-run the statement with a "
+        "/*+ gather_plan_statistics */ hint (or statistics_level=ALL in a test session) to capture "
+        "actuals — or use the Plan Timeline tab for the regression.")
+    diagnosis = _plan_diagnosis(plan_raw, self_us, total_us, bottleneck_id, has_actual, srows, line_dominant)
+    return {"status": "success", "has_actual": has_actual, "note": note,
+            "plan_hash_value": (root.get("plan_hash_value") if root else None),
+            "summary": summary, "diagnosis": diagnosis,
+            "plan": {"status": "success", "columns": _PLAN_COLS, "rows": rows},
+            "stats": {"status": "success", "columns": _PLAN_STATS_COLS, "rows": srows}}
 
 
-def _run(t: OracleTarget, sql: str, binds: dict | None = None) -> list[dict]:
-    """Execute read-only `sql` on the target's monitoring connection; return rows as a list
-    of dicts keyed by lowercased column name. Binds are a dict for named binds (``:owner``).
+def _plan_diagnosis(plan_raw: list[dict], self_us: dict, total_us: float,
+                    bottleneck_id, has_actual: bool, srows: list[dict],
+                    line_dominant: dict | None = None) -> dict:
+    """Plain-language findings for the plan: the bottleneck line (self-time + I/O), the worst
+    cardinality mis-estimate (and whether its table's stats are stale), and a cautious index hint
+    from the bottleneck's predicates. Reliable facts only — the authoritative index recommendation
+    is deferred to SQL Tuning Advisor (Fix tab)."""
+    findings: list[str] = []
+    sev = "ok"
+    by_id = {r.get("id"): r for r in plan_raw}
 
-    Assumes a python-oracledb / cx_Oracle style connection object in db_configs[t.connection]
-    (both share this cursor API). If your `connect_db` returns a *config* instead of a live
-    connection, open it here instead.
-    """
-    conn = _DB_CONFIGS.get(t.connection)
-    if conn is None:
-        raise RuntimeError(
-            f"No live connection for scope '{t.connection}'. Check load_db_configs()/connect_db "
-            "in app.py (and that set_db_configs ran), or keep ORACLE_CC_USE_DUMMY=1."
-        )
-    cur = conn.cursor()
+    if has_actual and total_us > 0 and bottleneck_id is not None:
+        b = by_id.get(bottleneck_id, {})
+        op = " ".join(x for x in (b.get("operation"), b.get("options")) if x)
+        obj = (f'{b.get("object_owner")}.{b.get("object_name")}'
+               if b.get("object_owner") and b.get("object_name") else None)
+        pct = round(self_us.get(bottleneck_id, 0.0) / total_us * 100)
+        dom = (line_dominant or {}).get(bottleneck_id)
+        spent = f" — mostly {dom}" if dom else ""
+        findings.append(f"{op}{(' on ' + obj) if obj else ''} (Id {bottleneck_id}) is the bottleneck — "
+                        f"{round(self_us.get(bottleneck_id, 0.0) / 1e6, 1)}s of {round(total_us / 1e6, 1)}s ({pct}%){spent}.")
+        reads, gets = int(b.get("disk_reads") or 0), int(b.get("buffer_gets") or 0)
+        if reads or gets:
+            findings.append(f"{reads:,} physical reads / {gets:,} buffer gets on Id {bottleneck_id}.")
+        sev = "crit" if pct >= 50 else "warn"
+
+    # worst cardinality mis-estimate — only on real object-access lines (a table/index scan is
+    # actionable; SELECT STATEMENT / joins just inherit the skew, so don't attribute it there).
+    worst, worst_off = None, 0.0
+    for r in plan_raw:
+        a = r.get("a_rows")
+        if a is None or int(a) < _MISEST_MIN_ROWS:
+            continue
+        if not (r.get("object_owner") and r.get("object_name")):
+            continue
+        e = float(r.get("e_rows") or 0) * (int(r.get("starts") or 1) or 1)
+        ratio = (int(a) / e) if e > 0 else float(a)
+        off = max(ratio, (1 / ratio) if ratio > 0 else 1)
+        if off > worst_off and off >= _MISEST_WARN:
+            worst, worst_off = r, off
+    if worst:
+        wop = " ".join(x for x in (worst.get("operation"), worst.get("options")) if x)
+        findings.append(f"Cardinality mis-estimate: E-Rows={int(float(worst.get('e_rows') or 0)):,} vs "
+                        f"A-Rows={int(worst.get('a_rows')):,} on {wop} (Id {worst.get('id')}) — {_fmt_ratio(worst_off)} off.")
+        sev = "crit"
+        wobj = f'{worst.get("object_owner")}.{worst.get("object_name")}'
+        stale = next((s for s in srows if s["object"] == wobj and s["state"] == "STALE"), None)
+        if stale:
+            actual = stale.get("actual_rows")
+            findings.append(f"{wobj} statistics are stale (analyzed {stale['age_days']}d ago; stats say "
+                            f"{stale['num_rows']:,} rows"
+                            + (f", actual {int(actual):,}" if actual is not None else "")
+                            + ") — re-gather them and re-check.")
+
+    hint = None
+    if has_actual and bottleneck_id is not None:
+        b = by_id.get(bottleneck_id, {})
+        if "FULL" in ((b.get("options") or "") + (b.get("operation") or "")):
+            pred = (b.get("filter_predicates") or b.get("access_predicates") or "").strip()
+            if pred:
+                hint = (f"Id {bottleneck_id} is a full scan filtered on {pred[:200]} — an index on those columns "
+                        f"may turn it into a range scan. Confirm with SQL Tuning Advisor (Fix tab) before creating it.")
+
+    return {"sev": sev, "findings": findings, "hint": hint}
+
+
+def _sql_monitor_payload(raw: dict) -> dict:
+    """Shape the (live-only) SQL Monitor result. `monitored:false` → a clear message that it needs
+    a running / recently-completed run; else the overview tiles + the full text report."""
+    if not raw or not raw.get("monitored"):
+        return {"status": "success", "monitored": False,
+                "note": ("This SQL isn't currently being monitored. Real-time SQL Monitoring captures a "
+                         "run only while it executes (or briefly after), and only for statements that ran "
+                         "in parallel or for ≥5 seconds — so it can't show a past/aged-out execution. Use "
+                         "the Plan Analysis or Plan Timeline tabs for the historical view.")}
+    ov = raw.get("overview") or {}
+    return {"status": "success", "monitored": True,
+            "overview": {"status": ov.get("status"), "elapsed_s": ov.get("elapsed_s"), "cpu_s": ov.get("cpu_s"),
+                         "buffer_gets": int(ov.get("buffer_gets") or 0), "disk_reads": int(ov.get("disk_reads") or 0),
+                         "px": int(ov.get("px") or 0), "started": ov.get("started")},
+            "report": raw.get("report") or "(report unavailable)"}
+
+
+# --- routes ------------------------------------------------------------------
+
+@router.post("/{db}/sql_finder")
+def sql_finder(request: Request, db: str, body: SqlFinderQuery | None = None) -> dict:
+    """Locate a sql_id when you only know 'the slow report yesterday' — top SQL by elapsed /
+    execs / reads over the last SQLI_HISTORY_DAYS days. Each row is click-through to the dossier."""
+    t = _target(db)
+    body = body or SqlFinderQuery()
+    if SQLI_USE_DUMMY:
+        return sqli_finder_dummy(t, body)
     try:
-        cur.execute(sql, binds or {})
-        if cur.description is None:
-            return []
-        cols = [d[0].lower() for d in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-    finally:
-        cur.close()
+        days = int(SQLI_HISTORY_DAYS)
+        like = f"%{body.q.strip()}%" if body.q and body.q.strip() else None
+        rows = []
+        for r in database.fetch_sql_finder(request.app.state.db_configs.get(db), days, body.order, like):
+            plans = int(r.get("plans") or 0)
+            rows.append({"sql_id": r["sql_id"], "sql_text": (r.get("sql_text") or "").strip() or "—",
+                         "module": r.get("module") or "—", "plans": plans, "execs": int(r.get("execs") or 0),
+                         "elapsed_per_exec_s": float(r.get("elapsed_per_exec_s") or 0),
+                         "last_active": r.get("last_active") or "—",
+                         "flip": "MULTI" if plans > 1 else "SINGLE", "flip__sev": "warn" if plans > 1 else "ok",
+                         "__sql_id": r["sql_id"]})
+        return {"status": "success", "columns": _SQLI_FINDER_COLS, "rows": rows,
+                "summary": {"days": days, "count": len(rows)}}
+    except Exception:
+        logger.exception("sql_finder failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/overview")
+def sqli_overview(request: Request, db: str, sql_id: str) -> dict:
+    """Identity + verdict + KPIs for a sql_id. Massages `database.fetch_sql_overview`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_overview_dummy(t, sql_id)
+    try:
+        raw = database.fetch_sql_overview(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))
+        return _sqli_overview_payload(sql_id, raw.get("text") or "", raw.get("meta") or {},
+                                      _sqli_norm_aggs(raw.get("aggs") or []))
+    except Exception:
+        logger.exception("sqli_overview failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/plan_timeline")
+def sqli_plan_timeline(request: Request, db: str, sql_id: str) -> dict:
+    """Plan-instability timeline. Massages `database.fetch_sql_timeline`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_timeline_dummy(t, sql_id)
+    try:
+        raw = database.fetch_sql_timeline(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))
+        pts = [{"label": r["label"], "ts": int(r.get("ts") or 0), "plan_hash_value": int(r["phv"]),
+                "elapsed_per_exec_s": float(r.get("elapsed_pe") or 0), "execs": int(r.get("execs") or 0)}
+               for r in raw.get("points") or []]
+        return _sqli_timeline_payload(pts, _sqli_norm_aggs(raw.get("aggs") or []))
+    except Exception:
+        logger.exception("sqli_plan_timeline failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/plans")
+def sqli_plans(request: Request, db: str, sql_id: str) -> dict:
+    """Distinct plans + baseline/profile presence. Massages `database.fetch_sql_plans`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_plans_dummy(t, sql_id)
+    try:
+        raw = database.fetch_sql_plans(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))
+        return _sqli_plans_payload(_sqli_norm_aggs(raw.get("aggs") or []), _sqli_norm_mgmt(raw.get("mgmt") or []))
+    except Exception:
+        logger.exception("sqli_plans failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/plan_analysis")
+def sqli_plan_analysis(request: Request, db: str, sql_id: str) -> dict:
+    """Runtime plan with the bottleneck (self-time bar) + E-Rows vs A-Rows misestimate flag,
+    correlated with the stale-stats status of each table. Live-cache only. Massages
+    `database.fetch_sql_plan_analysis`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_plan_analysis_dummy(t, sql_id)
+    try:
+        return _sqli_plan_analysis_payload(database.fetch_sql_plan_analysis(request.app.state.db_configs.get(db), sql_id))
+    except Exception:
+        logger.exception("sqli_plan_analysis failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/sql_monitor")
+def sqli_monitor(request: Request, db: str, sql_id: str) -> dict:
+    """Real-time SQL Monitor for the sql_id — LIVE/recent only. `monitored:false` (with a message)
+    when there's no running/recent monitored execution. Massages `database.fetch_sql_monitor`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_monitor_dummy(t, sql_id)
+    try:
+        return _sql_monitor_payload(database.fetch_sql_monitor(request.app.state.db_configs.get(db), sql_id))
+    except Exception:
+        logger.exception("sqli_monitor failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/plan_text")
+def sqli_plan_text(request: Request, db: str, sql_id: str, body: PhvBody) -> dict:
+    """One plan's DBMS_XPLAN text. Massages `database.fetch_sql_plan_text`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_plan_text_dummy(t, sql_id, body.plan_hash_value)
+    try:
+        text = database.fetch_sql_plan_text(request.app.state.db_configs.get(db), sql_id, int(body.plan_hash_value))
+        return {"status": "success", "plan_hash_value": int(body.plan_hash_value), "source": "AWR",
+                "text": text or "(plan not found in AWR or the cursor cache)"}
+    except Exception:
+        logger.exception("sqli_plan_text failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/perf")
+def sqli_perf(request: Request, db: str, sql_id: str) -> dict:
+    """Per-snapshot performance table. Massages `database.fetch_sql_perf`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_perf_dummy(t, sql_id)
+    try:
+        rows = [{"snap": r["snap"], "plan_hash_value": int(r.get("phv") or 0), "execs": int(r.get("execs") or 0),
+                 "elapsed_per_exec_s": float(r.get("elapsed_pe") or 0), "cpu_per_exec_s": float(r.get("cpu_pe") or 0),
+                 "buffer_gets_per_exec": int(r.get("gets_pe") or 0), "disk_reads_per_exec": int(r.get("reads_pe") or 0),
+                 "rows_per_exec": int(r.get("rows_pe") or 0)}
+                for r in database.fetch_sql_perf(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))]
+        return {"status": "success", "columns": _SQLI_PERF_COLS, "rows": rows}
+    except Exception:
+        logger.exception("sqli_perf failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/ash")
+def sqli_ash(request: Request, db: str, sql_id: str) -> dict:
+    """ASH breakdown (top waits). Massages `database.fetch_sql_ash`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_ash_dummy(t, sql_id)
+    try:
+        raw = database.fetch_sql_ash(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))
+        total = sum(int(r.get("samples") or 0) for r in raw) or 1
+        rows = [{"event": r["event"], "wait_class": r["wait_class"],
+                 "wait_class__sev": _WAIT_CLASS_SEV.get(r["wait_class"], "muted"),
+                 "samples": int(r.get("samples") or 0),
+                 "pct": round(int(r.get("samples") or 0) / total * 100, 1)} for r in raw]
+        return {"status": "success", "columns": _SQLI_ASH_COLS, "rows": rows}
+    except Exception:
+        logger.exception("sqli_ash failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/binds")
+def sqli_binds(request: Request, db: str, sql_id: str) -> dict:
+    """Captured bind variables. Massages `database.fetch_sql_binds`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_binds_dummy(t, sql_id)
+    try:
+        rows = [{"captured": r.get("captured") or "—", "name": r.get("name"), "position": r.get("position"),
+                 "datatype": r.get("datatype_string") or "", "value": str(r.get("value_string") or ""),
+                 "plan_hash_value": int(r.get("phv") or 0)}
+                for r in database.fetch_sql_binds(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))]
+        return {"status": "success", "columns": _SQLI_BINDS_COLS, "rows": rows}
+    except Exception:
+        logger.exception("sqli_binds failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/fix")
+def sqli_fix(request: Request, db: str, sql_id: str) -> dict:
+    """Read-only fix recommendation: best plan + copy-ready SQL + advisor pointer. Shown to ALL
+    section users. The actual apply is a separate, gated endpoint. Massages `database.fetch_sql_fix`."""
+    t = _target(db)
+    if SQLI_USE_DUMMY:
+        return sqli_fix_dummy(t, sql_id)
+    try:
+        raw = database.fetch_sql_fix(request.app.state.db_configs.get(db), sql_id, int(SQLI_HISTORY_DAYS))
+        mgmt = _sqli_norm_mgmt(raw.get("mgmt") or [])
+        advisor = {"available": True,
+                   "note": "Run the SQL Tuning Advisor script below for optimizer recommendations (it creates a tuning task).",
+                   "findings": []}
+        return _sqli_fix_payload(sql_id, _sqli_analyse(_sqli_norm_aggs(raw.get("aggs") or [])),
+                                 {"baseline": mgmt["baseline"], "profile": mgmt["profile"], "detail": mgmt["detail"]},
+                                 advisor)
+    except Exception:
+        logger.exception("sqli_fix failed for %s / %s", db, sql_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{db}/sql/{sql_id}/apply_fix")
+def sqli_apply_fix(db: str, sql_id: str, body: SqlFixApply) -> dict:
+    """WRITE. Admin-gated in the UI and disable-able server-side via SQLI_ALLOW_APPLY. Must run on
+    a SEPARATE privileged/audited connection (like kill-session) — never the read-only monitor."""
+    t = _target(db)
+    if not SQLI_ALLOW_APPLY:
+        raise HTTPException(status_code=403,
+                            detail="In-app fix apply is disabled (SQLI_ALLOW_APPLY=0). Copy the SQL and apply it via your DBA process.")
+    if SQLI_USE_DUMMY:
+        return sqli_apply_fix_dummy(t, body)
+    raise RuntimeError("sqli_apply_fix: wire a privileged (audited) connection for DBMS_SPM/DBMS_SQLTUNE — not the read-only monitor")
+
+
+# --- shaping helpers shared by the SQL-Intelligence routes + the dummy module -----
+
+def _sqli_norm_aggs(rows: list[dict]) -> list[dict]:
+    """Normalise `database` per-plan agg rows into the shape `_sqli_analyse` / the payloads expect."""
+    return [{"plan_hash_value": int(r["phv"]), "execs": int(r.get("execs") or 0),
+             "elapsed_per_exec_s": float(r.get("elapsed_pe") or 0), "buffer_gets_per_exec": int(r.get("gets_pe") or 0),
+             "first_seen": r.get("first_seen"), "last_seen": r.get("last_seen"),
+             "last_seen_ts": int(r.get("last_ts") or 0), "source": "AWR"} for r in rows]
+
+
+def _sqli_norm_mgmt(rows: list[dict]) -> dict:
+    """Baseline/profile presence from the raw v$sql rows (keyed by sql_id via the cursor cache)."""
+    baseline = any(r.get("sql_plan_baseline") for r in rows)
+    profile = any(r.get("sql_profile") for r in rows)
+    detail = []
+    if baseline:
+        detail.append("A SQL Plan Baseline is attached (seen in the cursor cache).")
+    if profile:
+        detail.append("A SQL Profile is attached.")
+    if not detail:
+        detail.append("No baseline or profile detected for this SQL_ID in the cursor cache.")
+    return {"baseline": baseline, "profile": profile, "baseline_phvs": [], "detail": " ".join(detail)}
+
+
+# --- Two-layer split ----------------------------------------------------------
+#
+# **All SQL lives in `database.py`** (the data layer). Each route above is ONE self-contained
+# function: dummy-check → `database.fetch_*(request.app.state.db_configs.get(db), …)` → massage the
+# raw rows into the UI contract. No separate `*_real` layer. The small shaping helpers
+# (`_lock_row`, `_blk_row`, `_sess_row`, `_panel_*`, `_sqli_*_payload`, …) are shared with the dummy
+# module so both the live and dummy paths return the identical shape.
 
 
 # ---------------------------------------------------------------------------
@@ -1107,4 +1606,16 @@ from oracle_cc_dummy import (  # noqa: E402
     blocking_dummy,
     sessions_dummy,
     session_detail_dummy,
+    sqli_finder_dummy,
+    sqli_overview_dummy,
+    sqli_timeline_dummy,
+    sqli_plans_dummy,
+    sqli_plan_analysis_dummy,
+    sqli_monitor_dummy,
+    sqli_plan_text_dummy,
+    sqli_perf_dummy,
+    sqli_ash_dummy,
+    sqli_binds_dummy,
+    sqli_fix_dummy,
+    sqli_apply_fix_dummy,
 )

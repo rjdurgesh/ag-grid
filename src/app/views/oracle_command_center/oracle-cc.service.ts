@@ -4,7 +4,10 @@ import { map } from 'rxjs/operators';
 
 import { ApiDataService } from '../../shared/api-data.service';
 import { API } from '../../shared/api-endpoints';
-import { DynTable, OracleOverview, OracleTarget, SessionDetail, SessionFilter, SpaceSummary } from '../../shared/oracle-models';
+import {
+  DynTable, OracleOverview, OracleTarget, SessionDetail, SessionFilter, SpaceSummary,
+  SqlApplyResult, SqlFix, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
+} from '../../shared/oracle-models';
 
 /**
  * Data access for the Oracle Command Center. DB tabs are fetched from the backend
@@ -77,6 +80,65 @@ export class OracleCcService {
   /** Kill a session (admin + confirm gated in the UI). Returns `{ success, message }`. */
   killSession(db: string, sid: number, serial: number, immediate = true): Observable<KillResult> {
     return this.api.post<KillResult>(API.oracle.killSession(db), { sid, serial, immediate });
+  }
+
+  // --- Section 8 · SQL Intelligence (all keyed by sql_id; 5-day window) ------
+
+  /** Locate a sql_id — top SQL over the window (optional text/module filter + order). */
+  sqlFinder(db: string, q?: string, order = 'elapsed'): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.sqlFinder(db), { q: q ?? null, order });
+  }
+
+  /** Identity + verdict + KPIs for a sql_id. */
+  sqlOverview(db: string, sqlId: string): Observable<SqlOverview> {
+    return this.api.post<SqlOverview>(API.oracle.sqlOverview(db, sqlId), {});
+  }
+
+  /** Plan-instability timeline (per-snapshot plan_hash + elapsed/exec). */
+  sqlPlanTimeline(db: string, sqlId: string): Observable<SqlTimeline> {
+    return this.api.post<SqlTimeline>(API.oracle.sqlPlanTimeline(db, sqlId), {});
+  }
+
+  /** Distinct plans this sql_id used (drives the diff selector). */
+  sqlPlans(db: string, sqlId: string): Observable<DynTable<SqlPlansSummary>> {
+    return this.api.post<DynTable<SqlPlansSummary>>(API.oracle.sqlPlans(db, sqlId), {});
+  }
+
+  /** Runtime plan — bottleneck + E/A-Rows misestimate + table stats health (live cursor). */
+  sqlPlanAnalysis(db: string, sqlId: string): Observable<SqlPlanAnalysis> {
+    return this.api.post<SqlPlanAnalysis>(API.oracle.sqlPlanAnalysis(db, sqlId), {});
+  }
+
+  /** One plan's DBMS_XPLAN text (call twice for a side-by-side diff). */
+  sqlPlanText(db: string, sqlId: string, planHashValue: number): Observable<SqlPlanText> {
+    return this.api.post<SqlPlanText>(API.oracle.sqlPlanText(db, sqlId), { plan_hash_value: planHashValue });
+  }
+
+  /** Per-snapshot performance table. */
+  sqlPerf(db: string, sqlId: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.sqlPerf(db, sqlId), {});
+  }
+
+  /** ASH breakdown (top waits) for the sql_id. */
+  sqlAsh(db: string, sqlId: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.sqlAsh(db, sqlId), {});
+  }
+
+  /** Captured bind variables. */
+  sqlBinds(db: string, sqlId: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.sqlBinds(db, sqlId), {});
+  }
+
+  /** Read-only fix recommendation (best plan + copy-ready SQL). Shown to all users. */
+  sqlFix(db: string, sqlId: string): Observable<SqlFix> {
+    return this.api.post<SqlFix>(API.oracle.sqlFix(db, sqlId), {});
+  }
+
+  /** WRITE — apply the fix (admin + confirm; server also gates on SQLI_ALLOW_APPLY). */
+  sqlApplyFix(db: string, sqlId: string, planHashValue: number, method = 'baseline'): Observable<SqlApplyResult> {
+    return this.api.post<SqlApplyResult>(API.oracle.sqlApplyFix(db, sqlId), {
+      sql_id: sqlId, plan_hash_value: planHashValue, method
+    });
   }
 }
 

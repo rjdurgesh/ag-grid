@@ -20,7 +20,7 @@
         <option [value]="m" [selected]="refreshEveryMin() === m">Refresh Every {{ m }} Minutes</option>
       }
     </select>
-    <button type="button" class="occ__icon-btn" title="Refresh all" aria-label="Refresh all" (click)="refreshAll()">
+    <button type="button" class="occ__icon-btn" [class.is-spin]="anyLoading()" title="Refresh all" aria-label="Refresh all" (click)="refreshAll()">
       <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
   </header>
@@ -67,7 +67,8 @@
         <span class="occ-panel__ic">▤</span>
         <h2 class="occ-panel__title">Database Storage</h2>
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('space')) { <span class="occ-hstamp">{{ stampAbs('space') }} · {{ stampRel('space') }}</span> }
+        @if (sectionLoading('space')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('space')) { <span class="occ-hstamp">{{ stampAbs('space') }} · {{ stampRel('space') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="spaceLoading()" title="Refresh section" (click)="loadSpace(); $event.stopPropagation()">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -95,9 +96,9 @@
                   <text x="60" y="74" class="occ-gauge__cap">USED</text>
                 </svg>
                 <div class="occ-tiles">
-                  <div class="occ-tile"><span class="occ-tile__l">Total (GB)</span><span class="occ-tile__v">{{ fmtNum(s.total_gb) }}</span></div>
-                  <div class="occ-tile"><span class="occ-tile__l">Used (GB)</span><span [class]="'occ-tile__v occ-tile__v--' + gaugeSev(s.used_pct)">{{ fmtNum(s.used_gb) }}</span></div>
-                  <div class="occ-tile"><span class="occ-tile__l">Free (GB)</span><span class="occ-tile__v">{{ fmtNum(s.free_gb) }}</span></div>
+                  <div class="occ-tile"><span class="occ-tile__l">Total Alloc (GB)</span><span class="occ-tile__v">{{ fmtNum(s.total_gb) }}</span></div>
+                  <div class="occ-tile"><span class="occ-tile__l">Used Alloc (GB)</span><span [class]="'occ-tile__v occ-tile__v--' + gaugeSev(s.used_pct)">{{ fmtNum(s.used_gb) }}</span></div>
+                  <div class="occ-tile"><span class="occ-tile__l">Free Alloc (GB)</span><span class="occ-tile__v">{{ fmtNum(s.free_gb) }}</span></div>
                 </div>
               </div>
 
@@ -125,7 +126,8 @@
         <span class="occ-panel__ic">◱</span>
         <h2 class="occ-panel__title">Top Table Storage Consumers</h2>
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('top')) { <span class="occ-hstamp">{{ stampAbs('top') }} · {{ stampRel('top') }}</span> }
+        @if (sectionLoading('top')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('top')) { <span class="occ-hstamp">{{ stampAbs('top') }} · {{ stampRel('top') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="topSegLoading()" title="Refresh section" (click)="loadTopSegments(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('top')" (click)="toggle('top')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -149,7 +151,8 @@
         <span class="occ-panel__ic">⌸</span>
         <h2 class="occ-panel__title">Top Index Storage Consumers</h2>
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('topidx')) { <span class="occ-hstamp">{{ stampAbs('topidx') }} · {{ stampRel('topidx') }}</span> }
+        @if (sectionLoading('topidx')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('topidx')) { <span class="occ-hstamp">{{ stampAbs('topidx') }} · {{ stampRel('topidx') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="topIdxLoading()" title="Refresh section" (click)="loadTopIndexes(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('topidx')" (click)="toggle('topidx')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -167,7 +170,8 @@
         <span class="occ-panel__ic">⚕</span>
         <h2 class="occ-panel__title">Index Health &amp; Stability</h2>
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('idxhealth')) { <span class="occ-hstamp">{{ stampAbs('idxhealth') }} · {{ stampRel('idxhealth') }}</span> }
+        @if (sectionLoading('idxhealth')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('idxhealth')) { <span class="occ-hstamp">{{ stampAbs('idxhealth') }} · {{ stampRel('idxhealth') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="idxHealthLoading()" title="Refresh section" (click)="loadIndexHealth(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('idxhealth')" (click)="toggle('idxhealth')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -195,7 +199,8 @@
           @if ($any(s).waiting) { <span class="occ-badge occ-badge--warn">{{ $any(s).waiting }} waiting</span> }
         }
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('locks')) { <span class="occ-hstamp">{{ stampAbs('locks') }} · {{ stampRel('locks') }}</span> }
+        @if (sectionLoading('locks')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('locks')) { <span class="occ-hstamp">{{ stampAbs('locks') }} · {{ stampRel('locks') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="locksLoading()" title="Refresh section" (click)="loadLocks(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('locks')" (click)="toggle('locks')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -205,7 +210,8 @@
           @else if (locksError()) { <div class="occ-empty occ-empty--err">Couldn't read locks. Try refresh.</div> }
           @else if (locks(); as d) {
             @if (d.rows.length) {
-              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
+              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)"
+                [linkColumns]="['sql_id']" (cellClick)="onSqlCell($event)" />
               <p class="occ-note"><b>Note:</b> a <b>BLOCKING</b> session is holding a lock others are stuck behind — that's the one to act on. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No TX/TM locks are being held right now. ✓</div> }
           }
@@ -225,7 +231,8 @@
           @if ($any(s).waiters) { <span class="occ-badge occ-badge--warn">{{ $any(s).waiters }} waiting</span> }
         }
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('blocking')) { <span class="occ-hstamp">{{ stampAbs('blocking') }} · {{ stampRel('blocking') }}</span> }
+        @if (sectionLoading('blocking')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('blocking')) { <span class="occ-hstamp">{{ stampAbs('blocking') }} · {{ stampRel('blocking') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="blockingLoading()" title="Refresh section" (click)="loadBlocking(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('blocking')" (click)="toggle('blocking')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -235,8 +242,9 @@
           @else if (blockingError()) { <div class="occ-empty occ-empty--err">Couldn't read blocking sessions. Try refresh.</div> }
           @else if (blocking(); as d) {
             @if (d.rows.length) {
-              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)" />
-              <p class="occ-note"><b>Note:</b> each top row is the <b>root blocker</b>; its children are the sessions waiting on it. @if (canKill()) { <b>Kill the blocker</b> to free the whole chain. } @else { Killing a session requires an admin role. }</p>
+              <app-dyn-table [model]="d" [maxRows]="15" [actions]="canKill() ? killActions : []" (action)="onTableAction($event)"
+                [linkColumns]="['blocker_sql_id', 'victim_sql_id']" (cellClick)="onSqlCell($event)" />
+              <p class="occ-note"><b>Note:</b> each row pairs a <b>blocker</b> with a session it is blocking (the <b>victim</b>). Click a <b>Victim SQL_ID</b> to investigate it. @if (canKill()) { <b>Kill</b> ends the blocker and frees its victim. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No sessions are blocking others right now. ✓</div> }
           }
         </div>
@@ -251,7 +259,8 @@
         <span class="occ-panel__ic">☰</span>
         <h2 class="occ-panel__title">Sessions &amp; performance deep-dive</h2>
         <span class="occ-panel__spacer"></span>
-        @if (hasStamp('sessions')) { <span class="occ-hstamp">{{ stampAbs('sessions') }} · {{ stampRel('sessions') }}</span> }
+        @if (sectionLoading('sessions')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('sessions')) { <span class="occ-hstamp">{{ stampAbs('sessions') }} · {{ stampRel('sessions') }}</span> }
         <button type="button" class="occ-ibtn" [class.is-spin]="sessionsLoading()" title="Refresh section" (click)="loadSessions(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('sessions')" (click)="toggle('sessions')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
@@ -274,9 +283,297 @@
             @if (d.rows.length) {
               <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
                 filterPlaceholder="Filter sessions — SID, user, machine, SQL_ID, event…"
-                [actions]="sessionActions()" (action)="onSessionAction($event)" />
-              <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
+                [actions]="sessionActions()" (action)="onSessionAction($event)"
+                [linkColumns]="['sql_id']" (cellClick)="onSqlCell($event)" />
+              <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. <b>Click a SQL_ID</b> to investigate its plan history in SQL Intelligence. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
             } @else { <div class="occ-empty">No {{ sessionFilter() }} sessions right now.</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 7 : SQL Intelligence ============= -->
+  <div class="occ__row">
+    <section class="occ-panel occ-sqli" [class.is-collapsed]="isCollapsed('sqli')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⌬</span>
+        <h2 class="occ-panel__title">SQL Intelligence</h2>
+        @if (hasSql()) { <span class="occ-badge occ-badge--muted occ-sqli__idbadge">{{ sqlId() }}</span> }
+        <span class="occ-panel__spacer"></span>
+        <button type="button" class="occ-ibtn" [class.is-spin]="sqliLoading()" title="Refresh" aria-label="Refresh" (click)="refreshSqli(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('sqli')" (click)="toggle('sqli')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('sqli')) {
+        <div class="occ-panel__body">
+          <!-- Search: investigate by SQL_ID -->
+          <div class="occ-sqli__search">
+            <div class="occ-sqli__searchrow">
+              <input type="text" class="occ-sqli__input" [value]="sqlIdInput()"
+                (input)="sqlIdInput.set($any($event.target).value)" (keydown.enter)="investigateFromInput()"
+                placeholder="Investigate by SQL_ID — e.g. 7ymz9qk4d3n1a" aria-label="SQL_ID to investigate" />
+              <button type="button" class="occ-sqli__go" [disabled]="!sqlIdInput().trim()" (click)="investigateFromInput()">Investigate</button>
+              @if (hasSql()) { <button type="button" class="occ-sqli__clear" (click)="clearSql()">Clear</button> }
+            </div>
+            <p class="occ-note occ-sqli__hint">Only have a SQL_ID from a finished session? Paste it above. History is capped to the <b>last 5 days</b> (AWR/ASH).</p>
+          </div>
+
+          @if (!hasSql()) {
+            <!-- Finder: locate a SQL_ID -->
+            <div class="occ-sqli__finder">
+              <div class="occ-sqli__finderhead">
+                <span class="occ-sqli__findertitle">Or find it — top SQL in the last 5 days</span>
+                <span class="occ-panel__spacer"></span>
+                <div class="occ-seg occ-seg--sm" role="tablist" aria-label="Order finder by">
+                  @for (o of finderOrders; track o.key) {
+                    <button type="button" class="occ-seg__btn" role="tab" [class.is-active]="finderOrder() === o.key"
+                      [attr.aria-selected]="finderOrder() === o.key" (click)="setFinderOrder(o.key)">{{ o.label }}</button>
+                  }
+                </div>
+              </div>
+              @if (finderLoading() && !finder()) { <app-loader variant="skeleton" [rows]="4" message="Scanning SQL history…" /> }
+              @else if (finderError()) { <div class="occ-empty occ-empty--err">Couldn't scan SQL history. Try refresh.</div> }
+              @else if (finder(); as d) {
+                @if (d.rows.length) {
+                  <app-dyn-table [model]="d" [maxRows]="10" [filterable]="true"
+                    filterPlaceholder="Filter — SQL_ID, text, module…"
+                    [actions]="finderActions" (action)="onFinderAction($event)" [freezeFirst]="false" />
+                  <p class="occ-note"><b>Plans</b> is the count of distinct execution plans used — <b>MULTI</b> flags a plan change in the window (a plan-instability candidate). Click <b>Investigate</b> to open the dossier.</p>
+                } @else { <div class="occ-empty">No SQL activity recorded in the last 5 days.</div> }
+              }
+            </div>
+          } @else {
+            <!-- Dossier for the selected SQL_ID -->
+            @if (sqlOverview(); as ov) {
+              <div [class]="'occ-sqli__verdict occ-sqli__verdict--' + ov.verdict.sev">
+                <span class="occ-sqli__vic" aria-hidden="true">{{ ov.verdict.sev === 'crit' ? '⚠' : ov.verdict.sev === 'warn' ? '▲' : '✓' }}</span>
+                <div><b>{{ ov.verdict.headline }}</b><p>{{ ov.verdict.detail }}</p></div>
+              </div>
+            }
+
+            <div class="occ-seg occ-sqli__tabs" role="tablist" aria-label="SQL Intelligence panels">
+              @for (tb of sqlTabs; track tb.key) {
+                <button type="button" class="occ-seg__btn" role="tab" [class.is-active]="sqlTab() === tb.key"
+                  [attr.aria-selected]="sqlTab() === tb.key" (click)="setSqlTab(tb.key)">{{ tb.label }}</button>
+              }
+            </div>
+
+            @switch (sqlTab()) {
+              @case ('overview') {
+                @if (sqlOverviewLoading() && !sqlOverview()) { <app-loader variant="skeleton" [rows]="4" message="Reading SQL identity…" /> }
+                @else if (sqlOverviewError()) { <div class="occ-empty occ-empty--err">Couldn't load the overview. Try refresh.</div> }
+                @else if (sqlOverview(); as ov) {
+                  <div class="occ-sqli__ov">
+                    <div class="occ-sqli__idcard">
+                      <div class="occ-sqli__idrow"><span class="occ-sqli__k">SQL_ID</span><span class="occ-sqli__mono">{{ ov.identity.sql_id }}</span></div>
+                      <div class="occ-sqli__idrow"><span class="occ-sqli__k">Schema</span><span>{{ ov.identity.schema }}</span></div>
+                      <div class="occ-sqli__idrow"><span class="occ-sqli__k">Module</span><span>{{ ov.identity.module }}</span></div>
+                      <div class="occ-sqli__idrow"><span class="occ-sqli__k">Seen</span><span>{{ ov.identity.first_seen }} → {{ ov.identity.last_seen }}</span></div>
+                      <pre class="occ-pre occ-sqli__sqltext">{{ ov.identity.sql_text }}</pre>
+                    </div>
+                    <div class="occ-sqli__kpis">
+                      @for (k of ov.kpis; track k.label) {
+                        <div [class]="'occ-sqli__kpi occ-sqli__kpi--' + (k.sev || 'ok')">
+                          <span class="occ-sqli__kpil">{{ k.label }}</span>
+                          <span class="occ-sqli__kpiv">{{ k.value }}</span>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                  <p class="occ-note">See <b>Plan Timeline</b> for exactly when the plan changed, and <b>Fix</b> for the plan to pin.</p>
+                }
+              }
+
+              @case ('timeline') {
+                @if (sqlTimelineLoading() && !sqlTimeline()) { <app-loader variant="skeleton" [rows]="4" message="Building the plan timeline…" /> }
+                @else if (sqlTimelineError()) { <div class="occ-empty occ-empty--err">Couldn't build the timeline. Try refresh.</div> }
+                @else if (sqlTimeline(); as tl) {
+                  @if (sqlChart(); as c) {
+                    <div class="occ-sqli__chartwrap">
+                      <svg class="occ-sqli__chart" [attr.viewBox]="'0 0 ' + c.W + ' 190'" preserveAspectRatio="xMidYMid meet"
+                        role="img" aria-label="Elapsed per execution over time, coloured by plan">
+                        @for (tk of c.ticks; track tk.label) {
+                          <line [attr.x1]="c.padL" [attr.y1]="tk.y" [attr.x2]="c.W - 14" [attr.y2]="tk.y" class="occ-sqli__grid" />
+                          <text [attr.x]="c.padL - 6" [attr.y]="tk.y + 3" text-anchor="end" class="occ-sqli__axt">{{ tk.label }}</text>
+                        }
+                        @if (c.flipX !== null) {
+                          <line [attr.x1]="c.flipX" y1="12" [attr.x2]="c.flipX" [attr.y2]="c.baseY" class="occ-sqli__flip" />
+                        }
+                        @for (s of c.segs; track $index) {
+                          <line [attr.x1]="s.x1" [attr.y1]="s.y1" [attr.x2]="s.x2" [attr.y2]="s.y2" [attr.stroke]="s.color" stroke-width="2" stroke-linecap="round" />
+                        }
+                        @for (nd of c.nodes; track $index) {
+                          <circle [attr.cx]="nd.x" [attr.cy]="nd.y" r="3.6" [attr.fill]="nd.color"><title>{{ nd.label }} · {{ nd.val }}s/exec · plan {{ nd.phv }}</title></circle>
+                        }
+                        <text [attr.x]="c.padL" y="186" class="occ-sqli__axt">{{ c.firstLabel }}</text>
+                        <text [attr.x]="c.W - 14" y="186" text-anchor="end" class="occ-sqli__axt">{{ c.lastLabel }}</text>
+                      </svg>
+                      <div class="occ-sqli__legend">
+                        <span><i class="occ-sqli__sw" style="background:#22c55e"></i> Best plan {{ tl.best_phv }}</span>
+                        @if (tl.flip) { <span><i class="occ-sqli__sw" style="background:#ef4444"></i> Current plan {{ tl.current_phv }}</span> }
+                        <span class="occ-sqli__axt">y-axis = elapsed sec / execution</span>
+                      </div>
+                      @if (tl.flip; as fl) {
+                        <p class="occ-note occ-sqli__flipnote"><b>Plan flip on {{ fl.label }}:</b> {{ fl.from_phv }} → {{ fl.to_phv }}. That's the moment "it ran fine yesterday" turned into today's problem.</p>
+                      } @else { <p class="occ-note">A single plan across the window — no plan instability detected. ✓</p> }
+                    </div>
+                  } @else { <div class="occ-empty">No execution history to chart in the last 5 days.</div> }
+                }
+              }
+
+              @case ('plans') {
+                @if (sqlPlansLoading() && !sqlPlans()) { <app-loader variant="skeleton" [rows]="3" message="Reading plans…" /> }
+                @else if (sqlPlansError()) { <div class="occ-empty occ-empty--err">Couldn't read plans. Try refresh.</div> }
+                @else if (sqlPlans(); as d) {
+                  @if (d.rows.length) {
+                    <app-dyn-table [model]="$any(d)" [freezeFirst]="false" />
+                    <div class="occ-sqli__diff">
+                      <span class="occ-sqli__difftitle">Side-by-side plan diff — pick the fast plan vs the slow one</span>
+                      <div class="occ-sqli__diffcols">
+                        <div class="occ-sqli__diffcol">
+                          <label class="occ-sqli__difflbl">Plan A
+                            <select class="occ-sqli__sel" (change)="onDiff('A', +$any($event.target).value)">
+                              @for (phv of planPhvs(); track phv) { <option [value]="phv" [selected]="phv === diffA()">{{ phv }}</option> }
+                            </select>
+                          </label>
+                          @if (planTextALoading()) { <app-loader variant="spinner" message="Loading plan…" /> }
+                          @else if (planTextA(); as pt) { <pre class="occ-pre">{{ pt.text }}</pre> }
+                        </div>
+                        <div class="occ-sqli__diffcol">
+                          <label class="occ-sqli__difflbl">Plan B
+                            <select class="occ-sqli__sel" (change)="onDiff('B', +$any($event.target).value)">
+                              @for (phv of planPhvs(); track phv) { <option [value]="phv" [selected]="phv === diffB()">{{ phv }}</option> }
+                            </select>
+                          </label>
+                          @if (planTextBLoading()) { <app-loader variant="spinner" message="Loading plan…" /> }
+                          @else if (planTextB(); as pt) { <pre class="occ-pre">{{ pt.text }}</pre> }
+                        </div>
+                      </div>
+                    </div>
+                  } @else { <div class="occ-empty">No plans recorded for this SQL_ID in the last 5 days.</div> }
+                }
+              }
+
+              @case ('plan_analysis') {
+                @if (sqlPlanAnalysisLoading() && !sqlPlanAnalysis()) { <app-loader variant="skeleton" [rows]="5" message="Reading the runtime plan…" /> }
+                @else if (sqlPlanAnalysisError()) { <div class="occ-empty occ-empty--err">Couldn't read the runtime plan. Try refresh.</div> }
+                @else if (sqlPlanAnalysis(); as pa) {
+                  @if (pa.plan.rows.length) {
+                    <!-- Optimizer estimate vs reality -->
+                    <div class="occ-pa__cmp">
+                      <div class="occ-pa__side">
+                        <span class="occ-pa__sidehd">Optimizer estimated</span>
+                        <div class="occ-pa__kv"><span>Rows</span><b>{{ fmtNum(pa.summary.e_rows) }}</b></div>
+                        <div class="occ-pa__kv"><span>Cost</span><b>{{ fmtNum(pa.summary.cost) }}</b></div>
+                      </div>
+                      <div class="occ-pa__arrow" aria-hidden="true">→</div>
+                      <div class="occ-pa__side occ-pa__side--actual">
+                        <span class="occ-pa__sidehd">Actually ran</span>
+                        <div class="occ-pa__kv"><span>Rows</span><b>{{ pa.summary.a_rows === null ? '—' : fmtNum(pa.summary.a_rows) }}</b></div>
+                        <div class="occ-pa__kv"><span>Elapsed</span><b>{{ pa.summary.elapsed_s === null ? '—' : pa.summary.elapsed_s + 's' }}</b></div>
+                        <div class="occ-pa__kv"><span>Reads</span><b>{{ fmtNum(pa.summary.disk_reads) }}</b></div>
+                      </div>
+                    </div>
+
+                    @if (pa.note) { <p class="occ-note occ-pa__note">{{ pa.note }}</p> }
+
+                    <p class="occ-note">🔥 marks the <b>bottleneck</b> (biggest self-time). The <b>Est. accuracy</b> chip flags where the optimizer's row estimate was badly off — usually a stale-stats table below.</p>
+                    <app-dyn-table [model]="pa.plan" [freezeFirst]="false" />
+
+                    <div class="occ-pa__statshd">Statistics of tables in this plan</div>
+                    @if (pa.stats.rows.length) {
+                      <app-dyn-table [model]="pa.stats" [freezeFirst]="false" />
+                      <p class="occ-note">A big gap between <b>Stats say</b> and <b>Actual</b> on a <b>STALE</b> table is the smoking gun — re-gather its stats, then re-check. (See the <b>Fix</b> tab.)</p>
+                    } @else { <div class="occ-empty">No table statistics found for the plan's objects.</div> }
+                  } @else {
+                    <div class="occ-empty">This SQL_ID isn't in the cursor cache right now, so there's no live runtime plan. Use <b>Plan Timeline</b> / <b>Plans &amp; Diff</b> for the historical (AWR) view.</div>
+                  }
+                }
+              }
+
+              @case ('perf') {
+                @if (sqlPerfLoading() && !sqlPerf()) { <app-loader variant="skeleton" [rows]="4" message="Reading per-snapshot metrics…" /> }
+                @else if (sqlPerfError()) { <div class="occ-empty occ-empty--err">Couldn't read performance. Try refresh.</div> }
+                @else if (sqlPerf(); as d) {
+                  @if (d.rows.length) { <app-dyn-table [model]="d" [maxRows]="15" [freezeFirst]="false" /> }
+                  @else { <div class="occ-empty">No per-snapshot metrics in the last 5 days.</div> }
+                }
+              }
+
+              @case ('ash') {
+                @if (sqlAshLoading() && !sqlAsh()) { <app-loader variant="skeleton" [rows]="3" message="Aggregating ASH…" /> }
+                @else if (sqlAshError()) { <div class="occ-empty occ-empty--err">Couldn't read ASH. Try refresh.</div> }
+                @else if (sqlAsh(); as d) {
+                  @if (d.rows.length) {
+                    <app-dyn-table [model]="d" [maxRows]="12" [freezeFirst]="false" />
+                    <p class="occ-note">Where this SQL spent its time over the window — a jump in <b>User I/O</b> after a plan flip usually means a full scan replaced an index.</p>
+                  } @else { <div class="occ-empty">No ASH samples for this SQL_ID in the last 5 days.</div> }
+                }
+              }
+
+              @case ('binds') {
+                @if (sqlBindsLoading() && !sqlBinds()) { <app-loader variant="skeleton" [rows]="3" message="Reading captured binds…" /> }
+                @else if (sqlBindsError()) { <div class="occ-empty occ-empty--err">Couldn't read binds. Try refresh.</div> }
+                @else if (sqlBinds(); as d) {
+                  @if (d.rows.length) {
+                    <app-dyn-table [model]="d" [maxRows]="12" [freezeFirst]="false" />
+                    <p class="occ-note">Different peeked bind values across plans point to <b>bind-sensitive</b> plans (data skew) — a common cause of "same SQL, different plan".</p>
+                  } @else { <div class="occ-empty">No captured binds for this SQL_ID in the last 5 days.</div> }
+                }
+              }
+
+              @case ('fix') {
+                @if (sqlFixLoading() && !sqlFixData()) { <app-loader variant="skeleton" [rows]="4" message="Preparing the fix plan…" /> }
+                @else if (sqlFixError()) { <div class="occ-empty occ-empty--err">Couldn't prepare the fix. Try refresh.</div> }
+                @else if (sqlFixData(); as fx) {
+                  <div class="occ-sqli__fix">
+                    <div class="occ-sqli__reco">
+                      <div class="occ-sqli__recohd">
+                        <span class="occ-sqli__k">Recommended plan</span>
+                        @if (fx.recommended.plan_hash_value != null) {
+                          <span class="occ-sqli__mono occ-sqli__recophv" [style.color]="phvColor(fx.recommended.plan_hash_value)">{{ fx.recommended.plan_hash_value }}</span>
+                        } @else { <span>—</span> }
+                      </div>
+                      <p>{{ fx.recommended.rationale }}</p>
+                      <p class="occ-sqli__exists">{{ fx.exists.detail }}</p>
+                    </div>
+
+                    @for (sc of fx.scripts; track sc.key) {
+                      <div class="occ-sqli__script">
+                        <div class="occ-sqli__scripthd">
+                          <span>{{ sc.label }}</span>
+                          <span class="occ-panel__spacer"></span>
+                          <button type="button" class="occ-ibtn occ-sqli__copy" (click)="copyScript(sc)">{{ copied() === sc.key ? 'Copied ✓' : 'Copy SQL' }}</button>
+                        </div>
+                        <pre class="occ-pre">{{ sc.sql }}</pre>
+                      </div>
+                    }
+
+                    @if (fx.advisor && fx.advisor.findings && fx.advisor.findings.length) {
+                      <div class="occ-sqli__advisor">
+                        <b>SQL Tuning Advisor</b>
+                        <p class="occ-note">{{ fx.advisor.note }}</p>
+                        <ul>@for (f of fx.advisor.findings; track $index) { <li>{{ f }}</li> }</ul>
+                      </div>
+                    }
+
+                    <div class="occ-sqli__applybar">
+                      <p class="occ-sqli__warn"><b>Heads up:</b> {{ fx.warning }}</p>
+                      @if (fx.allow_apply && canApplyFix()) {
+                        <button type="button" class="occ-kill-btn occ-sqli__apply"
+                          [disabled]="applyingFix() || fx.recommended.plan_hash_value == null" (click)="applyFix()">
+                          {{ applyingFix() ? 'Applying…' : 'Apply fix — pin plan ' + fx.recommended.plan_hash_value }}
+                        </button>
+                      } @else if (!fx.allow_apply) {
+                        <span class="occ-sqli__applyoff">In-app apply is disabled — copy the SQL and apply via your DBA process.</span>
+                      } @else {
+                        <span class="occ-sqli__applyoff">Applying a fix requires an admin role — copy the SQL for your DBA.</span>
+                      }
+                    </div>
+                  </div>
+                }
+              }
+            }
           }
         </div>
       }
@@ -385,7 +682,33 @@
                 @if (rb.note) { <p class="occ-note">{{ rb.note }}</p> }
               </div>
             }
+          } @else if (p.kind === 'resource') {
+            @if (p.resource; as res) {
+              <div class="occ-res__tiles">
+                <div class="occ-res__tile"><span class="occ-res__l">PGA used</span><span class="occ-res__v">{{ res.pga_used_mb === null ? '—' : res.pga_used_mb + ' MB' }}</span></div>
+                <div class="occ-res__tile"><span class="occ-res__l">PGA allocated</span><span class="occ-res__v">{{ res.pga_alloc_mb === null ? '—' : res.pga_alloc_mb + ' MB' }}</span></div>
+                <div class="occ-res__tile"><span class="occ-res__l">PGA peak</span><span class="occ-res__v">{{ res.pga_max_mb === null ? '—' : res.pga_max_mb + ' MB' }}</span></div>
+                <div [class]="'occ-res__tile' + (res.temp_mb ? ' occ-res__tile--warn' : '')"><span class="occ-res__l">Temp (spill)</span><span class="occ-res__v">{{ res.temp_mb === null ? '—' : res.temp_mb + ' MB' }}</span></div>
+              </div>
+              <div class="occ-res__sub">Where the time went (last 10 min, from ASH)</div>
+              @if (res.activity.rows.length) { <app-dyn-table [model]="res.activity" [freezeFirst]="false" /> }
+              @else { <div class="occ-empty">No ASH activity recorded for this session in the last 10 minutes.</div> }
+              @if (res.workareas.rows.length) {
+                <div class="occ-res__sub">Active work areas (sort / hash memory &amp; temp spill)</div>
+                <app-dyn-table [model]="res.workareas" [freezeFirst]="false" />
+                <p class="occ-note"><b>Passes &gt; 0</b> means the work area spilled to temp (one-pass / multi-pass) — a sign it needs more PGA or a lighter plan.</p>
+              }
+            }
           } @else if (p.kind === 'text') {
+            @if (p.diagnosis; as dg) {
+              <div [class]="'occ-diag occ-diag--' + dg.sev">
+                <div class="occ-diag__hd"><span class="occ-diag__ic" aria-hidden="true">{{ dg.sev === 'crit' ? '⚠' : dg.sev === 'warn' ? '▲' : '✓' }}</span>Diagnosis</div>
+                <ul class="occ-diag__list">
+                  @for (f of dg.findings; track $index) { <li>{{ f }}</li> }
+                </ul>
+                @if (dg.hint) { <p class="occ-diag__hint"><b>Hint:</b> {{ dg.hint }}</p> }
+              </div>
+            }
             <pre class="occ-pre">{{ p.text }}</pre>
           } @else if (p.table) {
             <app-dyn-table [model]="p.table" />

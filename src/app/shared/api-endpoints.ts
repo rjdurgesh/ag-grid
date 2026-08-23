@@ -203,6 +203,29 @@ export const API = {
     /** Section 5 — full deep-dive for one SID/SQL_ID. */
     sessionDetail: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/session-detail`,
     /** Kill a session (RBAC admin + confirm). POST `{ sid, serial, immediate }`. */
-    killSession: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/kill-session`
+    killSession: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/kill-session`,
+    // --- Section 8 · SQL Intelligence (investigate a sql_id; 5-day AWR/ASH window) ---
+    /** Find a sql_id (top SQL over the window). POST `{ q?, order? }`. */
+    sqlFinder: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql_finder`,
+    /** Identity + verdict + KPIs for a sql_id. */
+    sqlOverview: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/overview`,
+    /** Plan-instability timeline (per-snapshot plan_hash + elapsed/exec). */
+    sqlPlanTimeline: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plan_timeline`,
+    /** Distinct plans this sql_id used (drives the diff selector). */
+    sqlPlans: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plans`,
+    /** Runtime plan: bottleneck (self-time) + E/A-Rows misestimate + stats health (live cursor). */
+    sqlPlanAnalysis: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plan_analysis`,
+    /** One plan's text. POST `{ plan_hash_value }`. */
+    sqlPlanText: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/plan_text`,
+    /** Per-snapshot performance table. */
+    sqlPerf: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/perf`,
+    /** ASH breakdown (top waits) for the sql_id. */
+    sqlAsh: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/ash`,
+    /** Captured bind variables. */
+    sqlBinds: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/binds`,
+    /** Read-only fix recommendation (best plan + copy-ready SQL). */
+    sqlFix: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/fix`,
+    /** WRITE — apply the fix (admin + confirm; gated by SQLI_ALLOW_APPLY). POST `{ sql_id, plan_hash_value, method }`. */
+    sqlApplyFix: (db: string, sqlId: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sql/${sqlId}/apply_fix`
   }
 } as const;

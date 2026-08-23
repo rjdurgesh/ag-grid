@@ -407,37 +407,88 @@ down DB still gets a tab (grey) and its sections show read errors — the app ne
 |---|---|---|
 | `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **One tab per catalogued DB**; each carries `reachable` (green dot = up, grey = down) computed from `app.state.db_configs` (real: scope has a truthy connection; dummy: always true). A down DB still gets a (grey) tab. `TARGET_META` (in `oracle_cc_api.py`) adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, reachable }` where `key == connection ==` the db_configs scope. |
 | `GET /api/oracle_cc/overview` | — | `{ status, data: OracleOverview[] }` — compact per-DB snapshot (storage %, blocking, active sessions, top segment) powering the **Home 'Oracle Databases' strip**; one call for the whole strip. |
-| `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — owner×tablespace space + gauge `summary` (autoextend-MAXSIZE-aware totals). |
+| `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — per-tablespace space. Gauge `summary` (**Total/Used/Free Alloc (GB)**) is **physical-allocation** based: `total=Σ physical_alloc`, `used=Σ used`, `free=total−used`, `used% = used/physical`. Per-row columns also carry the autoextend view: **Alloc max (GB)** (`Σ DECODE(autoextensible,'NO',bytes,maxbytes)`) and **Total Free (GB)** (`alloc_max − used`). |
 | `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes; partition→subpartition as `__children`. |
 | `POST /api/oracle_cc/{db}/top_indexes` | `{}` | Section 3 — top-5 indexes by allocated bytes (+ partitions). |
 | `POST /api/oracle_cc/{db}/index_health` | `{}` | Section 4 — UNUSABLE / INVISIBLE / STALE-STATS indexes (state chip). |
 | `POST /api/oracle_cc/{db}/locks` | `{}` | Section 5 — TX/TM enqueue locks, `state` BLOCKING/WAITING/HELD; each row killable. `summary:{blocking,waiting,total}`. |
-| `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — blocker→waiter tree (`__children`, chained blocking nests); each node killable. `summary:{chains,waiters}`. |
+| `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — **flat blocker↔victim pairs** (one row per blocking relationship): blocker SID/user/name/machine, object held + type, **blocker SQL_ID + SQL text**, victim SID/user/name, wait event + time, victim SQL_ID + SQL text. Both SQL_IDs are clickable → SQL Intelligence; SQL text uses the `clob` popup. (Blocker SQL_ID is often `—` — a blocker idle "in transaction" has no current statement.) Kill targets the **blocker** (frees the victim). `summary:{chains=distinct blockers, waiters=row count}`. |
 | `POST /api/oracle_cc/{db}/sessions` | `{ status }` (`active`\|`inactive`\|`killed`\|`all`, default `active`) | Section 7 — session inventory filtered by state; each row carries `__actions` (`detail` always, `kill` unless already KILLED). Includes a **`running_for`** column (LAST_CALL_ET formatted; `—` for non-active) so long-running work is explicit instead of colour-coded. Row `__sev` = `crit` for KILLED only (long-running active is shown by the column, not an amber tint). `summary:{active,inactive,killed,total}` (full counts regardless of filter, for the tab badges). |
-| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), or `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`). a panel is `available:false` only if its own query fails (built independently). Panels: rollback (KILLED only), plan (actual `ALLSTATS LAST` — E-Rows vs A-Rows/Buffers/Reads), waits (V$SESSION_EVENT), binds (peeked binds), ash (ASH), monitor (SQL Monitor), stats, locks, awr (DBA_HIST). |
+| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`), or `kind:'resource'` (Resource Profile). a panel is `available:false` only if its own query fails (built independently). Panels: rollback (KILLED only), plan, waits (V$SESSION_EVENT), binds (peeked binds), ash (ASH), **resource**, monitor (SQL Monitor), stats, locks, awr (DBA_HIST). The **plan** panel is the actual `DISPLAY_CURSOR ALLSTATS LAST` text **plus a generated `diagnosis` card** — `{sev, findings[], hint}` built from `V$SQL_PLAN_STATISTICS_ALL` (same engine as SQL Intelligence Plan Analysis): the bottleneck line (self-time + I/O), the worst cardinality mis-estimate on a real access line + whether its table's stats are stale, and a cautious index hint from the bottleneck's predicates (defers the authoritative call to SQL Tuning Advisor). The **resource** panel (`resource:{pga_used/alloc/max_mb, temp_mb, activity, workareas}`) shows the CPU-vs-wait-class activity split (ASH, last 10 min), PGA (V$PROCESS), temp spill (V$TEMPSEG_USAGE) and active sort/hash work areas + spill passes (V$SQL_WORKAREA_ACTIVE). |
 | `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). |
 
+**Section 8 — SQL Intelligence** (investigate a `sql_id` after the session is gone; every historical query is capped to `SQLI_HISTORY_DAYS` = **5 days** of AWR/ASH). Entry points: a `sql_id` search box, the finder (for when you only know "the slow report yesterday"), **and clicking any `SQL_ID` in Sessions / Critical Locks / Blocking** — those cells are links (via the shared DynTable's `[linkColumns]="['sql_id']"` + `(cellClick)` → `onSqlCell`, which expands the section, investigates, and scrolls to it).
+
+| Endpoint | Body | Purpose |
+|---|---|---|
+| `POST /api/oracle_cc/{db}/sql_finder` | `{ q?, order? }` (`order`: `elapsed`\|`execs`\|`reads`\|`last`) | Top SQL over the window (DBA_HIST_SQLSTAT). Rows carry `__actions:['open']`; `flip` chip = MULTI when >1 plan (instability candidate). |
+| `POST /api/oracle_cc/{db}/sql/{sql_id}/overview` | `{}` | `{ identity, verdict:{sev,headline,detail}, best_phv, current_phv, kpis[] }`. Verdict is computed by `_sqli_analyse` (best vs current plan; regression when current ≥2× the best). |
+| `POST …/sql/{sql_id}/plan_timeline` | `{}` | ⭐ Plan-instability chart: `points[]` (per-snapshot plan_hash + elapsed/exec), `plans[]`, `flip:{label,from_phv,to_phv}`. The UI draws a static SVG (reduced-motion safe). |
+| `POST …/sql/{sql_id}/plans` | `{}` | DynTable of distinct plans (BEST / CURRENT ⚠ / BASELINE status chip); `summary:{best_phv,current_phv,flip}` drives the diff selectors. |
+| `POST …/sql/{sql_id}/plan_text` | `{ plan_hash_value }` | One plan's `DBMS_XPLAN.DISPLAY_AWR` text (falls back to `DISPLAY_CURSOR`). Called twice for the side-by-side diff. |
+| `POST …/sql/{sql_id}/plan_analysis` | `{}` | **Bottleneck finder** — the runtime plan from `V$SQL_PLAN_STATISTICS_ALL` (live cursor): `{has_actual, note, summary:{e_rows,cost,a_rows,elapsed_s,buffer_gets,disk_reads}, plan, stats}`. `plan` rows carry an **Est. accuracy** chip (A-Rows vs E-Rows×Starts) + a **Time %** self-time bar (🔥 marks the biggest = the bottleneck); `stats` correlates each table's `last_analyzed`/age/STALE with **stats-rows vs actual A-Rows**. A-Rows need rowsource stats (`statistics_level=ALL` / `gather_plan_statistics`) — `has_actual:false` + `note` when absent. Live-cache only (empty when aged out → use Plan Timeline). |
+| `POST …/sql/{sql_id}/perf` | `{}` | Per-snapshot metric table (elapsed/cpu/gets/reads/rows per exec, by plan). |
+| `POST …/sql/{sql_id}/ash` | `{}` | ASH breakdown — top waits (event/wait_class/samples/% ) from DBA_HIST_ACTIVE_SESS_HISTORY. |
+| `POST …/sql/{sql_id}/binds` | `{}` | Captured binds per plan (DBA_HIST_SQLBIND) — bind-peeking / skew evidence. |
+| `POST …/sql/{sql_id}/fix` | `{}` | **Read-only recommendation, shown to everyone**: `recommended:{plan_hash_value,rationale}`, `exists:{baseline,profile,detail}`, `scripts[]` (copy-ready DBMS_SPM baseline + DBMS_SQLTUNE advisor SQL), `advisor:{note,findings[]}`, `allow_apply` (mirrors `SQLI_ALLOW_APPLY`), `warning`. |
+| `POST …/sql/{sql_id}/apply_fix` | `{ sql_id, plan_hash_value, method? }` | **WRITE.** Admin-gated in the UI (`canApplyFix` = `RbacService.canActTechnical()`) + confirm; server returns **403 when `SQLI_ALLOW_APPLY=0`**. `*_real` is a deliberate stub — must run on a **separate privileged, audited** connection (like kill-session), never the read-only monitor. |
+
 Notes for the real wiring:
-- **Dummy ↔ real switch**: every section has a `*_real` (holds the actual SQL, in `oracle_cc_api.py`)
-  and a `*_dummy` (canned data) — the dummies live in a **separate module `oracle_cc_dummy.py`**
-  (imported at the bottom of `oracle_cc_api.py` once the shared helpers exist) so the router file
-  stays lean; both return the identical shape. Flip `ORACLE_CC_USE_DUMMY=0` once connections exist.
-  Every `*_real` is now **implemented** — it runs its SQL via `_run()` and maps the rows into the
-  same `{status, columns, rows, summary}` contract the dummy returns (reusing the same helpers:
-  `_space_payload`, `_lock_row`, `_blk_node`, `_sess_row`, `_stats_cell`, `_panel_*`). `_run(t, sql,
-  binds)` is the ONE DB touch-point: it executes read-only SQL on `db_configs[t.connection]` and
-  returns rows as **dicts keyed by lowercased column name** (so `*_real` is just "SQL + shape the
-  dicts", mapped by name not position). To go live: (1) `connect_db` puts live connections in
-  `app.state.db_configs`; app.py calls `oracle_cc_api.set_db_configs(...)`; (2) set the app schema
-  via `ORACLE_CC_SCHEMA` (owner for the segment/index queries; default `OLS`); (3) `ORACLE_CC_USE_DUMMY=0`.
+- **Two-layer split (data ↔ API).** **All SQL lives in `backend/database.py`** (the data layer):
+  `connect(db_config)` opens the connection, and one **self-contained `fetch_*` per section** runs
+  the query (or the few queries a section needs, on ONE connection, feeding results forward) and
+  returns **raw rows** as dicts keyed by lowercased column name — no shaping. `oracle_cc_api.py` is
+  the **API layer**: **each route is a single function** — `t = _target(db)` → dummy-check →
+  `database.fetch_*(request.app.state.db_configs.get(db), …)` → **massage** into the
+  `{status, columns, rows, summary}` contract (via `_space_payload`, `_lock_row`, `_blk_row`,
+  `_sess_row`, `_stats_cell`, `_panel_*`, `_sqli_*_payload`), wrapped in `try/except → HTTP 500`.
+  There is **no separate `*_real` layer** — the route does the whole job. No SQL in the API layer;
+  no shaping in the data layer.
+- **Connection resolution**: routes read `request.app.state.db_configs.get(db)` directly (the dict
+  app.py builds in `load_db_configs()`), and hand it to the data layer. `database.connect()` accepts
+  a live connection (passthrough), a `{user,password,dsn}` dict, or a DSN string — **swap its body
+  for your connector if it differs**. Tunables (owner schema, top-N, history days) are passed IN as
+  params so the data layer has no import cycle with the config module. The shaping helpers
+  (`_lock_row`, `_blk_row`, `_sqli_*_payload`, …) are the only things shared between a route and its
+  `*_dummy` — so both paths return the identical shape.
+- **Dummy ↔ real switch**: every section also has a `*_dummy` (canned data) in `oracle_cc_dummy.py`;
+  both return the identical shape. Flip `ORACLE_CC_USE_DUMMY=0` once connections exist. To go live:
+  (1) `connect_db` puts live connections/configs in `app.state.db_configs`; (2) set the app schema
+  via `ORACLE_CC_SCHEMA` (default `OLS`); (3) `ORACLE_CC_USE_DUMMY=0`; (4) `pip install oracledb`.
   The SQL is standard V$/DBA_* but **verify view/column names against your Oracle version**;
-  `session_detail_real` builds each panel in its own try/except so one bad query degrades that panel
-  to `available:false` rather than failing the drawer. (`kill_session_real` stays a stub on purpose —
-  `ALTER SYSTEM KILL SESSION` needs a **separate privileged, audited** connection, never the monitor.)
+  `fetch_session_detail` builds each panel in its own try/except so one bad query degrades that panel
+  to `available:false` rather than failing the drawer. (`kill_session_real` / `sqli_apply_fix_real`
+  stay stubs on purpose — writes need a **separate privileged, audited** connection, never the monitor.)
+- **Locks query** (`database._SQL_LOCKS`) returns the extended set — SID/serial, user, **first
+  name**, **surname**, machine, **object type**, lock type, **lock mode**, **session state**
+  (BLOCKING/WAITING/HELD), held time, SQL id, and **SQL text**. All are shown as columns (firstname/
+  surname are `NULL` placeholders → render `—` until you wire a name lookup). Fixes applied vs the
+  first draft: `l.lmode` (not `l.mode`, reserved), `v$session` (not `v_session`), and `sql_text` via
+  a scalar subquery (a plain `v$sql` join multiplies rows per child cursor).
+- **CLOB columns** (`DynColType 'clob'`): a long-text column (e.g. `sql_text`) renders a ~10-word
+  preview (width-capped with an ellipsis so it can't push under the sticky Actions column) + a
+  clickable `…` that opens a **full-text popup** (with a Copy button) — handled inside
+  `DynTableComponent` (`clobOpen` signal + `.dt-clob-modal`). The popup is **portaled to `<body>`**
+  on open (`openClob` moves the nodes) so no ancestor stacking context (the section row's z-index)
+  can trap it and let a later section paint over it while scrolling; Ivy removes the nodes cleanly
+  on close. Used for `sql_text` in **Critical Locks**, **Blocking** (blocker + victim), and the
+  **SQL Intelligence finder**.
+- **Bind values with the SQL.** Oracle stores placeholders (`:1`, `:2`) in `v$sql.sql_text`, never
+  a value-substituted SQL; the actual values live in `v$sql_bind_capture`. So for Locks + Blocking
+  the data layer aggregates the captured binds (`LISTAGG … ON OVERFLOW TRUNCATE`) and the API
+  appends them under the query (`_append_binds`) — the popup shows the statement **plus** a
+  `-- Bind variables (captured):` block. (SQL Intelligence has its own **Binds** tab.) It's the
+  honest view — captured values, not a reconstructed inline substitution (which can be incomplete).
 - **Tunables live in `backend/.env`** (loaded by `env_loader.py`, no external dep; real env vars
   win; `.env` is gitignored, `.env.example` is the committed template): `ORACLE_CC_USE_DUMMY`,
   `ORACLE_CC_WARN_PCT` / `ORACLE_CC_CRIT_PCT` (gauge thresholds), `ORACLE_CC_TOP_CHILD_LIMIT`
-  (drill-down top-N). The code literals are just fallbacks.
+  (drill-down top-N). SQL Intelligence adds `SQLI_USE_DUMMY` (defaults to the OCC switch),
+  `SQLI_HISTORY_DAYS` (AWR/ASH window, default **5**), and `SQLI_ALLOW_APPLY` (default `1` — show the
+  admin-only in-app "Apply fix" button; set `0` to make SQL Intelligence recommend-only). The
+  Plan-Analysis flags tune with `SQLI_MISESTIMATE_MIN_ROWS` (default 1000 — ignore tiny-volume
+  lines), `SQLI_MISESTIMATE_WARN` / `SQLI_MISESTIMATE_CRIT` (E/A-Rows ratio for amber/red, default
+  10× / 100×), and `SQLI_STATS_STALE_DAYS` (default 7 — flag stats older than this). The code
+  literals are just fallbacks.
 - **Target catalog is built dynamically**: `TARGET_META` (in `oracle_cc_api.py`) holds only the
   per-scope *display* bits (label/sub/instance); `TARGET_CATALOG` is derived from it
   with `key == connection ==` the scope. So the only hardcoded remainder is display metadata.
@@ -778,7 +829,7 @@ backend rather than calling agents straight from the browser.)
 | Auth / SSO | `src/app/auth/*` (`auth.service.ts` facade, `sso-auth.service.ts`, `sso.config.ts`, `auth.guard.ts`, `auth.interceptor.ts`, `sso-callback.component.ts`) |
 | Account menu | `src/app/user_profile/*` (initials avatar + name/email/UID/role + sign out) |
 | Routing / nav | `src/app/app.routes.ts`, `src/app/app.config.ts`, `src/app/layout/default-layout/_nav.ts` |
-| Home (Command Center) | `src/app/views/dashboard/*` — route `/home`; aggregates Infra Health + Service data via `InfraDataService` |
+| Home (Command Center) | `src/app/views/home/*` (`HomeComponent`) — route `/home`; aggregates Infra Health + Service data via `InfraDataService` |
 | Log Analytics | `src/app/views/log_analytics/*` |
 | Config Ops Console | `src/app/views/config_ops_console/*` |
 | Infrastructure Pulse | `src/app/views/infra_pulse/*` (`infra-data.service.ts` orchestrates config + agents) |

@@ -23,7 +23,7 @@ export const routes: Routes = [
         path: 'home',
         canActivate: [rbacGuard],
         data: { screen: 'home' },
-        loadChildren: () => import('./views/dashboard/route').then((m) => m.routes)
+        loadChildren: () => import('./views/home/route').then((m) => m.routes)
       },
       {
         path: 'log_analytics',

@@ -38,7 +38,11 @@
                 } @else {
                   <span class="dt-caret dt-caret--spacer"></span>
                 }
-                <span class="dt-mono">{{ text(f.row, c) }}</span>
+                @if (isLink(c, f.row)) {
+                  <button type="button" class="dt-mono dt-link" [title]="'Investigate ' + text(f.row, c)" (click)="onCell(c, f.row, $event)">{{ text(f.row, c) }}</button>
+                } @else {
+                  <span class="dt-mono">{{ text(f.row, c) }}</span>
+                }
               </td>
             } @else {
               @switch (c.type) {
@@ -55,8 +59,27 @@
                 }
                 @case ('num') { <td class="num">{{ fmt(f.row[c.key]) }}</td> }
                 @case ('gb') { <td class="num">{{ fmt(f.row[c.key]) }}</td> }
-                @case ('mono') { <td class="dt-mono">{{ text(f.row, c) }}</td> }
-                @default { <td>{{ text(f.row, c) }}</td> }
+                @case ('mono') {
+                  <td class="dt-mono">
+                    @if (isLink(c, f.row)) {
+                      <button type="button" class="dt-link" [title]="'Investigate ' + text(f.row, c)" (click)="onCell(c, f.row, $event)">{{ text(f.row, c) }}</button>
+                    } @else { {{ text(f.row, c) }} }
+                  </td>
+                }
+                @case ('clob') {
+                  <td class="dt-clobcell">
+                    @if (text(f.row, c) && text(f.row, c) !== '—') {
+                      <span class="dt-clobprev">{{ clobPreview(f.row[c.key]) }}</span>@if (clobHasMore(f.row[c.key])) {<button type="button" class="dt-clobmore" [title]="'View full ' + c.label" (click)="openClob(c.label, f.row[c.key])">…</button>}
+                    } @else { <span class="dt-clobcell--empty">—</span> }
+                  </td>
+                }
+                @default {
+                  <td>
+                    @if (isLink(c, f.row)) {
+                      <button type="button" class="dt-link" [title]="'Investigate ' + text(f.row, c)" (click)="onCell(c, f.row, $event)">{{ text(f.row, c) }}</button>
+                    } @else { {{ text(f.row, c) }} }
+                  </td>
+                }
               }
             }
           }
@@ -76,3 +99,17 @@
     </tbody>
   </table>
 </div>
+
+<!-- Full-text (CLOB) popup — e.g. a full SQL statement -->
+@if (clobOpen(); as cl) {
+  <div class="dt-clob-backdrop" (click)="closeClob()"></div>
+  <div class="dt-clob-modal" role="dialog" aria-modal="true" [attr.aria-label]="cl.label">
+    <div class="dt-clob-head">
+      <span class="dt-clob-title">{{ cl.label }}</span>
+      <span class="dt-clob-spacer"></span>
+      <button type="button" class="dt-clob-copy" (click)="copyClob()">{{ clobCopied() ? 'Copied ✓' : 'Copy' }}</button>
+      <button type="button" class="dt-clob-close" (click)="closeClob()" aria-label="Close">×</button>
+    </div>
+    <pre class="dt-clob-body">{{ cl.text }}</pre>
+  </div>
+}

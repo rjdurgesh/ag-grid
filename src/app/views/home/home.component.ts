@@ -54,12 +54,12 @@ interface AppRow {
  * status matrix, and what needs attention.
  */
 @Component({
-  selector: 'app-dashboard',
-  templateUrl: './dashboard.component.html',
-  styleUrls: ['./dashboard.component.scss'],
+  selector: 'app-home',
+  templateUrl: './home.component.html',
+  styleUrls: ['./home.component.scss'],
   imports: [RouterLink]
 })
-export class DashboardComponent implements OnInit {
+export class HomeComponent implements OnInit {
   private readonly infra = inject(InfraDataService);
   private readonly oracle = inject(OracleCcService);
   private readonly auth = inject(AuthService);

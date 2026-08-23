@@ -168,6 +168,14 @@
     opacity: 0.6;
     cursor: progress;
   }
+  /* Spin the arrow while a re-scan is in flight (mirrors OCC's refresh cue). */
+  &.is-spin svg {
+    animation: cc-spin 0.9s linear infinite;
+  }
+}
+
+@keyframes cc-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Health-index gauge */
@@ -674,7 +682,8 @@
   .cc-live__dot,
   .cc-posture__pulse,
   .cc-app__badge--critical,
-  .cc-attn__badge--crit {
+  .cc-attn__badge--crit,
+  .cc-refresh.is-spin svg {
     animation: none;
     transition: none;
   }

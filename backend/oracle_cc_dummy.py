@@ -20,11 +20,24 @@ from oracle_cc_api import (
     KillRequest,
     OracleTarget,
     SessionDetailQuery,
+    SqlFinderQuery,
+    SqlFixApply,
+    _SQLI_ASH_COLS,
+    _SQLI_BINDS_COLS,
+    _SQLI_FINDER_COLS,
+    _SQLI_PERF_COLS,
+    _WAIT_CLASS_SEV,
+    _sqli_analyse,
+    _sqli_fix_payload,
+    _sqli_overview_payload,
+    _sqli_plan_analysis_payload,
+    _sqli_plans_payload,
+    _sqli_timeline_payload,
     _IDXH_COLS,
     _IDX_COLS,
     _SESS_COLS,
     _TOP_COLS,
-    _blk_node,
+    _blk_row,
     _blocking_payload,
     _enabled_target_keys,
     _lock_row,
@@ -131,10 +144,28 @@ def index_health_dummy(t: OracleTarget) -> dict:
 
 
 def locks_dummy(t: OracleTarget) -> dict:
+    upd_sql = ("UPDATE trade_events t SET t.status = :1, t.settled_dt = :2, t.last_upd_by = :3, "
+               "t.last_upd_ts = SYSTIMESTAMP WHERE t.trade_id = :4 AND t.book IN (:5, :6, :7) "
+               "AND t.as_of_date = :8 AND EXISTS (SELECT 1 FROM positions p WHERE p.trade_id = t.trade_id "
+               "AND p.ccy = :9 AND p.amount > :10)")
+    upd_binds = ("  :1 = 'SETTLED'\n  :2 = 2026-08-21\n  :3 = 'BATCH07'\n  :4 = 88711\n  :5 = 'FX-EUR'\n"
+                 "  :6 = 'FX-USD'\n  :7 = 'FX-JPY'\n  :8 = 2026-08-21\n  :9 = 'EUR'\n  :10 = 1000000")
     rows = [
-        _lock_row("OLS.TRADE_EVENTS", "TX (Row)", "Exclusive (X)", 845, 22931, "OLS_BATCH", "batch07", "14m 20s", "BLOCKING", "7ymz9qk4d3n1a"),
-        _lock_row("OLS.TRADE_EVENTS", "TX (Row)", "Row-X (RX)",   512, 10233, "OLS_APP",   "wildfly02", "13m 55s", "WAITING",  "7ymz9qk4d3n1a"),
-        _lock_row("OLS.POSITION_SNAP", "TM (DML)", "Row-X (SX)",  233,  4021, "OLS",       "etl01",    "02m 41s", "HELD",     "9ab77tzp0q2mx"),
+        _lock_row(locked_object="OLS.TRADE_EVENTS", object_type="TABLE", lock_type="TX", lock_mode="Exclusive (X)",
+                  sid=845, serial=22931, username="OLS_BATCH", machine="batch07", held_for="14m 20s",
+                  state="BLOCKING", sql_id="7ymz9qk4d3n1a", firstname="Ravi", surname="Menon",
+                  sql_text=upd_sql, bind_values=upd_binds),
+        _lock_row(locked_object="OLS.TRADE_EVENTS", object_type="TABLE", lock_type="TX", lock_mode="Row-X (RX)",
+                  sid=512, serial=10233, username="OLS_APP", machine="wildfly02", held_for="13m 55s",
+                  state="WAITING", sql_id="7ymz9qk4d3n1a", firstname="Aisha", surname="Khan",
+                  sql_text=upd_sql, bind_values=upd_binds),
+        _lock_row(locked_object="OLS.POSITION_SNAP", object_type="TABLE PARTITION", lock_type="TM", lock_mode="Row-X (SSX)",
+                  sid=233, serial=4021, username="OLS", machine="etl01", held_for="02m 41s",
+                  state="HELD", sql_id="9ab77tzp0q2mx",
+                  sql_text="INSERT INTO position_snap (snap_id, trade_id, book, ccy, amount, as_of_date, created_ts) "
+                           "SELECT s.snap_id, s.trade_id, s.book, s.ccy, s.amount, s.as_of_date, SYSTIMESTAMP "
+                           "FROM stg_positions s WHERE s.load_batch = :1 AND s.status = 'READY'",
+                  bind_values="  :1 = 20260821"),
     ]
     return _locks_payload(rows)
 
@@ -147,17 +178,37 @@ def kill_session_dummy(t: OracleTarget, body: KillRequest) -> dict:
 
 
 def blocking_dummy(t: OracleTarget) -> dict:
-    rows = [
-        _blk_node(845, 22931, "BLOCKER", "OLS_BATCH", "OLS.TRADE_EVENTS", "— holding TX row lock", "—", "7ymz9qk4d3n1a", "batch07",
-                  children=[
-                      _blk_node(512, 10233, "WAITER", "OLS_APP", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "13m 55s", "7ymz9qk4d3n1a", "wildfly02"),
-                      _blk_node(933, 5561, "WAITER", "OLS_APP", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "09m 12s", "3xk9p1v7c2rba", "wildfly05",
-                                children=[
-                                    _blk_node(1002, 7781, "WAITER", "OLS_RPT", "OLS.TRADE_EVENTS", "enq: TX - row lock contention", "04m 03s", "3xk9p1v7c2rba", "rpt01"),
-                                ]),
-                  ]),
+    # Raw blocker↔victim pairs (same shape database.fetch_blocking returns) → massage via _blk_row.
+    long_sql = ("UPDATE trade_events t SET t.status = :1, t.settled_dt = :2 WHERE t.trade_id = :3 "
+                "AND t.book IN (:4, :5, :6) AND t.as_of_date = :7 AND EXISTS "
+                "(SELECT 1 FROM positions p WHERE p.trade_id = t.trade_id AND p.ccy = :8)")
+    long_binds = ("  :1 = 'SETTLED'\n  :2 = 2026-08-21\n  :3 = 88711\n  :4 = 'FX-EUR'\n  :5 = 'FX-USD'\n"
+                  "  :6 = 'FX-JPY'\n  :7 = 2026-08-21\n  :8 = 'EUR'")
+    raw = [
+        {"blocker_sid": 845, "blocker_serial": 22931, "blocker_user": "OLS_BATCH", "blocker_name": None,
+         "victim_name": None, "blocker_machine": "batch07", "object_being_held": "OLS.TRADE_EVENTS",
+         "blocker_object_type": "TABLE", "blocker_sql_id": "7ymz9qk4d3n1a", "blocker_sql_text": long_sql,
+         "blocker_bind_values": long_binds,
+         "victim_sid": 512, "victim_serial": 10233, "victim_user": "OLS_APP",
+         "wait_event": "enq: TX - row lock contention", "wait_time_seconds": 835,
+         "victim_sql_id": "7ymz9qk4d3n1a", "victim_sql_text": long_sql, "victim_bind_values": long_binds},
+        {"blocker_sid": 845, "blocker_serial": 22931, "blocker_user": "OLS_BATCH", "blocker_name": None,
+         "victim_name": None, "blocker_machine": "batch07", "object_being_held": "OLS.TRADE_EVENTS",
+         "blocker_object_type": "TABLE", "blocker_sql_id": "7ymz9qk4d3n1a", "blocker_sql_text": long_sql,
+         "blocker_bind_values": long_binds,
+         "victim_sid": 933, "victim_serial": 5561, "victim_user": "OLS_APP",
+         "wait_event": "enq: TX - row lock contention", "wait_time_seconds": 552,
+         "victim_sql_id": "3xk9p1v7c2rba", "victim_sql_text": long_sql, "victim_bind_values": long_binds},
+        {"blocker_sid": 610, "blocker_serial": 3110, "blocker_user": "OLS", "blocker_name": None,
+         "victim_name": None, "blocker_machine": "etl01", "object_being_held": "OLS.POSITION_SNAP",
+         "blocker_object_type": "TABLE PARTITION", "blocker_sql_id": None, "blocker_sql_text": None,
+         "blocker_bind_values": None,
+         "victim_sid": 1002, "victim_serial": 7781, "victim_user": "OLS_RPT",
+         "wait_event": "enq: TM - contention", "wait_time_seconds": 243,
+         "victim_sql_id": "9ab77tzp0q2mx", "victim_sql_text": "SELECT * FROM position_snap WHERE as_of_date = :1",
+         "victim_bind_values": "  :1 = 20260821"},
     ]
-    return _blocking_payload(rows)
+    return _blocking_payload([_blk_row(r) for r in raw])
 
 
 def _all_sessions() -> list[dict]:
@@ -317,15 +368,22 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
         {"snap": "16-Aug 11:00–12:00", "elapsed_s": 498.7, "cpu_s": 84.7, "buffer_gets": 41008120, "executions": 1190},
     ]
 
+    # Execution Plan panel + the generated Diagnosis card (reuses the plan-analysis dummy).
+    plan_panel = _panel_text("plan", "Execution Plan", plan_text)
+    diag = sqli_plan_analysis_dummy(t, q.sql_id or "7ymz9qk4d3n1a").get("diagnosis")
+    if diag and (diag.get("findings") or diag.get("hint")):
+        plan_panel["diagnosis"] = diag
+
     panels = []
     # Killed sessions are (almost always) busy rolling back — surface that first.
     if status == "KILLED":
         panels.append(_panel_rollback())
     panels += [
-        _panel_text("plan", "Execution Plan", plan_text),
+        plan_panel,
         _panel_table("waits", "Wait Events", waits_cols, waits_rows),
         _panel_table("binds", "Bind Variables", binds_cols, binds_rows),
         _panel_table("ash", "Active Session History", ash_cols, ash_rows),
+        _resource_panel_dummy(),
         _panel_text("monitor", "SQL Monitor", monitor_text),
         _panel_table("stats", "Object Statistics", stats_cols, stats_rows),
         _panel_table("locks", "Locks Held", locks_cols, locks_rows),
@@ -335,3 +393,241 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
     if q.panel:
         panels = [p for p in panels if p["key"] == q.panel]
     return {"status": "success", "session": session, "panels": panels}
+
+
+def _resource_panel_dummy() -> dict:
+    """Canned Resource Profile: activity split (CPU vs waits) + PGA/temp + active work areas."""
+    act_sev = {"CPU": "ok", "User I/O": "warn", "Concurrency": "crit", "System I/O": "warn"}
+    act_rows = [
+        {"bucket": "User I/O", "bucket__sev": "warn", "seconds": 612, "pct": 80.4},
+        {"bucket": "CPU", "bucket__sev": "ok", "seconds": 118, "pct": 15.5},
+        {"bucket": "Concurrency", "bucket__sev": "crit", "seconds": 31, "pct": 4.1},
+    ]
+    act_cols = [{"key": "bucket", "label": "Resource", "type": "chip"},
+                {"key": "seconds", "label": "~Seconds", "type": "num"},
+                {"key": "pct", "label": "Share", "type": "pct", "warn": 40, "crit": 70}]
+    wa_cols = [{"key": "operation", "label": "Work area", "type": "mono"},
+               {"key": "mem_mb", "label": "Mem (MB)", "type": "num"},
+               {"key": "max_mb", "label": "Max (MB)", "type": "num"},
+               {"key": "passes", "label": "Passes", "type": "num"},
+               {"key": "temp_mb", "label": "Temp (MB)", "type": "num"}]
+    wa_rows = [
+        {"operation": "HASH JOIN", "mem_mb": 512.0, "max_mb": 512.0, "passes": 2, "temp_mb": 3840.0, "__sev": "warn"},
+        {"operation": "SORT (v2)", "mem_mb": 64.0, "max_mb": 64.0, "passes": 0, "temp_mb": 0.0, "__sev": ""},
+    ]
+    resource = {
+        "pga_used_mb": 690.4, "pga_alloc_mb": 742.1, "pga_max_mb": 980.0, "temp_mb": 3840.0,
+        "activity": {"status": "success", "columns": act_cols, "rows": act_rows},
+        "workareas": {"status": "success", "columns": wa_cols, "rows": wa_rows},
+    }
+    return {"key": "resource", "label": "Resource Profile", "kind": "resource", "available": True, "resource": resource}
+
+
+# =============================================================================
+# Section 8 — SQL Intelligence (canned "plan flip / regression" story)
+# =============================================================================
+#
+# Canonical demo sql_id is 7ymz9qk4d3n1a (the same id the locks dummy uses, so clicking a
+# lock's SQL_ID in dummy mode lands on a populated investigation). ANY sql_id returns this same
+# story so every search/click works in the demo. Narrative: a fast index plan (2094262487) ran
+# for days, then on 19-Aug a full-scan plan (3765430022) took over -- ~15x slower -- driven by a
+# skewed bind value. Best = the index plan; recommend pinning it.
+
+_SQLI_GOOD_PHV = 2094262487
+_SQLI_BAD_PHV = 3765430022
+
+
+def _sqli_dummy_aggs() -> list[dict]:
+    return [
+        {"plan_hash_value": _SQLI_GOOD_PHV, "execs": 18450, "elapsed_per_exec_s": 0.82,
+         "buffer_gets_per_exec": 9800, "first_seen": "16-Aug 02:00", "last_seen": "18-Aug 22:00",
+         "last_seen_ts": 202608182200, "source": "AWR"},
+        {"plan_hash_value": _SQLI_BAD_PHV, "execs": 6120, "elapsed_per_exec_s": 12.47,
+         "buffer_gets_per_exec": 812400, "first_seen": "19-Aug 06:00", "last_seen": "21-Aug 09:00",
+         "last_seen_ts": 202608210900, "source": "AWR"},
+    ]
+
+
+def _sqli_dummy_points() -> list[dict]:
+    g, b = _SQLI_GOOD_PHV, _SQLI_BAD_PHV
+    return [
+        {"label": "16-Aug 02:00", "ts": 202608160200, "plan_hash_value": g, "elapsed_per_exec_s": 0.79, "execs": 3200},
+        {"label": "16-Aug 14:00", "ts": 202608161400, "plan_hash_value": g, "elapsed_per_exec_s": 0.83, "execs": 3050},
+        {"label": "17-Aug 02:00", "ts": 202608170200, "plan_hash_value": g, "elapsed_per_exec_s": 0.80, "execs": 3100},
+        {"label": "17-Aug 14:00", "ts": 202608171400, "plan_hash_value": g, "elapsed_per_exec_s": 0.85, "execs": 2980},
+        {"label": "18-Aug 02:00", "ts": 202608180200, "plan_hash_value": g, "elapsed_per_exec_s": 0.81, "execs": 3120},
+        {"label": "18-Aug 22:00", "ts": 202608182200, "plan_hash_value": g, "elapsed_per_exec_s": 0.88, "execs": 3000},
+        {"label": "19-Aug 06:00", "ts": 202608190600, "plan_hash_value": b, "elapsed_per_exec_s": 11.90, "execs": 1600},
+        {"label": "19-Aug 18:00", "ts": 202608191800, "plan_hash_value": b, "elapsed_per_exec_s": 12.60, "execs": 1500},
+        {"label": "20-Aug 12:00", "ts": 202608201200, "plan_hash_value": b, "elapsed_per_exec_s": 12.90, "execs": 1520},
+        {"label": "21-Aug 09:00", "ts": 202608210900, "plan_hash_value": b, "elapsed_per_exec_s": 12.40, "execs": 1500},
+    ]
+
+
+def sqli_finder_dummy(t: OracleTarget, body: SqlFinderQuery) -> dict:
+    rows = [
+        {"sql_id": "7ymz9qk4d3n1a", "sql_text": "SELECT /*+ report */ t.trade_id, SUM(p.amount) FROM trade_events t JOIN positions p ON ...",
+         "module": "RPT_EOD", "plans": 2, "execs": 24570, "elapsed_per_exec_s": 12.40,
+         "last_active": "21-Aug 09:00", "flip": "MULTI", "flip__sev": "warn", "__sql_id": "7ymz9qk4d3n1a"},
+        {"sql_id": "3n7kq0war9xub", "sql_text": "UPDATE position_snap SET status = :1 WHERE snap_id = :2",
+         "module": "POS_LOAD", "plans": 1, "execs": 91200, "elapsed_per_exec_s": 0.14,
+         "last_active": "21-Aug 08:40", "flip": "SINGLE", "flip__sev": "ok", "__sql_id": "3n7kq0war9xub"},
+        {"sql_id": "b52kf9yq1m3dz", "sql_text": "SELECT * FROM audit_log WHERE event_dt >= :1 ORDER BY event_dt",
+         "module": "AUDIT_UI", "plans": 3, "execs": 4120, "elapsed_per_exec_s": 3.85,
+         "last_active": "21-Aug 07:10", "flip": "MULTI", "flip__sev": "warn", "__sql_id": "b52kf9yq1m3dz"},
+        {"sql_id": "9audk2nq7wp1c", "sql_text": "SELECT ref_instrument.* FROM ref_instrument WHERE isin = :1",
+         "module": "REF_SVC", "plans": 1, "execs": 220400, "elapsed_per_exec_s": 0.02,
+         "last_active": "21-Aug 09:05", "flip": "SINGLE", "flip__sev": "ok", "__sql_id": "9audk2nq7wp1c"},
+    ]
+    if body and body.q:
+        needle = body.q.strip().lower()
+        filtered = [r for r in rows if needle in r["sql_id"].lower()
+                    or needle in r["sql_text"].lower() or needle in r["module"].lower()]
+        rows = filtered or rows
+    return {"status": "success", "columns": _SQLI_FINDER_COLS, "rows": rows,
+            "summary": {"days": 5, "count": len(rows)}}
+
+
+def sqli_overview_dummy(t: OracleTarget, sql_id: str) -> dict:
+    sql_text = ("SELECT /*+ report */ t.trade_id, t.book, SUM(p.amount) AS exposure\n"
+                "  FROM trade_events t\n  JOIN positions p ON p.trade_id = t.trade_id\n"
+                " WHERE t.as_of_date = :1 AND t.ccy = :2\n GROUP BY t.trade_id, t.book")
+    meta = {"schema": "OLS", "module": "RPT_EOD", "first_seen": "16-Aug 02:00",
+            "last_seen": "21-Aug 09:00", "execs": 24570}
+    return _sqli_overview_payload(sql_id, sql_text, meta, _sqli_dummy_aggs())
+
+
+def sqli_timeline_dummy(t: OracleTarget, sql_id: str) -> dict:
+    return _sqli_timeline_payload(_sqli_dummy_points(), _sqli_dummy_aggs())
+
+
+def sqli_plans_dummy(t: OracleTarget, sql_id: str) -> dict:
+    return _sqli_plans_payload(_sqli_dummy_aggs(),
+                               {"baseline": False, "profile": False, "baseline_phvs": [],
+                                "detail": "No baseline or profile detected for this SQL_ID."})
+
+
+def sqli_plan_analysis_dummy(t: OracleTarget, sql_id: str) -> dict:
+    # The classic story: TRADE_EVENTS stats are stale (say 412 rows) so the optimizer estimates 412,
+    # but reality is 8.4M → a TABLE ACCESS FULL becomes the time bottleneck (self 24s of 32.4s),
+    # with 980K reads / 1.2M gets, filtered on BOOK_ID + TRADE_DT (→ index hint).
+    # elapsed_us is CUMULATIVE per line (incl. children); the payload derives self-time from it.
+    plan = [
+        {"id": 0, "parent_id": None, "depth": 0, "operation": "SELECT STATEMENT", "options": None,
+         "object_owner": None, "object_name": None, "object_type": None, "e_rows": 412, "cost": 25,
+         "plan_hash_value": 3765430022, "a_rows": 8400000, "elapsed_us": 32400000,
+         "buffer_gets": 1240000, "disk_reads": 988000, "starts": 1,
+         "access_predicates": None, "filter_predicates": None},
+        {"id": 1, "parent_id": 0, "depth": 1, "operation": "HASH JOIN", "options": None,
+         "object_owner": None, "object_name": None, "object_type": None, "e_rows": 412, "cost": 25,
+         "plan_hash_value": 3765430022, "a_rows": 8400000, "elapsed_us": 32000000,
+         "buffer_gets": 1238000, "disk_reads": 986000, "starts": 1,
+         "access_predicates": '"P"."TRADE_ID"="T"."TRADE_ID"', "filter_predicates": None},
+        {"id": 2, "parent_id": 1, "depth": 2, "operation": "TABLE ACCESS", "options": "FULL",
+         "object_owner": "OLS", "object_name": "TRADE_EVENTS", "object_type": "TABLE", "e_rows": 412,
+         "cost": 12, "plan_hash_value": 3765430022, "a_rows": 8400000, "elapsed_us": 24000000,
+         "buffer_gets": 1200000, "disk_reads": 980000, "starts": 1,
+         "access_predicates": None, "filter_predicates": '"BOOK_ID"=:1 AND "TRADE_DT">=:2'},
+        {"id": 3, "parent_id": 1, "depth": 2, "operation": "TABLE ACCESS", "options": "FULL",
+         "object_owner": "OLS", "object_name": "POSITIONS", "object_type": "TABLE", "e_rows": 1180000,
+         "cost": 8, "plan_hash_value": 3765430022, "a_rows": 1180000, "elapsed_us": 3000000,
+         "buffer_gets": 38000, "disk_reads": 6000, "starts": 1,
+         "access_predicates": None, "filter_predicates": None},
+    ]
+    stats = [
+        {"owner": "OLS", "table_name": "TRADE_EVENTS", "num_rows": 412, "stale_stats": "YES",
+         "last_analyzed": "12-Aug 02:10", "age_days": 12},
+        {"owner": "OLS", "table_name": "POSITIONS", "num_rows": 1180000, "stale_stats": "NO",
+         "last_analyzed": "23-Aug 01:00", "age_days": 0},
+    ]
+    return _sqli_plan_analysis_payload({"plan": plan, "stats": stats})
+
+
+def sqli_perf_dummy(t: OracleTarget, sql_id: str) -> dict:
+    rows = []
+    for p in reversed(_sqli_dummy_points()):
+        bad = p["plan_hash_value"] == _SQLI_BAD_PHV
+        rows.append({"snap": p["label"], "plan_hash_value": p["plan_hash_value"], "execs": p["execs"],
+                     "elapsed_per_exec_s": p["elapsed_per_exec_s"],
+                     "cpu_per_exec_s": round(p["elapsed_per_exec_s"] * (0.35 if bad else 0.85), 2),
+                     "buffer_gets_per_exec": 812400 if bad else 9800,
+                     "disk_reads_per_exec": 154200 if bad else 40,
+                     "rows_per_exec": 1180})
+    return {"status": "success", "columns": _SQLI_PERF_COLS, "rows": rows}
+
+
+def sqli_ash_dummy(t: OracleTarget, sql_id: str) -> dict:
+    raw = [("db file scattered read", "User I/O", 540), ("ON CPU", "CPU", 210),
+           ("direct path read", "User I/O", 95), ("gc buffer busy acquire", "Cluster", 40),
+           ("cursor: pin S wait on X", "Concurrency", 18)]
+    total = sum(s for _, _, s in raw) or 1
+    rows = [{"event": ev, "wait_class": wc, "wait_class__sev": _WAIT_CLASS_SEV.get(wc, "muted"),
+             "samples": s, "pct": round(s / total * 100, 1)} for ev, wc, s in raw]
+    return {"status": "success", "columns": _SQLI_ASH_COLS, "rows": rows}
+
+
+def sqli_binds_dummy(t: OracleTarget, sql_id: str) -> dict:
+    rows = [
+        {"captured": "19-Aug 06:00", "name": ":2", "position": 2, "datatype": "VARCHAR2(3)",
+         "value": "'EUR'", "plan_hash_value": _SQLI_BAD_PHV},
+        {"captured": "19-Aug 06:00", "name": ":1", "position": 1, "datatype": "DATE",
+         "value": "2026-08-19", "plan_hash_value": _SQLI_BAD_PHV},
+        {"captured": "16-Aug 02:00", "name": ":2", "position": 2, "datatype": "VARCHAR2(3)",
+         "value": "'JPY'", "plan_hash_value": _SQLI_GOOD_PHV},
+        {"captured": "16-Aug 02:00", "name": ":1", "position": 1, "datatype": "DATE",
+         "value": "2026-08-16", "plan_hash_value": _SQLI_GOOD_PHV},
+    ]
+    return {"status": "success", "columns": _SQLI_BINDS_COLS, "rows": rows}
+
+
+def sqli_plan_text_dummy(t: OracleTarget, sql_id: str, phv: int) -> dict:
+    if int(phv) == _SQLI_GOOD_PHV:
+        text = (f"Plan hash value: {_SQLI_GOOD_PHV}\n\n"
+                "----------------------------------------------------------------------------------\n"
+                "| Id | Operation                     | Name              | Rows | Cost | A-Rows |\n"
+                "----------------------------------------------------------------------------------\n"
+                "|  0 | SELECT STATEMENT              |                   |      |  842 |        |\n"
+                "|  1 |  HASH GROUP BY                |                   | 1180 |  842 |   1180 |\n"
+                "|  2 |   NESTED LOOPS                |                   | 1180 |  840 |   1180 |\n"
+                "|  3 |    TABLE ACCESS BY INDEX ROWID| TRADE_EVENTS      |  590 |  120 |    590 |\n"
+                "|* 4 |     INDEX RANGE SCAN          | IX_TRADE_ASOF_CCY |  590 |    6 |    590 |\n"
+                "|  5 |    TABLE ACCESS BY INDEX ROWID| POSITIONS         |    2 |    3 |   1180 |\n"
+                "|* 6 |     INDEX RANGE SCAN          | IX_POS_TRADE      |    2 |    2 |   1180 |\n"
+                "----------------------------------------------------------------------------------\n"
+                "Note: index-driven -- 9,800 buffer gets/exec, ~0.82s. This is the plan to pin.")
+    else:
+        text = (f"Plan hash value: {_SQLI_BAD_PHV}\n\n"
+                "-------------------------------------------------------------------------\n"
+                "| Id | Operation             | Name         | Rows | Cost  | A-Rows |Reads|\n"
+                "-------------------------------------------------------------------------\n"
+                "|  0 | SELECT STATEMENT      |              |      | 68120 |        |     |\n"
+                "|  1 |  HASH GROUP BY        |              |  41M | 68120 |   1180 |     |\n"
+                "|* 2 |   HASH JOIN           |              |  41M | 61000 |    41M | 154K|\n"
+                "|  3 |    TABLE ACCESS FULL  | TRADE_EVENTS |  22M | 30200 |    22M |  74K|\n"
+                "|  4 |    TABLE ACCESS FULL  | POSITIONS    |  38M | 30800 |    38M |  80K|\n"
+                "-------------------------------------------------------------------------\n"
+                "Note: full-scan HASH JOIN -- 812,400 buffer gets/exec, 154K reads, ~12.5s.\n"
+                "Cardinality misestimate after bind peeking on a skewed :2 value (EUR) flipped\n"
+                "the optimizer away from the index. THIS is the regressed plan.")
+    return {"status": "success", "plan_hash_value": int(phv), "source": "AWR", "text": text}
+
+
+def sqli_fix_dummy(t: OracleTarget, sql_id: str) -> dict:
+    advisor = {"available": True,
+               "note": "SQL Tuning Advisor recommends accepting the index plan; re-gathering stale column "
+                       "stats on TRADE_EVENTS.CCY would also correct the cardinality estimate.",
+               "findings": [
+                   "Cardinality misestimate on TRADE_EVENTS (bind peeking on a skewed :2).",
+                   "Column stats on TRADE_EVENTS.CCY are stale (histogram missing).",
+                   "Index IX_TRADE_ASOF_CCY is available and yields the best plan.",
+               ]}
+    return _sqli_fix_payload(sql_id, _sqli_analyse(_sqli_dummy_aggs()),
+                             {"baseline": False, "profile": False,
+                              "detail": "No baseline or profile detected for this SQL_ID."},
+                             advisor)
+
+
+def sqli_apply_fix_dummy(t: OracleTarget, body: SqlFixApply) -> dict:
+    return {"status": "success",
+            "message": (f"(dummy) Would pin plan {body.plan_hash_value} for {body.sql_id} as a fixed SQL Plan "
+                        f"Baseline via a privileged, audited connection. No change made in dummy mode.")}
