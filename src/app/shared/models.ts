@@ -219,6 +219,10 @@ export interface AccessSnapshot {
   /** Log Analytics: visible server names. `all_servers` true → every server. */
   servers: string[];
   all_servers: boolean;
+  /** Infrastructure Health: which apps are visible (`all_apps` → every app). */
+  infra: { all_apps: boolean; apps: string[] };
+  /** Oracle Command Center: per-DB access. `all_dbs` → every DB at `all_level`; else `dbs[key]`. */
+  oracle: { all_dbs: boolean; all_level: 'READ' | 'WRITE'; dbs: Record<string, 'READ' | 'WRITE'> };
   /** Sections hidden for this user. */
   denied_sections: DeniedSection[];
 }

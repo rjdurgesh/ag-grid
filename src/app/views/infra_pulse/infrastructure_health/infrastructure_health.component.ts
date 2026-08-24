@@ -3,6 +3,7 @@ import { Component, OnDestroy, OnInit, WritableSignal, inject, signal } from '@a
 import { LoaderComponent } from '../../../components/loader/loader.component';
 import { environment } from '../../../../environments/environment';
 import { INFRA_APPS, INFRA_APP_LABELS, InfraApp } from '../../../shared/api-endpoints';
+import { RbacService } from '../../../auth/rbac.service';
 import { formatDateTime, timeAgo } from '../../../shared/date-utils';
 import { AppHealth, HealthMetric, HealthStatus, HealthTarget, TargetOs } from '../../../shared/infra-models';
 import { InfraDataService } from '../infra-data.service';
@@ -60,6 +61,7 @@ const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
 })
 export class InfrastructureHealthComponent implements OnInit, OnDestroy {
   private readonly infra = inject(InfraDataService);
+  private readonly rbac = inject(RbacService);
 
   readonly view = signal<ViewMode>('app');
 
@@ -68,15 +70,19 @@ export class InfrastructureHealthComponent implements OnInit, OnDestroy {
   readonly refreshEveryMin = signal(environment.infraHealthRefreshMinutes);
   private timer: ReturnType<typeof setInterval> | undefined;
 
-  readonly panels: HealthPanel[] = INFRA_APPS.map((app) => ({
-    app,
-    label: INFRA_APP_LABELS[app],
-    data: signal<AppHealth | null>(null),
-    loading: signal(false),
-    error: signal(false),
-    expanded: signal(true),
-    filter: signal<'all' | HealthStatus>('all')
-  }));
+  // RBAC: only the apps this user is granted (ADMIN / all_apps → every app). Filtering the panels
+  // limits both what renders AND what's fetched (the load loop iterates these).
+  readonly panels: HealthPanel[] = INFRA_APPS
+    .filter((app) => this.rbac.infraAppAllowed(app))
+    .map((app) => ({
+      app,
+      label: INFRA_APP_LABELS[app],
+      data: signal<AppHealth | null>(null),
+      loading: signal(false),
+      error: signal(false),
+      expanded: signal(true),
+      filter: signal<'all' | HealthStatus>('all')
+    }));
 
   readonly statusGroups: StatusGroup[] = [
     { status: 'crit', label: 'Critical', expanded: signal(true) },

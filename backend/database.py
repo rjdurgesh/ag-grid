@@ -436,6 +436,64 @@ def fetch_blocking(db_config: Any) -> list[dict]:
 
 
 # =============================================================================
+# Section 6b — Temp tablespace usage (sessions holding temp / sort space)
+# =============================================================================
+
+def fetch_temp_usage(db_config: Any) -> list[dict]:
+    """Sessions currently holding TEMP / sort segment space (V$TEMPSEG_USAGE), one row per
+    session+tablespace, largest first — the candidates to kill when temp is exhausted. Joins
+    V$SESSION / V$PROCESS / DBA_TABLESPACES (for the block size → MB), plus s.sql_id and
+    last_call_et so you can see WHAT is using the space and for how long.
+
+    ``ols_users`` is OPTIONAL: if it isn't visible to the monitoring user, the firstname/surname
+    columns come back NULL and the table is left OUT of the join entirely (so a missing table can
+    never break this query). Existence is checked against ALL_OBJECTS (table / view / synonym)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM all_objects "
+            "WHERE object_name = 'OLS_USERS' AND object_type IN ('TABLE','VIEW','SYNONYM')")
+        has_users = (cursor.fetchone()[0] or 0) > 0
+
+        # firstname/surname either come from ols_users (LEFT JOIN on osuser) or are NULL columns.
+        name_cols = "u.firstname, u.surname" if has_users else "CAST(NULL AS VARCHAR2(64)) AS firstname, " \
+                                                               "CAST(NULL AS VARCHAR2(64)) AS surname"
+        name_join = "LEFT JOIN ols_users u ON UPPER(s.osuser) = UPPER(u.username)" if has_users else ""
+        name_grp = ", u.firstname, u.surname" if has_users else ""
+
+        cursor.execute(f"""
+            SELECT s.sid, s.serial# AS serial, s.status, s.username, s.osuser,
+                   {name_cols},
+                   s.machine, s.module, p.program, p.spid,
+                   s.sql_id, s.last_call_et AS secs,
+                   t.tablespace,
+                   ROUND(SUM(t.blocks) * ts.block_size / 1048576) AS mb_used,
+                   COUNT(*) AS segments
+              FROM v$tempseg_usage t
+              JOIN v$session s        ON t.session_addr = s.saddr
+              JOIN v$process p        ON s.paddr = p.addr
+              JOIN dba_tablespaces ts ON t.tablespace = ts.tablespace_name
+              {name_join}
+             WHERE s.type = 'USER'
+             GROUP BY s.sid, s.serial#, s.status, s.username, s.osuser{name_grp},
+                      s.machine, s.module, p.program, p.spid, s.sql_id, s.last_call_et,
+                      t.tablespace, ts.block_size
+             ORDER BY mb_used DESC
+        """)
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
 # Section 7 — sessions inventory + per-state counts
 # =============================================================================
 
@@ -585,19 +643,48 @@ def fetch_session_ash(db_config: Any, sid: int) -> list:
             connection.close()
 
 
-def fetch_session_monitor(db_config: Any, sid: int) -> str | None:
-    """Real-time SQL Monitor report for the session (DBMS_SQL_MONITOR.REPORT_SQL_MONITOR)."""
+def fetch_session_monitor(db_config: Any, sid: int, serial: int) -> dict | None:
+    """Real-time SQL Monitor for the session's most-recent monitored execution — a structured
+    overview PLUS the full TEXT report. Precisely targeted to ONE execution by session_id +
+    session_serial# + sql_id + sql_exec_id + sql_exec_start (not "whatever the session runs now"),
+    and ``report_level => 'ALL'`` for the fullest report. ``type => 'TEXT'`` (self-contained, safe
+    to embed — the 'ACTIVE' report needs Oracle's external CDN and can't render inside the app).
+    ``None`` when the session has no monitored statement (SQL Monitor is live/recent only, and only
+    for parallel or ≥5s runs). ``sql_text`` and the report are CLOBs → returned as ``str`` by the
+    connection's LOB handler (see ``connect``)."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute(
-            "SELECT DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(session_id=>:sid, type=>'TEXT') AS report FROM dual",
-            {"sid": sid})
+        cursor.execute("""
+            SELECT m.status, m.sql_id, m.sql_exec_id, m.sql_plan_hash_value,
+                   TO_CHAR(m.sql_exec_start,   'DD-Mon HH24:MI:SS') AS started,
+                   TO_CHAR(m.last_refresh_time,'DD-Mon HH24:MI:SS') AS last_refresh,
+                   ROUND(m.elapsed_time/1e6, 1) AS elapsed_s,
+                   ROUND(m.cpu_time/1e6, 1)     AS cpu_s,
+                   m.buffer_gets, m.disk_reads, m.sql_text,
+                   DBMS_SQL_MONITOR.REPORT_SQL_MONITOR(
+                       session_id     => m.sid,
+                       session_serial => m.session_serial#,
+                       sql_id         => m.sql_id,
+                       sql_exec_id    => m.sql_exec_id,
+                       sql_exec_start => m.sql_exec_start,
+                       type           => 'TEXT',
+                       report_level   => 'ALL') AS report
+              FROM v$sql_monitor m
+             WHERE m.sid = :sid AND m.session_serial# = :serial
+               AND m.px_server# IS NULL                 -- the coordinator row, not each PX slave
+             ORDER BY m.last_refresh_time DESC
+             FETCH FIRST 1 ROWS ONLY
+        """, {"sid": sid, "serial": serial})
         cols = [c[0].lower() for c in cursor.description]
         rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
-        return rows[0].get("report") if rows else None
+        if not rows:
+            return None
+        r = rows[0]
+        report = r.pop("report", None)
+        return {"overview": r, "report": str(report) if report is not None else ""}
     finally:
         if cursor:
             cursor.close()
@@ -677,22 +764,70 @@ def fetch_session_awr(db_config: Any, sql_id: str | None) -> list | None:
             connection.close()
 
 
-def fetch_session_rollback(db_config: Any, sid: int) -> int:
-    """Rollback progress % for a KILLED session mid-rollback (v$session_longops). 0 if none."""
+def fetch_session_rollback(db_config: Any, sid: int) -> dict:
+    """Rollback detail for a KILLED session mid-rollback — REAL numbers, nothing fabricated:
+      * ``v$transaction`` (joined via s.taddr): ``used_ublk`` / ``used_urec`` = the undo blocks /
+        records still held by the transaction (i.e. still to be rolled back), + whether a
+        transaction is still open at all (``is_active``);
+      * ``v$session_longops('Transaction Rollback')``: ``sofar`` / ``totalwork`` (undo blocks
+        done / total → percent), plus REAL ``elapsed_seconds`` and ``time_remaining``.
+    Returns everything the Rollback Monitor panel needs. When the transaction is gone the rollback
+    is complete (100%)."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
+
+        # Open transaction for this session? Its undo is what remains to roll back.
         cursor.execute("""
-            SELECT NVL(ROUND(sofar * 100 / NULLIF(totalwork, 0)), 0) AS pct
+            SELECT tr.used_ublk, tr.used_urec, tr.status
+              FROM v$session s
+              JOIN v$transaction tr ON tr.addr = s.taddr
+             WHERE s.sid = :sid AND s.type = 'USER'
+        """, {"sid": sid})
+        tr = cursor.fetchone()
+        is_active = tr is not None
+        undo_blocks_remaining = int(tr[0] or 0) if tr else 0
+        undo_records_remaining = int(tr[1] or 0) if tr else 0
+        txn_status = (tr[2] if tr else None)
+
+        # Rollback progress + REAL timing from V$SESSION_LONGOPS (most recent 'Transaction Rollback').
+        # No `sofar < totalwork` filter, so a finished rollback reports 100% instead of vanishing to 0.
+        cursor.execute("""
+            SELECT NVL(sofar, 0)      AS sofar,
+                   NVL(totalwork, 0)  AS totalwork,
+                   NVL(ROUND(sofar * 100 / NULLIF(totalwork, 0)), 0) AS pct,
+                   NVL(elapsed_seconds, 0) AS elapsed_seconds,
+                   NVL(time_remaining, 0)  AS time_remaining
               FROM v$session_longops
-             WHERE sid = :sid AND opname = 'Transaction Rollback' AND sofar < totalwork
+             WHERE sid = :sid AND opname = 'Transaction Rollback'
              ORDER BY start_time DESC FETCH FIRST 1 ROWS ONLY
         """, {"sid": sid})
-        cols = [c[0].lower() for c in cursor.description]
-        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
-        return int(rows[0]["pct"]) if rows else 0
+        lo = cursor.fetchone()
+        if lo:
+            sofar, total, pct, elapsed_s, remaining_s = (int(lo[0]), int(lo[1]), int(lo[2]),
+                                                         int(lo[3]), int(lo[4]))
+        else:
+            sofar = total = elapsed_s = remaining_s = 0
+            pct = 100 if not is_active else 0
+        if not is_active:            # transaction gone → rollback finished
+            pct = 100
+        pct = max(0, min(100, pct))
+        blocks_left = (total - sofar) if total else undo_blocks_remaining
+
+        return {
+            "percent": pct,
+            "is_active": is_active,
+            "txn_status": txn_status,
+            "undo_blocks_total": total,
+            "undo_blocks_done": sofar,
+            "undo_blocks_left": max(blocks_left, 0),
+            "undo_blocks_remaining": undo_blocks_remaining,   # from v$transaction (currently held)
+            "undo_records_remaining": undo_records_remaining,
+            "elapsed_seconds": elapsed_s,
+            "time_remaining_seconds": remaining_s,
+        }
     finally:
         if cursor:
             cursor.close()
@@ -722,7 +857,7 @@ def fetch_session_detail(db_config: Any, sid: int, serial: int, sql_id: str | No
             "waits":        lambda: fetch_session_waits(connection, sid),
             "binds":        lambda: fetch_session_binds(connection, eff_sql_id),
             "ash":          lambda: fetch_session_ash(connection, sid),
-            "monitor":      lambda: fetch_session_monitor(connection, sid),
+            "monitor":      lambda: fetch_session_monitor(connection, sid, serial),
             "stats":        lambda: fetch_session_stats(connection, owner, eff_sql_id),
             "locks":        lambda: fetch_session_locks(connection, sid),
             "awr":          lambda: fetch_session_awr(connection, eff_sql_id),

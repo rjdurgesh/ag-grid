@@ -62,6 +62,11 @@ export class OracleCcService {
     return this.api.post<DynTable>(API.oracle.blocking(db), {});
   }
 
+  /** Section 6b — sessions holding TEMP/sort space (largest first), each killable. */
+  tempUsage(db: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.tempUsage(db), {});
+  }
+
   /** Section 7 — session inventory filtered by state (summary carries full per-state counts). */
   sessions(db: string, status: SessionFilter): Observable<DynTable> {
     return this.api.post<DynTable>(API.oracle.sessions(db), { status });

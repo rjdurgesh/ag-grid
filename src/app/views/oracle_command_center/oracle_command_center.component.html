@@ -252,6 +252,41 @@
     </section>
   </div>
 
+  <!-- ============= ROW 5b : Temp Tablespace ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" [class.is-collapsed]="isCollapsed('temp')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">❄</span>
+        <h2 class="occ-panel__title">Temp Tablespace</h2>
+        @if (tempUsage()?.summary; as s) {
+          @if ($any(s).total_mb) { <span class="occ-badge occ-badge--warn">{{ fmtNum($any(s).total_mb) }} MB held</span> }
+          @if ($any(s).sessions) { <span class="occ-badge occ-badge--muted">{{ $any(s).sessions }} session(s)</span> }
+        }
+        <span class="occ-panel__spacer"></span>
+        @if (sectionLoading('temp')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('temp')) { <span class="occ-hstamp">{{ stampAbs('temp') }} · {{ stampRel('temp') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="tempLoading()" title="Refresh section" (click)="loadTempUsage(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('temp')" (click)="toggle('temp')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('temp')) {
+        <div class="occ-panel__body">
+          @if (tempLoading() && !tempUsage()) { <app-loader variant="skeleton" [rows]="3" message="Reading temp usage…" /> }
+          @else if (tempError()) { <div class="occ-empty occ-empty--err">Couldn't read temp usage. Try refresh.</div> }
+          @else if (tempUsage(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="12" [filterable]="true"
+                filterPlaceholder="Filter temp holders — user, machine, SQL_ID, tablespace…"
+                [columnFilters]="true"
+                [actions]="canKill() ? killActions : []" (action)="onTableAction($event)"
+                [linkColumns]="['sql_id']" (cellClick)="onSqlCell($event)" />
+              <p class="occ-note"><b>Note:</b> sessions holding <b>TEMP / sort</b> space, largest first — the ones to kill when temp fills up. Click a <b>SQL_ID</b> to investigate what's consuming it. @if (canKill()) { <b>Kill</b> ends the session and releases its temp. } @else { Killing a session requires an admin role. }</p>
+            } @else { <div class="occ-empty">No sessions are holding temp space right now. ✓</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
   <!-- ============= ROW 6 : Sessions Detail ============= -->
   <div class="occ__row">
     <section class="occ-panel" [class.is-collapsed]="isCollapsed('sessions')">
@@ -698,14 +733,14 @@
                 <div class="occ-rb__bar"><i [class.is-done]="rb.percent >= 100" [style.width.%]="rb.percent"></i></div>
                 <div class="occ-rb__grid">
                   <div class="occ-rb__tile">
-                    <span class="occ-rb__l">Undo records rolled back</span>
-                    <span class="occ-rb__v">{{ fmtNum(rb.undo_records_done) }} <small>/ {{ fmtNum(rb.undo_records_total) }}</small></span>
-                    <span class="occ-rb__sub">{{ fmtNum(rb.undo_records_left) }} pending</span>
+                    <span class="occ-rb__l">Undo blocks remaining</span>
+                    <span class="occ-rb__v">{{ fmtNum(rb.undo_blocks_left) }}</span>
+                    <span class="occ-rb__sub">{{ fmtNum(rb.undo_blocks_done) }} of {{ fmtNum(rb.undo_blocks_total) }} rolled back</span>
                   </div>
                   <div class="occ-rb__tile">
-                    <span class="occ-rb__l">Undo blocks rolled back</span>
-                    <span class="occ-rb__v">{{ fmtNum(rb.undo_blocks_done) }} <small>/ {{ fmtNum(rb.undo_blocks_total) }}</small></span>
-                    <span class="occ-rb__sub">{{ fmtNum(rb.undo_blocks_left) }} pending</span>
+                    <span class="occ-rb__l">Undo records remaining</span>
+                    <span class="occ-rb__v">{{ fmtNum(rb.undo_records_remaining) }}</span>
+                    <span class="occ-rb__sub">still held by the transaction</span>
                   </div>
                   <div class="occ-rb__tile"><span class="occ-rb__l">Elapsed</span><span class="occ-rb__v">{{ rb.elapsed }}</span></div>
                   <div class="occ-rb__tile"><span class="occ-rb__l">Est. remaining</span><span class="occ-rb__v">{{ rb.est_remaining }}</span></div>
@@ -731,26 +766,36 @@
               }
             }
           } @else if (p.kind === 'text') {
-            @if (p.diagnosis; as dg) {
-              <div [class]="'occ-diag occ-diag--' + dg.sev">
-                <div class="occ-diag__hd"><span class="occ-diag__ic" aria-hidden="true">{{ dg.sev === 'crit' ? '⚠' : dg.sev === 'warn' ? '▲' : '✓' }}</span>Diagnosis</div>
-                <ul class="occ-diag__list">
-                  @for (f of dg.findings; track $index) { <li>{{ f }}</li> }
-                </ul>
-                @if (dg.hint) { <p class="occ-diag__hint"><b>Hint:</b> {{ dg.hint }}</p> }
+            @if (p.overview) {
+              <!-- SQL Monitor: overview strip + full TEXT report (targeted execution, report_level ALL) -->
+              <div class="occ-mon__tiles">
+                @for (t of p.overview; track t.label) {
+                  <div class="occ-mon__tile"><span class="occ-mon__l">{{ t.label }}</span><span class="occ-mon__v">{{ t.value }}</span></div>
+                }
               </div>
-            }
-            @if (p.analysis; as an) {
-              @if (an.plan.rows.length) {
-                <div class="occ-res__sub">Runtime plan — Time % (bottleneck) · E-Rows vs A-Rows · Spent on</div>
-                <app-dyn-table [model]="an.plan" [freezeFirst]="false" />
-                @if (an.stats.rows.length) {
-                  <div class="occ-res__sub">Statistics of tables in this plan</div>
-                  <app-dyn-table [model]="an.stats" [freezeFirst]="false" />
+              <pre class="occ-pre occ-mon__report">{{ p.text }}</pre>
+            } @else {
+              @if (p.diagnosis; as dg) {
+                <div [class]="'occ-diag occ-diag--' + dg.sev">
+                  <div class="occ-diag__hd"><span class="occ-diag__ic" aria-hidden="true">{{ dg.sev === 'crit' ? '⚠' : dg.sev === 'warn' ? '▲' : '✓' }}</span>Diagnosis</div>
+                  <ul class="occ-diag__list">
+                    @for (f of dg.findings; track $index) { <li>{{ f }}</li> }
+                  </ul>
+                  @if (dg.hint) { <p class="occ-diag__hint"><b>Hint:</b> {{ dg.hint }}</p> }
+                </div>
+              }
+              @if (p.analysis; as an) {
+                @if (an.plan.rows.length) {
+                  <div class="occ-res__sub">Runtime plan — Time % (bottleneck) · E-Rows vs A-Rows · Spent on</div>
+                  <app-dyn-table [model]="an.plan" [freezeFirst]="false" />
+                  @if (an.stats.rows.length) {
+                    <div class="occ-res__sub">Statistics of tables in this plan</div>
+                    <app-dyn-table [model]="an.stats" [freezeFirst]="false" />
+                  }
                 }
               }
+              <details class="occ-rawplan"><summary>Raw plan text (DBMS_XPLAN)</summary><pre class="occ-pre">{{ p.text }}</pre></details>
             }
-            <details class="occ-rawplan"><summary>Raw plan text (DBMS_XPLAN)</summary><pre class="occ-pre">{{ p.text }}</pre></details>
           } @else if (p.table) {
             <app-dyn-table [model]="p.table" />
           }

@@ -209,6 +209,7 @@ export const API = {
     locks: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/locks`,
     /** Section 4 — blocking session tree. */
     blocking: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/blocking`,
+    tempUsage: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/temp-usage`,
     /** Section 5 — sessions list (`?status=active|inactive|all`). */
     sessions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sessions`,
     /** Section 5 — full deep-dive for one SID/SQL_ID. */

@@ -607,6 +607,66 @@ def blocking(request: Request, db: str) -> dict:
 # Section 7 — Sessions & performance deep-dive (list + SID drilldown + kill)
 # =============================================================================
 
+# --- Temp tablespace usage (Section 6b) --------------------------------------
+TEMP_WARN_MB = env_int("ORACLE_CC_TEMP_WARN_MB", 1024)   # amber tint at ≥ 1 GB of temp held
+TEMP_CRIT_MB = env_int("ORACLE_CC_TEMP_CRIT_MB", 5120)   # red tint at ≥ 5 GB
+
+_TEMP_COLS = [
+    {"key": "sid_serial", "label": "SID,Serial#", "type": "mono"},
+    {"key": "status", "label": "Status", "type": "chip"},
+    {"key": "username", "label": "User", "type": "mono"},
+    {"key": "osuser", "label": "OS user", "type": "text"},
+    {"key": "firstname", "label": "First name", "type": "text"},
+    {"key": "surname", "label": "Surname", "type": "text"},
+    {"key": "machine", "label": "Machine", "type": "text"},
+    {"key": "program", "label": "Program", "type": "text"},
+    {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
+    {"key": "tablespace", "label": "Temp TS", "type": "text"},
+    {"key": "mb_used", "label": "Temp (MB)", "type": "num", "warn": TEMP_WARN_MB, "crit": TEMP_CRIT_MB},
+    {"key": "running_for", "label": "Running for", "type": "text"},
+    {"key": "segments", "label": "Segments", "type": "num"},
+]
+
+
+def _temp_row(r: dict) -> dict:
+    """One temp-usage row → the contract. `mb_used` drives the row severity tint; each row is
+    killable (`__actions:['kill']`), and `sid`/`serial` ride along for the kill call. firstname/
+    surname are `—` when ols_users wasn't available."""
+    sid, serial = int(r["sid"]), int(r["serial"])
+    mb = int(r.get("mb_used") or 0)
+    sev = "crit" if mb >= TEMP_CRIT_MB else "warn" if mb >= TEMP_WARN_MB else "ok"
+    status = (r.get("status") or "—")
+    return {
+        "sid_serial": f"{sid},{serial}",
+        "status": status, "status__sev": "warn" if status == "INACTIVE" else "ok",
+        "username": r.get("username") or "—", "osuser": r.get("osuser") or "—",
+        "firstname": r.get("firstname") or "—", "surname": r.get("surname") or "—",
+        "machine": r.get("machine") or "—", "program": r.get("program") or "—",
+        "sql_id": r.get("sql_id") or "—", "tablespace": r.get("tablespace") or "—",
+        "mb_used": mb, "running_for": _fmt_dur(r.get("secs")),
+        "segments": int(r.get("segments") or 0),
+        "__sev": sev if sev != "ok" else "", "__actions": ["kill"], "sid": sid, "serial": serial,
+    }
+
+
+@router.post("/{db}/temp-usage")
+def temp_usage(request: Request, db: str) -> dict:
+    """Sessions holding TEMP/sort space (V$TEMPSEG_USAGE), largest first — the ones to kill when
+    temp is exhausted. Each row killable (admin, UI-gated). `ols_users` is optional (see
+    `database.fetch_temp_usage`). `summary` totals the temp held + session count."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return temp_usage_dummy(t)
+    try:
+        rows = [_temp_row(r) for r in database.fetch_temp_usage(request.app.state.db_configs.get(db))]
+        total_mb = sum(int(r.get("mb_used") or 0) for r in rows)
+        return {"status": "success", "columns": _TEMP_COLS, "rows": rows,
+                "summary": {"sessions": len(rows), "total_mb": total_mb}}
+    except Exception:
+        logger.exception("temp-usage failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 class SessionsQuery(BaseModel):
     # active | inactive | killed | all  (UI default = active)
     status: str = "active"
@@ -828,7 +888,13 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
     def monitor_panel():
         if not got("monitor"):
             return _panel_text("monitor", "SQL Monitor", "", available=False)
-        return _panel_text("monitor", "SQL Monitor", str(raw["monitor"]) or "(no active SQL Monitor report)")
+        m = raw["monitor"] or {}
+        report = m.get("report") or "(no active SQL Monitor report)"
+        panel = _panel_text("monitor", "SQL Monitor", report)
+        ov = m.get("overview") or {}
+        if ov:
+            panel["overview"] = _monitor_tiles(ov)
+        return panel
 
     def stats_panel():
         if not got("stats"):
@@ -892,8 +958,7 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
 
     panels = []
     if status == "KILLED" and emit("rollback"):
-        pct = raw.get("rollback_pct")
-        panels.append(_panel_rollback(int(pct) if pct is not None else 0))
+        panels.append(_panel_rollback(raw.get("rollback_pct")))
     builders = [("plan", plan_panel), ("waits", waits_panel), ("binds", binds_panel),
                 ("ash", ash_panel), ("resource", resource_panel), ("monitor", monitor_panel),
                 ("stats", stats_panel), ("locks", locks_panel), ("awr", awr_panel)]
@@ -910,6 +975,29 @@ def _panel_text(key: str, label: str, text: str, *, requires: str | None = None,
     return p
 
 
+def _monitor_tiles(ov: dict) -> list:
+    """Shape a SQL Monitor overview row (from database.fetch_session_monitor) into label/value tiles
+    for the deep-dive monitor panel — an at-a-glance header above the full text report."""
+    def num(v):
+        try:
+            return f"{int(v):,}"
+        except (TypeError, ValueError):
+            return "—"
+    def secs(v):
+        return f"{v}s" if v not in (None, "") else "—"
+    return [
+        {"label": "Status", "value": str(ov.get("status") or "—")},
+        {"label": "SQL_ID", "value": str(ov.get("sql_id") or "—")},
+        {"label": "Plan hash", "value": str(ov.get("sql_plan_hash_value") or "—")},
+        {"label": "Elapsed", "value": secs(ov.get("elapsed_s"))},
+        {"label": "CPU", "value": secs(ov.get("cpu_s"))},
+        {"label": "Buffer gets", "value": num(ov.get("buffer_gets"))},
+        {"label": "Disk reads", "value": num(ov.get("disk_reads"))},
+        {"label": "Started", "value": str(ov.get("started") or "—")},
+        {"label": "Last refresh", "value": str(ov.get("last_refresh") or "—")},
+    ]
+
+
 def _panel_table(key: str, label: str, columns: list, rows: list, *, requires: str | None = None, available: bool = True) -> dict:
     p = {"key": key, "label": label, "kind": "table", "available": available}
     if available:
@@ -919,20 +1007,28 @@ def _panel_table(key: str, label: str, columns: list, rows: list, *, requires: s
     return p
 
 
-def _panel_rollback(percent: int = 63) -> dict:
-    """Rollback progress for a killed session (undo being applied). Mirrors what
-    V$SESSION_LONGOPS('Transaction Rollback') + V$TRANSACTION expose."""
-    ublk_total, urec_total = 128_400, 5_120_000
-    ublk_done = round(ublk_total * percent / 100)
-    urec_done = round(urec_total * percent / 100)
+def _panel_rollback(rb: dict | None = None) -> dict:
+    """Rollback Monitor for a killed session, from the REAL `database.fetch_session_rollback` dict
+    (V$TRANSACTION undo still held + V$SESSION_LONGOPS progress/elapsed/remaining). Blocks show
+    done/total/left; records show what's still held (V$TRANSACTION gives remaining, not a total)."""
+    rb = rb or {}
+    pct = max(0, min(100, int(rb.get("percent") or 0)))
+    is_active = rb.get("is_active", True)
+    remaining_s = rb.get("time_remaining_seconds")
+    blocks_left = rb.get("undo_blocks_left")
+    if blocks_left is None:
+        blocks_left = rb.get("undo_blocks_remaining") or 0
     return {
         "key": "rollback", "label": "Rollback Monitor", "kind": "rollback", "available": True,
         "rollback": {
-            "state": "ROLLING BACK" if percent < 100 else "COMPLETE",
-            "percent": percent,
-            "undo_blocks_total": ublk_total, "undo_blocks_done": ublk_done, "undo_blocks_left": ublk_total - ublk_done,
-            "undo_records_total": urec_total, "undo_records_done": urec_done, "undo_records_left": urec_total - urec_done,
-            "elapsed": "4m 12s", "est_remaining": "2m 30s",
+            "state": "COMPLETE" if (pct >= 100 or not is_active) else "ROLLING BACK",
+            "percent": pct,
+            "undo_blocks_total": int(rb.get("undo_blocks_total") or 0),
+            "undo_blocks_done": int(rb.get("undo_blocks_done") or 0),
+            "undo_blocks_left": int(blocks_left or 0),
+            "undo_records_remaining": int(rb.get("undo_records_remaining") or 0),
+            "elapsed": _fmt_dur(rb.get("elapsed_seconds")),
+            "est_remaining": _fmt_dur(remaining_s) if remaining_s else "—",
             "note": "PMON is rolling back the killed transaction's uncommitted changes. "
                     "Don't restart the application on this instance until it completes.",
         },
@@ -1635,6 +1731,7 @@ from oracle_cc_dummy import (  # noqa: E402
     locks_dummy,
     kill_session_dummy,
     blocking_dummy,
+    temp_usage_dummy,
     sessions_dummy,
     session_detail_dummy,
     sqli_finder_dummy,

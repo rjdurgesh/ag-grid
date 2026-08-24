@@ -50,7 +50,7 @@
       <div class="ols-card__title la-preview__head">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 2h8l4 4v16H6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 2v4h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
         @if (selectedFile()) {
-          <span class="la-preview__path" [title]="selectedFile()">{{ selectedFile() }}</span>
+          <span class="la-preview__path" [title]="selectedFile()">{{ selectedFileDisplay() }}</span>
         } @else {
           <span>Preview</span>
         }

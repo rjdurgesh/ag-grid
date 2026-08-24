@@ -16,11 +16,15 @@ const EMPTY: AccessSnapshot = {
   active: false, username: '', display_name: '', email: '', role: 'NONE', app_env: '',
   screens: [], write_screens: [],
   config: { scopes: [], all: false, category_grants: [], table_grants: [] },
-  servers: [], all_servers: false, denied_sections: []
+  servers: [], all_servers: false,
+  infra: { all_apps: false, apps: [] },
+  oracle: { all_dbs: false, all_level: 'READ', dbs: {} },
+  denied_sections: []
 };
 
-/** Screens that are always viewable for an active user (landing + external help). */
-const ALWAYS_VIEW = new Set<string>(['home', 'docs', 'extras']);
+/** Screens always resolvable (external help + login/error routes). Home is NOT here — it's opt-in
+ *  now, visible only when the user has at least one granted feature. */
+const ALWAYS_VIEW = new Set<string>(['docs', 'extras']);
 
 /**
  * Central RBAC authority. Loads ONE resolved access snapshot (`POST /api/access/me`, assembled
@@ -104,9 +108,11 @@ export class RbacService {
     return s.write_screens.includes(screen);
   }
 
-  /** Any access at all? False → send to the No-Access page. */
+  /** Any access at all? (Active AND at least one granted screen.) False → No-Access page with the
+   *  "contact OLS Team" message. Opt-in: a valid login with no features assigned lands here. */
   hasAnyAccess(): boolean {
-    return this.snapshot().active;
+    const s = this.snapshot();
+    return s.active && s.screens.length > 0;
   }
 
   /** First screen the user is allowed to open (for redirects). */
@@ -196,6 +202,47 @@ export class RbacService {
       return true;
     }
     return s.servers.includes(serverName);
+  }
+
+  // --- Infra Health apps + OCC databases -------------------------------------
+
+  /** Is an Infrastructure Health app (OLS_GROUP / OLS_CIB / …) visible to this user? */
+  infraAppAllowed(app: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN' || s.infra.all_apps) {
+      return true;
+    }
+    return s.infra.apps.includes((app || '').toUpperCase());
+  }
+
+  /** Is an OCC database (tab) visible to this user? */
+  dbAllowed(db: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN' || s.oracle.all_dbs) {
+      return true;
+    }
+    return (db || '').toLowerCase() in s.oracle.dbs;
+  }
+
+  /** May the user WRITE (kill / apply-fix) on this OCC database? */
+  dbWritable(db: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    if (s.oracle.all_dbs) {
+      return s.oracle.all_level === 'WRITE';
+    }
+    return s.oracle.dbs[(db || '').toLowerCase()] === 'WRITE';
   }
 
   // --- Sections (e.g. hide OCC SQL Intelligence) -----------------------------

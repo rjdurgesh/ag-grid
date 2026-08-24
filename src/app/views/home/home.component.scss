@@ -384,6 +384,18 @@
   &:hover { text-decoration: underline; }
 }
 
+/* Home shows nothing this user can see (their tools are in the sidebar). */
+.cc-home-empty {
+  padding: 22px 24px;
+  text-align: center;
+}
+.cc-home-empty p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--cui-secondary-color);
+  line-height: 1.6;
+}
+
 .cc-empty {
   padding: 16px;
   border: 1px dashed var(--cui-border-color);

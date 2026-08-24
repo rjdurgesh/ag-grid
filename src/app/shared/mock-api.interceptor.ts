@@ -302,13 +302,17 @@ function mockAccessSnapshot(): Record<string, unknown> {
     display_name: titleCase(environment.username), email: `${environment.username.toLowerCase()}@example.com`,
     role, app_env: environment.appEnv
   };
+  const noInfra = { all_apps: false, apps: [] as string[] };
+  const noOracle = { all_dbs: false, all_level: 'READ', dbs: {} as Record<string, string> };
   if (role === 'ADMIN') {
     return {
       ...base,
       screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
       write_screens: ['service_console', 'oracle_command_center'],
       config: { scopes: ['group', 'cib', 'retail'], all: true, category_grants: [], table_grants: [] },
-      servers: ['*'], all_servers: true, denied_sections: []
+      servers: ['*'], all_servers: true,
+      infra: { all_apps: true, apps: [] }, oracle: { all_dbs: true, all_level: 'WRITE', dbs: {} },
+      denied_sections: []
     };
   }
   if (role === 'SALT') {
@@ -322,20 +326,22 @@ function mockAccessSnapshot(): Record<string, unknown> {
           { scope: 'cib', table: 'CIB_FX_RATES', level: 'READ' }
         ]
       },
-      servers: [], all_servers: false, denied_sections: []
+      servers: [], all_servers: false, infra: noInfra, oracle: noOracle, denied_sections: []
     };
   }
   if (role === 'NONE') {
     return {
       ...base, screens: [], write_screens: [],
       config: { scopes: [], all: false, category_grants: [], table_grants: [] },
-      servers: [], all_servers: false, denied_sections: []
+      servers: [], all_servers: false, infra: noInfra, oracle: noOracle, denied_sections: []
     };
   }
-  // READ (default demo)
+  // READ (default demo) — OPT-IN + per-app/per-DB: Log Analytics (a server), Config Ops (Group),
+  // Service Console (write), Infra Health but ONLY the OLS_GROUP app, and the OCC with WRITE on the
+  // GROUP database + READ on CIB BATCH (other DB tabs hidden). Home shows because they have features.
   return {
     ...base,
-    screens: ['home', 'log_analytics', 'infra_health', 'service_console', 'oracle_command_center', 'config_ops_console'],
+    screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
     write_screens: ['service_console'],
     config: {
       scopes: ['group'], all: false,
@@ -343,6 +349,8 @@ function mockAccessSnapshot(): Record<string, unknown> {
       table_grants: [{ scope: 'group', table: 'GRP_COST_CENTER', level: 'WRITE' }]
     },
     servers: ['eurv15'], all_servers: false,
+    infra: { all_apps: false, apps: ['OLS_GROUP'] },
+    oracle: { all_dbs: false, all_level: 'READ', dbs: { group: 'WRITE', cib_batch: 'READ' } },
     denied_sections: [{ screen: 'oracle_command_center', key: 'sql_intelligence' }]
   };
 }

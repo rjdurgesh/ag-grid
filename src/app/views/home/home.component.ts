@@ -4,6 +4,7 @@ import { RouterLink } from '@angular/router';
 import { forkJoin, interval } from 'rxjs';
 
 import { AuthService } from '../../auth/auth.service';
+import { RbacService } from '../../auth/rbac.service';
 import { LoaderComponent } from '../../components/loader/loader.component';
 import { INFRA_APP_LABELS, INFRA_APPS, InfraApp } from '../../shared/api-endpoints';
 import { environment } from '../../../environments/environment';
@@ -64,7 +65,16 @@ export class HomeComponent implements OnInit {
   private readonly infra = inject(InfraDataService);
   private readonly oracle = inject(OracleCcService);
   private readonly auth = inject(AuthService);
+  private readonly rbac = inject(RbacService);
   private readonly destroyRef = inject(DestroyRef);
+
+  // RBAC: Home only shows the sections whose underlying screen the user can access, and only
+  // fetches that data. A user with no infra/services/oracle access sees the "sidebar" note.
+  readonly canInfra = computed(() => this.rbac.canView('infra_health'));
+  readonly canServices = computed(() => this.rbac.canView('service_console'));
+  readonly canOracle = computed(() => this.rbac.canView('oracle_command_center'));
+  /** Nothing on Home is visible to this user (their tools are elsewhere in the sidebar). */
+  readonly nothingOnHome = computed(() => !this.canInfra() && !this.canServices() && !this.canOracle());
 
   readonly env = environment.appEnv;
   // Per-stream loading so each section can show its own loader until its data lands (the three
@@ -249,35 +259,51 @@ export class HomeComponent implements OnInit {
   /** Pull health + services + Oracle for every app (1 shared config call + agent fan-out). Each
    *  feed clears its own loading flag as it lands, so every section drops its skeleton independently. */
   load(): void {
-    this.healthLoading.set(true);
-    this.servicesLoading.set(true);
-    this.oracleLoading.set(true);
-    this.infra.reloadConfig();
+    // RBAC: only fetch the feeds whose screen the user can access. A feed the user can't see is
+    // marked "loaded" immediately (so it never spins), and its section is hidden in the template.
+    this.healthLoading.set(this.canInfra());
+    this.servicesLoading.set(this.canServices());
+    this.oracleLoading.set(this.canOracle());
 
-    forkJoin(INFRA_APPS.map((app) => this.infra.health(app)))
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (list) => {
-          this.healthByApp.set(list);
-          const at = new Date();
-          this.lastSyncAt.set(at);
-          this.lastSync.set(formatDateTime(at));
-          this.nowTick.set(at.getTime());
-          this.healthLoading.set(false);
-        },
-        error: () => this.healthLoading.set(false)
-      });
+    if (this.canInfra() || this.canServices()) {
+      this.infra.reloadConfig();
+    }
 
-    forkJoin(INFRA_APPS.map((app) => this.infra.services(app)))
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (list) => {
-          this.servicesByApp.set(list);
-          this.servicesLoading.set(false);
-        },
-        error: () => this.servicesLoading.set(false)
-      });
+    // Infra Health aggregates only the apps this user is granted (per-app RBAC); Service Console
+    // has no per-app control, so its aggregate spans every app.
+    const infraApps = INFRA_APPS.filter((app) => this.rbac.infraAppAllowed(app));
 
+    if (this.canInfra()) {
+      forkJoin(infraApps.map((app) => this.infra.health(app)))
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({
+          next: (list) => {
+            this.healthByApp.set(list);
+            const at = new Date();
+            this.lastSyncAt.set(at);
+            this.lastSync.set(formatDateTime(at));
+            this.nowTick.set(at.getTime());
+            this.healthLoading.set(false);
+          },
+          error: () => this.healthLoading.set(false)
+        });
+    }
+
+    if (this.canServices()) {
+      forkJoin(INFRA_APPS.map((app) => this.infra.services(app)))
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe({
+          next: (list) => {
+            this.servicesByApp.set(list);
+            this.servicesLoading.set(false);
+          },
+          error: () => this.servicesLoading.set(false)
+        });
+    }
+
+    if (!this.canOracle()) {
+      return;
+    }
     // Oracle snapshot (one call powers the whole strip).
     this.oracle.overview()
       .pipe(takeUntilDestroyed(this.destroyRef))

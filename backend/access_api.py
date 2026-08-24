@@ -47,11 +47,10 @@ router = APIRouter(prefix="/api/access", tags=["access"])
 ACCESS_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
 
 # ---- The resource registry (mirror of the frontend rbac.config.ts) ----------
-# Screens every ROLE=READ user can view (read) by default. Config Ops is intentionally
-# NOT here — it appears only when the user has at least one config grant (opt-in scopes).
-READ_SCREENS = ["home", "log_analytics", "infra_health", "service_console", "oracle_command_center"]
-# Screens a SALT user may view (besides any config scopes they're granted).
-SALT_SCREENS = ["home"]
+# OPT-IN model: a screen is visible only when a grant touches it. These are the grantable
+# non-config screens (a `SCREEN` grant here, or a `SERVER` grant for log_analytics, reveals it).
+# Config Ops is revealed by config-scope grants; Home appears whenever the user has ≥1 feature.
+SCREEN_KEYS = ["log_analytics", "infra_health", "service_console", "oracle_command_center"]
 # The three Config Ops sub-screens (scopes).
 CONFIG_SCOPES = ["group", "cib", "retail"]
 # Screens that actually have write actions (so a SCREEN/WRITE grant is meaningful).
@@ -120,8 +119,12 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             "username": (identity or {}).get("username", ""),
             "display_name": "", "email": "", "app_env": app_env,
             "screens": [], "write_screens": [],
-            "config": {"scopes": [], "category_grants": [], "table_grants": []},
-            "servers": [], "all_servers": False, "denied_sections": [],
+            "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": []},
+            "servers": [], "all_servers": False,
+            "infra": {"all_apps": False, "apps": []},
+            "service": {"all_apps": False, "apps": []},
+            "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}},
+            "denied_sections": [],
         }
 
     username = identity.get("username", "")
@@ -137,20 +140,39 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             "screens": ["home", "log_analytics", "config_ops_console", "infra_health",
                         "service_console", "oracle_command_center"],
             "write_screens": WRITE_CAPABLE_SCREENS,
-            "config": {"scopes": list(CONFIG_SCOPES), "all": True,
+            "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
                        "category_grants": [], "table_grants": []},
-            "servers": ["*"], "all_servers": True, "denied_sections": [],
+            "servers": ["*"], "all_servers": True,
+            "infra": {"all_apps": True, "apps": []},
+            "service": {"all_apps": True, "apps": []},
+            "oracle": {"all_dbs": True, "all_level": "WRITE", "dbs": {}},
+            "denied_sections": [],
         })
         return base
 
-    # READ / SALT: start from the base-role screens, then layer the grants.
+    # READ / SALT: OPT-IN. A screen is visible ONLY if a grant touches it — a SCREEN grant, a
+    # SERVER grant (→ Log Analytics), or a TABLE/TABLE_CATEGORY/SCREEN grant in a config scope
+    # (→ Config Ops). No grants → no screens → the app shows the "contact OLS Team" page.
     category_grants: list[dict] = []
     table_grants: list[dict] = []
     config_scopes: set[str] = set()
+    config_all = False
+    config_all_level = "READ"
     servers: list[str] = []
     all_servers = False
     write_screens: set[str] = set()
+    granted_screens: set[str] = set()   # opt-in non-config screens the user may VIEW
     denied_sections: list[dict] = []
+    infra_apps: set[str] = set()        # Infra Health: which apps (OLS_GROUP / OLS_CIB / …)
+    all_infra_apps = False
+    service_apps: set[str] = set()      # Service Console: which apps
+    all_service_apps = False
+    service_screen_grant = False
+    oracle_dbs: dict[str, str] = {}     # OCC: per-DB access level {db_key: READ|WRITE}
+    all_dbs = False
+    all_db_level = "READ"
+    full_read = False
+    full_write = False
 
     for g in grants:
         rtype = (g.get("resource_type") or "").strip().upper()
@@ -158,11 +180,45 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
         rkey = (g.get("resource_key") or "").strip()
         level = (g.get("access_level") or "").strip().upper()
 
+        # Full-access wildcard: SCREEN / * / * → everything (READ = view-all, WRITE = act-all).
+        if rtype == "SCREEN" and rscope == "*" and rkey == "*":
+            if level != "DENY":
+                full_read = True
+                if level == "WRITE":
+                    full_write = True
+            continue
+
         if rtype == "SERVER" and rscope == "log_analytics":
-            if rkey == "*":
-                all_servers = True
-            elif level != "DENY":
-                servers.append(rkey)
+            if level != "DENY":
+                granted_screens.add("log_analytics")          # any server grant reveals the screen
+                if rkey == "*":
+                    all_servers = True
+                elif rkey:
+                    servers.append(rkey)
+        elif rtype == "APP" and rscope == "infra_health":       # Infra Health, per app
+            if level != "DENY":
+                granted_screens.add("infra_health")
+                if rkey == "*":
+                    all_infra_apps = True
+                elif rkey:
+                    infra_apps.add(rkey.upper())
+        elif rtype == "APP" and rscope == "service_console":    # Service Console, per app
+            if level != "DENY":
+                granted_screens.add("service_console")
+                if rkey == "*":
+                    all_service_apps = True
+                elif rkey:
+                    service_apps.add(rkey.upper())
+        elif rtype == "DB" and rscope == "oracle_command_center":  # OCC, per DB + per-DB level
+            if level != "DENY" and rkey:
+                granted_screens.add("oracle_command_center")
+                if rkey == "*":
+                    all_dbs = True
+                    if level == "WRITE":
+                        all_db_level = "WRITE"
+                else:
+                    k = rkey.lower()
+                    oracle_dbs[k] = "WRITE" if (level == "WRITE" or oracle_dbs.get(k) == "WRITE") else "READ"
         elif rtype == "TABLE_CATEGORY":
             sc = _scope_of(rscope)
             if sc:
@@ -175,35 +231,76 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
                 table_grants.append({"scope": sc, "table": rkey, "level": level})
                 if level != "DENY":
                     config_scopes.add(sc)
-        elif rtype == "SCREEN":
+        elif rtype == "SCREEN" and level != "DENY":
             sc = _scope_of(rscope)
             if sc:  # a config sub-screen grant (visibility even with no tables yet)
-                if level != "DENY":
-                    config_scopes.add(sc)
-            elif level == "WRITE" and rscope in WRITE_CAPABLE_SCREENS:
-                write_screens.add(rscope)
+                config_scopes.add(sc)
+            elif rscope == "infra_health":            # whole-screen grant → all apps
+                granted_screens.add("infra_health")
+                all_infra_apps = True
+            elif rscope == "oracle_command_center":   # whole-screen grant → all DBs at this level
+                granted_screens.add("oracle_command_center")
+                all_dbs = True
+                if level == "WRITE":
+                    all_db_level = "WRITE"
+            elif rscope in SCREEN_KEYS:               # log_analytics, service_console
+                granted_screens.add(rscope)
+                if rscope == "service_console":
+                    service_screen_grant = True
+                if level == "WRITE" and rscope in WRITE_CAPABLE_SCREENS:
+                    write_screens.add(rscope)
         elif rtype == "SECTION" and level == "DENY" and rscope and rkey:
-            denied_sections.append({"screen": rscope, "key": rkey})
+            # scope 'oracle_command_center' (global) or 'oracle_command_center:<db>' (that DB only)
+            screen, _, db = rscope.partition(":")
+            entry = {"screen": screen, "key": rkey}
+            if db:
+                entry["db"] = db
+            denied_sections.append(entry)
 
-    # Which screens are visible?
+    # A Service Console SCREEN grant with no specific APP grants = all apps.
+    if service_screen_grant and not service_apps:
+        all_service_apps = True
+
+    # Full-access wildcard populates everything (grants above still merge on top).
+    if full_read:
+        granted_screens.update(SCREEN_KEYS)
+        all_servers = all_infra_apps = all_service_apps = all_dbs = True
+        config_all = True
+        config_scopes.update(CONFIG_SCOPES)
+        if full_write:
+            config_all_level = "WRITE"
+            all_db_level = "WRITE"
+            write_screens.update(WRITE_CAPABLE_SCREENS)
+
+    # SALT is a Config-Ops-only persona — it never sees non-config screens, even if granted.
     if role == "SALT":
-        screens = list(SALT_SCREENS)
-    else:
-        screens = list(READ_SCREENS)
-    if config_scopes:
+        granted_screens = set()
+        write_screens.clear()
+        infra_apps.clear(); all_infra_apps = False
+        service_apps.clear(); all_service_apps = False
+        oracle_dbs.clear(); all_dbs = False
+
+    screens = sorted(granted_screens)
+    if config_scopes or config_all:
         screens.append("config_ops_console")
+    if screens:                          # has ≥1 feature → give them Home (the landing) too
+        screens = ["home"] + screens
 
     base.update({
         "screens": screens,
         "write_screens": sorted(write_screens),
         "config": {
             "scopes": sorted(config_scopes),
-            "all": False,
+            "all": config_all,
+            "all_level": config_all_level,
             "category_grants": category_grants,
             "table_grants": table_grants,
         },
         "servers": sorted(set(servers)),
         "all_servers": all_servers,
+        "infra": {"all_apps": all_infra_apps, "apps": sorted(infra_apps)},
+        "service": {"all_apps": all_service_apps, "apps": sorted(service_apps)},
+        "oracle": {"all_dbs": all_dbs, "all_level": all_db_level, "dbs": oracle_dbs},
         "denied_sections": denied_sections,
     })
     return base
@@ -286,12 +383,16 @@ def _dummy_grants(username: str) -> list[dict]:
             {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_LIMIT_CONFIG", "access_level": "READ", "app_env": "PROD"},
             {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_FX_RATES", "access_level": "READ", "app_env": "PROD"},
         ]
-    # default READ demo user
+    # default READ demo user (opt-in: Log Analytics + Config Ops(Group) + Service Console + OCC;
+    # NOT Infrastructure Health, so it never shows)
     return [
         {"resource_type": "SERVER", "resource_scope": "log_analytics", "resource_key": "eurv15", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "TABLE_CATEGORY", "resource_scope": "config_ops:group", "resource_key": "OMT-FUNCTIONAL", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "TABLE", "resource_scope": "config_ops:group", "resource_key": "GRP_COST_CENTER", "access_level": "WRITE", "app_env": "PROD"},
         {"resource_type": "SCREEN", "resource_scope": "service_console", "resource_key": "*", "access_level": "WRITE", "app_env": "PROD"},
+        {"resource_type": "APP", "resource_scope": "infra_health", "resource_key": "OLS_GROUP", "access_level": "READ", "app_env": "PROD"},
+        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "group", "access_level": "WRITE", "app_env": "PROD"},
+        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "cib_batch", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "SECTION", "resource_scope": "oracle_command_center", "resource_key": "sql_intelligence", "access_level": "DENY", "app_env": "PROD"},
     ]
 

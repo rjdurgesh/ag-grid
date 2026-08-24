@@ -140,6 +140,11 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly blockingLoading = signal(false);
   readonly blockingError = signal(false);
 
+  // --- Section 6b: temp tablespace usage ---
+  readonly tempUsage = signal<DynTable | null>(null);
+  readonly tempLoading = signal(false);
+  readonly tempError = signal(false);
+
   // --- Section 7: sessions & deep-dive ---
   readonly sessionFilters: { key: SessionFilter; label: string }[] = [
     { key: 'active', label: 'Active' },
@@ -159,9 +164,10 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly detailOpen = signal(false);
   readonly activePanel = signal<string>('');
 
-  /** Kill requires WRITE on the Oracle Command Center screen (ADMIN, or a SCREEN/WRITE grant).
-   *  READ users are view-only. Drives the Kill buttons + drawer action. See RBAC_DESIGN.md. */
-  readonly canKill = computed(() => this.rbac.canWrite('oracle_command_center'));
+  /** Kill requires WRITE on the CURRENT database (per-DB RBAC): ADMIN, a `DB … WRITE` grant for
+   *  this DB, or a whole-screen WRITE grant. READ-only DBs show no Kill button. Drives the Kill
+   *  buttons across Locks / Blocking / Temp / Sessions + the drawer action. See RBAC_DESIGN.md. */
+  readonly canKill = computed(() => this.rbac.dbWritable(this.activeKey()));
   readonly killActions: DynAction[] = [{ key: 'kill', label: 'Kill', tone: 'danger', title: 'Kill this session' }];
   /** Session-row actions: deep-dive always; kill only for admins (per-row whitelist hides it on KILLED rows). */
   readonly sessionActions = computed<DynAction[]>(() => {
@@ -178,8 +184,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
 
   /** Collapse state per section (all expanded by default). */
   readonly collapsed = signal<Record<string, boolean>>({
-    space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false, sessions: false,
-    sqli: false
+    space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false,
+    temp: false, sessions: false, sqli: false
   });
 
   ngOnInit(): void {
@@ -204,7 +210,9 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   // --- DB tabs --------------------------------------------------------------
   private loadTargets(): void {
     this.svc.targets().subscribe({
-      next: (ts) => {
+      next: (all) => {
+        // RBAC: show only the DB tabs this user is granted (ADMIN / all_dbs → every tab).
+        const ts = all.filter((t) => this.rbac.dbAllowed(t.key));
         this.targets.set(ts);
         this.targetsError.set(false);
         if (ts.length) {
@@ -232,6 +240,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.idxHealth.set(null);
     this.locks.set(null);
     this.blocking.set(null);
+    this.tempUsage.set(null);
     this.sessions.set(null);
     this.stamps.set({});
     if (this.detailOpen()) {
@@ -248,14 +257,14 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   /** True while ANY section is fetching → spins the masthead "Refresh all" button. */
   readonly anyLoading = computed(() =>
     this.spaceLoading() || this.topSegLoading() || this.topIdxLoading() || this.idxHealthLoading()
-    || this.locksLoading() || this.blockingLoading() || this.sessionsLoading());
+    || this.locksLoading() || this.blockingLoading() || this.tempLoading() || this.sessionsLoading());
 
   /** Per-section loading flag by stamp key — drives the "Refreshing…" label in each header. */
   sectionLoading(key: string): boolean {
     return ({
       space: this.spaceLoading(), top: this.topSegLoading(), topidx: this.topIdxLoading(),
       idxhealth: this.idxHealthLoading(), locks: this.locksLoading(),
-      blocking: this.blockingLoading(), sessions: this.sessionsLoading(),
+      blocking: this.blockingLoading(), temp: this.tempLoading(), sessions: this.sessionsLoading(),
     } as Record<string, boolean>)[key] ?? false;
   }
 
@@ -266,6 +275,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.loadIndexHealth();
     this.loadLocks();
     this.loadBlocking();
+    this.loadTempUsage();
     this.loadSessions();
     this.lastRefreshed.set(new Date());
   }
@@ -352,6 +362,20 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.svc.blocking(db).subscribe({
       next: (d) => { this.blocking.set(d); this.blockingLoading.set(false); this.markStamp('blocking'); },
       error: () => { this.blockingError.set(true); this.blockingLoading.set(false); }
+    });
+  }
+
+  // --- Section 6b: temp tablespace usage ------------------------------------
+  loadTempUsage(): void {
+    const db = this.activeKey();
+    if (!db) {
+      return;
+    }
+    this.tempLoading.set(true);
+    this.tempError.set(false);
+    this.svc.tempUsage(db).subscribe({
+      next: (d) => { this.tempUsage.set(d); this.tempLoading.set(false); this.markStamp('temp'); },
+      error: () => { this.tempError.set(true); this.tempLoading.set(false); }
     });
   }
 
@@ -576,6 +600,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
         // The kill reply only says success/message — re-read the affected sections so they settle.
         this.loadLocks();
         this.loadBlocking();
+        this.loadTempUsage();
         this.loadSessions();
       },
       error: () => {
@@ -694,8 +719,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly planTextALoading = signal(false);
   readonly planTextBLoading = signal(false);
 
-  /** Apply-fix is a WRITE — same gate as kill-session (WRITE on the OCC screen). */
-  readonly canApplyFix = computed(() => this.rbac.canWrite('oracle_command_center'));
+  /** Apply-fix is a WRITE — same per-DB gate as kill-session (WRITE on the current DB). */
+  readonly canApplyFix = computed(() => this.rbac.dbWritable(this.activeKey()));
 
   /** Distinct plan_hash_values available for the diff selectors. */
   readonly planPhvs = computed<number[]>(() =>

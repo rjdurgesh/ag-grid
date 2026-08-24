@@ -72,12 +72,12 @@ export interface DynTable<S = Record<string, unknown>> {
 export interface RollbackStatus {
   state: string;              // 'ROLLING BACK' | 'COMPLETE' | 'NONE'
   percent: number;
+  /** Undo BLOCKS: done / total / left — real, from V$SESSION_LONGOPS. */
   undo_blocks_total: number;
   undo_blocks_done: number;
   undo_blocks_left: number;
-  undo_records_total: number;
-  undo_records_done: number;
-  undo_records_left: number;
+  /** Undo RECORDS still held by the transaction (V$TRANSACTION gives remaining, not a total). */
+  undo_records_remaining: number;
   elapsed: string;
   est_remaining: string;
   note?: string;
@@ -141,6 +141,8 @@ export interface DetailPanel {
   available: boolean;
   requires?: string;
   text?: string;
+  /** SQL Monitor overview strip (label/value tiles shown above the text report). */
+  overview?: { label: string; value: string }[];
   table?: DynTable;
   rollback?: RollbackStatus;
   diagnosis?: PlanDiagnosis;

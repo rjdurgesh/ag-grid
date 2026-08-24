@@ -19,18 +19,28 @@ Fail either gate → No-Access / sign-out.
 The base role comes from the `ols_users` flags **`IS_ADMIN` / `IS_READ` / `IS_SALT`** (ADMIN wins,
 then READ, then SALT):
 
-| Role | Sees | Writes | Servers / config tables |
+| Role | Sees | Writes | Everything is |
 |---|---|---|---|
-| **ADMIN** | everything | everywhere (kill, start/stop, add/edit/delete, apply) | all — **ignores grants** |
-| **READ** (default) | every screen, read-only | only where a grant says so | **opt-in** — only what's granted |
-| **SALT** | **Home + Config Ops only** | only where granted | opt-in |
+| **ADMIN** | everything | everywhere (kill, start/stop, add/edit/delete, apply) | granted — **ignores grants** |
+| **READ** | **only screens it's granted** | only where a grant says so | **opt-in** |
+| **SALT** | **Config Ops only** (whatever config it's granted) | only where granted | opt-in, config-only |
 
-- **ADMIN** is the top role — give a user `IS_ADMIN='Y'` in `ols_users` and they have full access.
-- **READ** is the default working role: all screens are visible read-only, but Log Analytics servers
-  and Config Ops tables are **opt-in** (invisible until granted), and every write button is hidden
-  until a grant enables it.
-- **SALT** is a Config-Ops-only persona (users who only need a few config tables) — Home + Config
-  Ops, nothing else.
+**Everything is opt-in.** A user sees a screen ONLY if a grant touches it — there is **no
+"default read-all"**. A valid login (active in `ols_users`) with **no grants** sees nothing but a
+friendly **"No features assigned — reach out to the OLS Team"** page (`/no-access`, wired via
+`RbacService.hasAnyAccess()` = active AND ≥1 granted screen).
+
+- **ADMIN** — `IS_ADMIN='Y'` in `ols_users` → full access, grants ignored.
+- **READ** — sees exactly the screens granted (a `SCREEN` grant, a `SERVER` grant → Log Analytics,
+  or a config grant → Config Ops). **Infra Health and Service Console are now opt-in too** — grant
+  `SCREEN / infra_health / * / READ` (or `service_console`) to reveal them. Home appears whenever the
+  user has ≥1 feature, and shows only the sections they can access (RBAC on Home).
+- **SALT** — Config-Ops-only persona: even a stray non-config grant is ignored; it sees only the
+  config scopes/tables granted to it.
+
+**How a screen becomes visible** (READ/SALT): a `SCREEN` grant for it · a `SERVER` grant (→ Log
+Analytics) · a `TABLE`/`TABLE_CATEGORY`/`SCREEN` grant in a `config_ops:<scope>` (→ Config Ops).
+`SECTION`/`DENY` never grants visibility (it only hides within an already-visible screen).
 
 ## 3. Overrides (grants) — `ols_app_access`
 
@@ -39,9 +49,9 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 | Column | Meaning |
 |---|---|
 | `USERNAME` | the user (matched case-insensitively) |
-| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` |
+| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `APP` \| `DB` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` |
 | `RESOURCE_SCOPE` | the screen/scope the resource lives in (see below) |
-| `RESOURCE_KEY` | the specific resource id, or `*` for "all in scope" |
+| `RESOURCE_KEY` | the specific resource id, or `*` for "all in scope". `APP` keys: `OLS_GROUP`/`OLS_CIB`/`OLS_RETAIL`/`POSEIDON`. `DB` keys: `group`/`cib_batch`/`cib_reporting`/`retail_batch`/`retail_reporting` |
 | `ACCESS_LEVEL` | `READ` \| `WRITE` \| `DENY` |
 | `APP_ENV` | `PROD` / `STG` / `DEV`, or `*` for all environments |
 | `IS_ACTIVE` | `Y` active, `N` = revoked (keep the row for audit) |
@@ -77,13 +87,14 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
 
 ## 4. Per-screen behaviour
 
-| Screen | View | Write | Resource control |
+| Screen | Visible when… | Write | Resource control |
 |---|---|---|---|
-| **Log Analytics** | read | (read-only screen) | **Servers opt-in** — user sees only granted `SERVER` rows |
-| **Config Ops** (group/cib/retail) | a sub-screen appears only if the user has ≥1 grant in it | per-**table** (`TABLE`/`TABLE_CATEGORY` = `WRITE`) → the content modal's add/edit/delete/duplicate | **Tables opt-in** — category grant + per-table overrides |
-| **Infra Health** | read, everyone | — | none |
-| **Service Console** | read, everyone | `SCREEN … WRITE` → start/stop buttons | none |
-| **Oracle Command Center** | read, everyone | `SCREEN … WRITE` → kill + apply-fix | **Sections opt-out** — a `SECTION … DENY` hides one (e.g. SQL Intelligence) |
+| **Home** | the user has ≥1 feature | — | RBAC-filtered: shows only the Infra / Service / Oracle sections the user can access; nothing → a "your tools are in the sidebar" note |
+| **Log Analytics** | a `SERVER` grant exists | (read-only screen) | **Servers opt-in** — user sees only granted `SERVER` rows |
+| **Config Ops** (group/cib/retail) | a config grant exists in that scope | per-**table** (`TABLE`/`TABLE_CATEGORY` = `WRITE`) → the content modal's add/edit/delete/duplicate | **Tables opt-in** — category grant + per-table overrides |
+| **Infra Health** | an `APP` grant (or `SCREEN / infra_health` = all apps) | — | **Apps opt-in** — user sees only granted `APP` rows (OLS_GROUP / OLS_CIB / …) |
+| **Service Console** | `SCREEN / service_console / * / READ` (or WRITE) | `SCREEN … WRITE` → start/stop buttons | none (screen-level) |
+| **Oracle Command Center** | a `DB` grant (or `SCREEN / oracle_command_center` = all DBs) | **per-DB** — kill/apply on a DB needs `DB … WRITE` for that DB | **DBs opt-in + per-DB level** (READ tab = view-only, WRITE tab = killable). Also **Sections opt-out** — `SECTION … DENY` hides one (e.g. SQL Intelligence) |
 
 ### Config Ops resolution (category + per-table)
 - **Category grant** `TABLE_CATEGORY` covers many tables at once (matched on `ols_master_table_config.table_category`):
@@ -121,11 +132,21 @@ VALUES ('MSMITH','TABLE','config_ops:cib','CIB_ACCOUNT_MASTER','WRITE','PROD','A
 -- Config Ops: remove one table the category granted
 VALUES ('JDOE','TABLE','config_ops:group','GRP_GL_MAPPING','DENY','PROD','ADMIN1');
 
--- Service Console: DBAUSER may start/stop services
+-- VIEW-only grants for the "everyone" screens (now opt-in): reveal the screen, no actions
+VALUES ('JDOE','SCREEN','infra_health','*','READ','PROD','ADMIN1');           -- see Infra Health
+VALUES ('JDOE','SCREEN','service_console','*','READ','PROD','ADMIN1');        -- see Service Console (no start/stop)
+VALUES ('JDOE','SCREEN','oracle_command_center','*','READ','PROD','ADMIN1');  -- see OCC (no kill)
+
+-- Service Console: DBAUSER may start/stop services (WRITE also reveals the screen)
 VALUES ('DBAUSER','SCREEN','service_console','*','WRITE','PROD','ADMIN1');
 
--- Oracle Command Center: DBAUSER may kill sessions / apply fixes
-VALUES ('DBAUSER','SCREEN','oracle_command_center','*','WRITE','PROD','ADMIN1');
+-- Infra Health: DBAUSER sees ONLY the OLS_GROUP app (keys OLS_GROUP/OLS_CIB/OLS_RETAIL/POSEIDON, '*' = all)
+VALUES ('DBAUSER','APP','infra_health','OLS_GROUP','READ','PROD','ADMIN1');
+
+-- Oracle Command Center: WRITE on GROUP, READ-only on CIB BATCH; the other 3 DB tabs stay hidden
+--   (DB keys: group | cib_batch | cib_reporting | retail_batch | retail_reporting; '*' = all DBs)
+VALUES ('DBAUSER','DB','oracle_command_center','group','WRITE','PROD','ADMIN1');
+VALUES ('DBAUSER','DB','oracle_command_center','cib_batch','READ','PROD','ADMIN1');
 
 -- Oracle Command Center: hide SQL Intelligence for JDOE
 VALUES ('JDOE','SECTION','oracle_command_center','sql_intelligence','DENY','PROD','ADMIN1');

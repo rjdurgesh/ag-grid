@@ -3,9 +3,12 @@
   <div class="cc-hero" [class]="'cc-hero--' + posture()">
     <div class="cc-hero__left">
       <h1 class="cc-hero__title">{{ greeting() }}</h1>
+      @if (canInfra() || canServices()) {
       <div class="cc-posture" [class]="estateLoading() ? 'cc-posture--loading' : 'cc-posture--' + posture()">
         <span class="cc-posture__pulse"></span>{{ estateLoading() ? 'Assessing estate…' : postureText() }}
       </div>
+      }
+      @if (canInfra() || canServices() || canOracle()) {
       <p class="cc-hero__sync">
         @if (loading()) {
           <span>Synchronising estate…</span>
@@ -20,25 +23,36 @@
           Re-scan
         </button>
       </p>
+      }
     </div>
 
-    <div class="cc-score">
-      <div class="cc-score__gauge" [class.is-loading]="estateLoading()" [style.background]="scoreGauge()">
-        <div class="cc-score__inner">
-          @if (estateLoading()) {
-            <span class="cc-score__num cc-score__num--load">··</span>
-          } @else {
-            <span class="cc-score__num">{{ healthScore() }}</span>
-            <span class="cc-score__pct">/ 100</span>
-          }
+    @if (canInfra() || canServices()) {
+      <div class="cc-score">
+        <div class="cc-score__gauge" [class.is-loading]="estateLoading()" [style.background]="scoreGauge()">
+          <div class="cc-score__inner">
+            @if (estateLoading()) {
+              <span class="cc-score__num cc-score__num--load">··</span>
+            } @else {
+              <span class="cc-score__num">{{ healthScore() }}</span>
+              <span class="cc-score__pct">/ 100</span>
+            }
+          </div>
         </div>
+        <span class="cc-score__label">Health Index</span>
       </div>
-      <span class="cc-score__label">Health Index</span>
-    </div>
+    }
   </div>
 
-  <!-- KPI TILES -->
+  @if (nothingOnHome()) {
+    <div class="cc-card cc-home-empty">
+      <p><b>Nothing to summarise here yet.</b> Your assigned tools are in the sidebar on the left — open one to get started. Need more access? Reach out to the OLS Team.</p>
+    </div>
+  }
+
+  <!-- KPI TILES (each gated by the user's access to the underlying screen) -->
+  @if (canInfra() || canServices()) {
   <div class="cc-kpis">
+    @if (canInfra()) {
     <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--srv">▦</span> Servers</div>
       @if (infraFirstLoad()) {
@@ -52,7 +66,9 @@
         </div>
       }
     </a>
+    }
 
+    @if (canServices()) {
     <a class="cc-kpi" routerLink="/infra_pulse/service_console" title="Go to Service Console">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--svc">⚙</span> Services</div>
       @if (servicesFirstLoad()) {
@@ -66,7 +82,9 @@
         </div>
       }
     </a>
+    }
 
+    @if (canInfra()) {
     <a class="cc-kpi" routerLink="/infra_pulse/infrastructure_health" title="Go to Infrastructure Health">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--share">▤</span> Share Drives</div>
       @if (infraFirstLoad()) {
@@ -80,6 +98,7 @@
         </div>
       }
     </a>
+    }
 
     <div class="cc-kpi cc-kpi--static">
       <div class="cc-kpi__head"><span class="cc-kpi__icon cc-kpi__icon--app">◈</span> Applications</div>
@@ -87,8 +106,10 @@
       <div class="cc-kpi__break"><span class="cc-chip cc-chip--muted">monitored in {{ env }}</span></div>
     </div>
   </div>
+  }
 
   <!-- ORACLE DATABASES -->
+  @if (canOracle()) {
   <div class="cc-card cc-ora">
     <div class="cc-card__head">
       Oracle Databases
@@ -135,8 +156,10 @@
       <div class="cc-empty">Oracle snapshot unavailable.</div>
     }
   </div>
+  }
 
   <!-- APPLICATION STATUS MATRIX -->
+  @if (canInfra() || canServices()) {
   <div class="cc-card cc-apps">
     <div class="cc-card__head">
       Application Status Matrix
@@ -195,9 +218,12 @@
     </div>
     }
   </div>
+  }
 
   <!-- ATTENTION -->
+  @if (canInfra() || canServices()) {
   <div class="cc-grid">
+    @if (canInfra()) {
     <div class="cc-card cc-attn">
       <div class="cc-card__head">
         Needs Attention · Servers Health
@@ -235,7 +261,9 @@
         </div>
       }
     </div>
+    }
 
+    @if (canServices()) {
     <div class="cc-card cc-attn">
       <div class="cc-card__head">
         Needs Attention · Services
@@ -271,5 +299,7 @@
         </div>
       }
     </div>
+    }
   </div>
+  }
 </section>

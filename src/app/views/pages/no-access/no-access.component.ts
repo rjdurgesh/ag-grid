@@ -2,6 +2,7 @@ import { Component, inject } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { AuthService } from '../../../auth/auth.service';
+import { environment } from '../../../../environments/environment';
 
 @Component({
   selector: 'app-no-access',
@@ -14,6 +15,7 @@ export class NoAccessComponent {
   private readonly router = inject(Router);
 
   readonly user = this.auth.user;
+  readonly supportEmail = environment.supportEmail;
 
   logout(): void {
     this.auth.logout();

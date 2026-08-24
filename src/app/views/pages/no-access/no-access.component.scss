@@ -47,6 +47,22 @@
     margin: 0 0 18px;
 }
 
+.na__contact {
+    margin: -6px 0 18px;
+    font-size: 14px;
+}
+
+.na__mail {
+    color: #6b78ff;
+    font-weight: 700;
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(107, 120, 255, .5);
+}
+
+.na__mail:hover {
+    border-bottom-style: solid;
+}
+
 .na__btn {
     border: 0;
     border-radius: 11px;

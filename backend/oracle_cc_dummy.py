@@ -37,13 +37,16 @@ from oracle_cc_api import (
     _IDXH_COLS,
     _IDX_COLS,
     _SESS_COLS,
+    _TEMP_COLS,
     _TOP_COLS,
+    _temp_row,
     _blk_row,
     _blocking_payload,
     _enabled_target_keys,
     _lock_row,
     _locks_payload,
     _panel_rollback,
+    _monitor_tiles,
     _panel_table,
     _panel_text,
     _sess_row,
@@ -169,6 +172,27 @@ def locks_dummy(t: OracleTarget) -> dict:
                   bind_values="  :1 = 20260821"),
     ]
     return _locks_payload(rows)
+
+
+def temp_usage_dummy(t: OracleTarget) -> dict:
+    # Raw rows shaped like database.fetch_temp_usage → massaged via _temp_row. One row has NULL
+    # firstname/surname (demoing the optional ols_users case), and one is INACTIVE (idle but still
+    # holding temp — the classic kill candidate).
+    raw = [
+        {"sid": 845, "serial": 22931, "status": "ACTIVE", "username": "OLS_BATCH", "osuser": "batchsvc",
+         "firstname": "Ravi", "surname": "Menon", "machine": "batch07", "program": "sqlplus@batch07",
+         "sql_id": "7ymz9qk4d3n1a", "secs": 1220, "tablespace": "TEMP", "mb_used": 8420, "segments": 6},
+        {"sid": 512, "serial": 10233, "status": "ACTIVE", "username": "OLS_APP", "osuser": "appsvc",
+         "firstname": "Aisha", "surname": "Khan", "machine": "wildfly02", "program": "JDBC Thin Client",
+         "sql_id": "9ab77tzp0q2mx", "secs": 640, "tablespace": "TEMP", "mb_used": 2140, "segments": 3},
+        {"sid": 233, "serial": 4021, "status": "INACTIVE", "username": "OLS", "osuser": "etl",
+         "firstname": None, "surname": None, "machine": "etl01", "program": "sqlldr@etl01",
+         "sql_id": "—", "secs": 5400, "tablespace": "TEMP", "mb_used": 760, "segments": 1},
+    ]
+    rows = [_temp_row(r) for r in raw]
+    total_mb = sum(int(r.get("mb_used") or 0) for r in rows)
+    return {"status": "success", "columns": _TEMP_COLS, "rows": rows,
+            "summary": {"sessions": len(rows), "total_mb": total_mb}}
 
 
 def kill_session_dummy(t: OracleTarget, body: KillRequest) -> dict:
@@ -390,16 +414,29 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
                               "plan": pa["plan"], "stats": pa["stats"]}
 
     panels = []
-    # Killed sessions are (almost always) busy rolling back — surface that first.
+    # Killed sessions are (almost always) busy rolling back — surface that first. Realistic dict
+    # matching database.fetch_session_rollback (V$TRANSACTION undo + V$SESSION_LONGOPS progress).
     if status == "KILLED":
-        panels.append(_panel_rollback())
+        panels.append(_panel_rollback({
+            "percent": 63, "is_active": True,
+            "undo_blocks_total": 128_400, "undo_blocks_done": 80_892, "undo_blocks_left": 47_508,
+            "undo_blocks_remaining": 47_508, "undo_records_remaining": 1_894_240,
+            "elapsed_seconds": 252, "time_remaining_seconds": 150,
+        }))
+    monitor_panel = _panel_text("monitor", "SQL Monitor", monitor_text)
+    monitor_panel["overview"] = _monitor_tiles({
+        "status": status if status != "KILLED" else "EXECUTING", "sql_id": sql_id,
+        "sql_plan_hash_value": 3106586606, "elapsed_s": 858.0, "cpu_s": 126.0,
+        "buffer_gets": 1_204_559, "disk_reads": 88_140,
+        "started": "16-Aug 13:31:02", "last_refresh": "16-Aug 13:45:20",
+    })
     panels += [
         plan_panel,
         _panel_table("waits", "Wait Events", waits_cols, waits_rows),
         _panel_table("binds", "Bind Variables", binds_cols, binds_rows),
         _panel_table("ash", "Active Session History", ash_cols, ash_rows),
         _resource_panel_dummy(),
-        _panel_text("monitor", "SQL Monitor", monitor_text),
+        monitor_panel,
         _panel_table("stats", "Object Statistics", stats_cols, stats_rows),
         _panel_table("locks", "Locks Held", locks_cols, locks_rows),
         _panel_table("awr", "AWR (DBA_HIST)", awr_cols, awr_rows),

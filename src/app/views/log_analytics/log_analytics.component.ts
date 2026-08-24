@@ -38,6 +38,23 @@ const WINDOW_SIZE_OPTIONS = [
 const norm = (s: string): string => (s ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
 
 /**
+ * Friendly DISPLAY of an admin-share UNC path: `\\server\c$\apps\data` → `c:\apps\data`
+ * (and `\\server\d$` → `d:`, the drive root). Local paths (`C:\my\cib`) and non-admin UNC
+ * shares (`\\nas\share\…`) are shown unchanged. **Display only** — every directory listing,
+ * file read and download still uses the real UNC path, so remote access keeps working.
+ */
+const displayPath = (raw: string): string => {
+  if (!raw) {
+    return raw;
+  }
+  const m = raw.replace(/\\/g, '/').match(/^\/\/[^/]+\/([A-Za-z])\$(\/.*)?$/);
+  if (!m) {
+    return raw;
+  }
+  return `${m[1]}:${(m[2] ?? '').replace(/\//g, '\\')}`;
+};
+
+/**
  * Log Analytics Hub — pick a server (list + file paths both from the API) and
  * browse its logs as a file tree, previewing file content with pagination for
  * large files.
@@ -82,6 +99,11 @@ export class LogAnalyticsComponent implements OnInit {
   readonly refreshing = signal(false);
 
   readonly selectedFile = signal<string | null>(null);
+  /** Friendly display of the selected file's path (c:\… form); the tooltip keeps the real UNC. */
+  readonly selectedFileDisplay = computed(() => {
+    const p = this.selectedFile();
+    return p ? displayPath(p) : '';
+  });
   readonly fileContent = signal<string>('');
   readonly loadingContent = signal(false);
   /** True while a new page of a large file is being rendered. */
@@ -236,7 +258,9 @@ export class LogAnalyticsComponent implements OnInit {
     // the tree straight from them, one lazy root per base. Each folder's children
     // load on first expand via /dir. No extra API call needed here.
     this.fileRoots.set([]);
-    this.lazyRoots.set(server.basePaths.filter(Boolean).map((p) => ({ label: p, path: norm(p) })));
+    // `label` is the friendly display (c:\apps\data); `path` stays the real UNC (\\server\c$\apps\data)
+    // used for every listing / read / download.
+    this.lazyRoots.set(server.basePaths.filter(Boolean).map((p) => ({ label: displayPath(p), path: norm(p) })));
     this.loadingFiles.set(false);
   }
 

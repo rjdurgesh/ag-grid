@@ -6,10 +6,14 @@
             <path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
           </svg>
         </div>
-        <h1 class="na__title">Access not granted</h1>
+        <h1 class="na__title">No features assigned yet</h1>
         <p class="na__text">
-          Your account is authenticated but has no roles assigned for this application.
-          Please contact OLS Team to request access.
+          You're signed in successfully — but no features have been assigned to your account for this
+          application. Please reach out to the <strong>OLS Team</strong> to get the access you need,
+          and you'll be good to go.
+        </p>
+        <p class="na__contact">
+          <a class="na__mail" [href]="'mailto:' + supportEmail + '?subject=OLS%20Dashboard%20-%20request%20access'">{{ supportEmail }}</a>
         </p>
         @if (user(); as u) {
           <p class="na__user">Signed in as <strong>{{ u.displayName }}</strong> ({{ u.username }})</p>
