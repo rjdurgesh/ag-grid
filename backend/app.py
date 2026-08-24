@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import oracle_cc_api
+from access_api import router as access_router
 from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
@@ -64,6 +65,11 @@ app.state.db_configs = load_db_configs()
 # The Oracle Command Center routes read `request.app.state.db_configs.get(db)` directly and pass
 # it to the `database.py` data layer, which opens the connection. Nothing else to wire here.
 
+# RBAC reads the app's OWN database (ols_users + ols_app_access) — a DIFFERENT connection from the
+# monitored Oracle CC databases above. Wire your app-DB config/connection here; in dev it's an empty
+# stub because access runs in dummy mode (ACCESS_USE_DUMMY=1). See access_api.py / RBAC_DESIGN.md.
+app.state.app_db_config = {}
+
 # The Angular dev server runs on :4200. Add your real front-end origins for prod.
 ALLOWED_ORIGINS = [
     "http://localhost:4200",
@@ -78,6 +84,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(access_router)
 app.include_router(log_analytics_router)
 app.include_router(system_router)
 app.include_router(infra_health_router)

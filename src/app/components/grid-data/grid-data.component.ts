@@ -127,6 +127,10 @@ export class GridDataComponent {
   readonly actions = input<GridAction[]>([]);
   /** Read-only mode (RBAC): hides every mutating control (Add/Save/Delete/Edit/Roll/Upload). */
   readonly readOnly = input(false);
+  /** Optional PER-ROW write gate (RBAC). When provided, the content modal's mutating controls
+   *  follow this predicate for the open table (so a user can edit some tables but not others).
+   *  Falls back to `!readOnly()` when not supplied. */
+  readonly canWriteRow = input<((row: Record<string, unknown>) => boolean) | null>(null);
   /** Loader invoked with a row to fetch its eye-modal content. */
   readonly getDetail = input<(row: Record<string, unknown>) => Observable<TableContent>>();
   /**
@@ -201,6 +205,16 @@ export class GridDataComponent {
   readonly modalIsCob = computed(() => {
     const row = this.modalRow();
     return !!row && this.isRowCob()(row);
+  });
+  /** May the user WRITE the table currently open in the modal? Per-row gate if `canWriteRow` is
+   *  supplied (RBAC per-table), else the global `readOnly`. Gates every mutating control. */
+  readonly modalWritable = computed(() => {
+    const fn = this.canWriteRow();
+    const row = this.modalRow();
+    if (fn && row) {
+      return fn(row);
+    }
+    return !this.readOnly();
   });
 
   /**

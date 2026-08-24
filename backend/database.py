@@ -16,6 +16,32 @@ from __future__ import annotations
 from typing import Any
 
 
+def _lob_output_type_handler(cursor, *args):
+    """Fetch CLOB/NCLOB as ``str`` and BLOB as ``bytes`` directly, so callers NEVER receive a LOB
+    locator object. Without this, ``DBMS_XPLAN.DISPLAY_CURSOR``, ``REPORT_SQL_MONITOR``,
+    ``sql_fulltext``, CLOB config columns and ``LISTAGG`` overflow come back as LOBs that break
+    ``dict(zip(...))`` / JSON and go invalid once the cursor closes ("LOB variable no longer valid").
+
+    Supports both python-oracledb signatures: 2.x ``(cursor, metadata)`` and the legacy
+    ``(cursor, name, default_type, size, precision, scale)`` form."""
+    import oracledb
+    type_code = args[0].type_code if len(args) == 1 else args[1]
+    if type_code in (oracledb.DB_TYPE_CLOB, oracledb.DB_TYPE_NCLOB):
+        return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
+    if type_code == oracledb.DB_TYPE_BLOB:
+        return cursor.var(oracledb.DB_TYPE_LONG_RAW, arraysize=cursor.arraysize)
+    return None
+
+
+def _install_lob_handler(connection: Any) -> Any:
+    """Attach the LOB→str/bytes handler to a connection (best-effort; no-op if unsupported)."""
+    try:
+        connection.outputtypehandler = _lob_output_type_handler
+    except Exception:
+        pass
+    return connection
+
+
 def connect(db_config: Any):
     """Open (or pass through) a DB connection for one scope's ``db_config``.
 
@@ -24,21 +50,25 @@ def connect(db_config: Any):
       * a mapping with user/password/dsn               → ``oracledb.connect(**...)``;
       * a DSN / EZConnect string                       → ``oracledb.connect(dsn)``.
     Replace the body with your own connector if you connect differently.
+
+    Every returned connection gets a LOB output-type handler so CLOB/BLOB columns come back as
+    plain ``str``/``bytes`` (see ``_lob_output_type_handler``) — applied here ONCE so all queries
+    in this module are covered.
     """
     if db_config is None:
         raise RuntimeError("No db_config for this scope (connection is None / DB unreachable).")
     if hasattr(db_config, "cursor"):          # already a live connection → reuse it
-        return db_config
+        return _install_lob_handler(db_config)
     import oracledb                            # lazy: the driver isn't needed in dummy mode
     if isinstance(db_config, dict):
         if not db_config:                      # empty stub (dev/dummy) — nothing to connect with
             raise RuntimeError("db_config is an empty stub; run with dummy mode, or provide real credentials.")
-        return oracledb.connect(
+        return _install_lob_handler(oracledb.connect(
             user=db_config.get("user"),
             password=db_config.get("password"),
             dsn=db_config.get("dsn") or db_config.get("connect_string"),
-        )
-    return oracledb.connect(str(db_config))    # a bare DSN / connect string
+        ))
+    return _install_lob_handler(oracledb.connect(str(db_config)))    # a bare DSN / connect string
 
 
 # =============================================================================
@@ -1156,6 +1186,63 @@ def fetch_sql_monitor(db_config: Any, sql_id: str) -> dict:
         rc = [c[0].lower() for c in cursor.description]
         rr = [dict(zip(rc, row)) for row in cursor.fetchall()]
         return {"monitored": True, "overview": ov[0], "report": (str(rr[0].get("report")) if rr else "")}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# RBAC / access control — reads only. `ols_users` is NEVER modified here (it holds
+# the identity + base role: IS_ADMIN / IS_READ / IS_SALT + LGCL_DEL_FLG). Grants
+# (the fine-grained overrides) live in `ols_app_access`. These two reads feed the
+# access snapshot assembled in `access_api.py`. See RBAC_DESIGN.md.
+# =============================================================================
+
+def fetch_user_identity(db_config: Any, username: str) -> dict | None:
+    """One row from `ols_users` for the signed-in user (case-insensitive match): identity +
+    the active flag (LGCL_DEL_FLG) + the base-role flags. `None` when the user does not exist.
+    The API layer treats LGCL_DEL_FLG != 'N' as inactive (gate 1). Read-only — no writes."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT username, firstname, lastname, emailid, lgcl_del_flg,
+                   is_admin, is_read, is_salt
+              FROM ols_users
+             WHERE UPPER(username) = UPPER(:u)
+        """, {"u": username})
+        cols = [c[0].lower() for c in cursor.description]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        return rows[0] if rows else None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_user_grants(db_config: Any, username: str, app_env: str) -> list[dict]:
+    """Active override grants for a user from `ols_app_access`, scoped to the given environment
+    (rows where APP_ENV matches, or the wildcard '*'). Each row: resource_type, resource_scope,
+    resource_key, access_level. The API layer resolves these into the effective snapshot."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT username, resource_type, resource_scope, resource_key, access_level, app_env
+              FROM ols_app_access
+             WHERE UPPER(username) = UPPER(:u)
+               AND is_active = 'Y'
+               AND (app_env = :env OR app_env = '*')
+        """, {"u": username, "env": app_env})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
     finally:
         if cursor:
             cursor.close()

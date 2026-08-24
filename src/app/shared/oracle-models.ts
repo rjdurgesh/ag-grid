@@ -153,6 +153,10 @@ export interface SessionDetail {
   status: string;
   session: Record<string, unknown>;
   panels: DetailPanel[];
+  /** False when the session no longer exists (closed before the deep-dive loaded). */
+  available?: boolean;
+  /** Why unavailable, e.g. 'gone'. */
+  reason?: string;
 }
 
 /** Section 7 session-state filter (default = active). */

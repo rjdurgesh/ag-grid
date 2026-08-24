@@ -173,6 +173,11 @@ def locks_dummy(t: OracleTarget) -> dict:
 
 def kill_session_dummy(t: OracleTarget, body: KillRequest) -> dict:
     logger.info("DUMMY kill-session %s,%s on %s (immediate=%s)", body.sid, body.serial, t.key, body.immediate)
+    # Session already gone (closed before the kill landed) → success no-op, not an error. Mirrors the
+    # real path catching ORA-00030 (see kill_session in oracle_cc_api.py).
+    if not any(r["sid"] == body.sid for r in _all_sessions()):
+        return {"status": "success", "success": True, "gone": True,
+                "message": f"Session {body.sid},{body.serial} had already ended — nothing to kill."}
     return {"status": "success", "success": True,
             "message": f"Session {body.sid},{body.serial} has been marked for kill on {t.instance}. "
                        "Its uncommitted work is being rolled back."}
@@ -239,6 +244,12 @@ def sessions_dummy(t: OracleTarget, status: str) -> dict:
 def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
     # Look the session up so a KILLED one gets the rollback monitor + correct facts.
     src = next((r for r in _all_sessions() if r["sid"] == q.sid), None)
+    # Session no longer in v$session (it closed immediately) → clean "gone" response so the UI shows
+    # a friendly "no longer active" message instead of a load error. Mirrors the real API path.
+    if src is None:
+        return {"status": "success", "available": False, "reason": "gone",
+                "session": {"sid": q.sid, "serial": q.serial, "session": f"{q.sid},{q.serial}",
+                            "sql_id": q.sql_id or "—"}, "panels": []}
     status = src["status"] if src else "ACTIVE"
     sql_raw = src.get("sql_id") if src else None
     sql_id = q.sql_id or (sql_raw if sql_raw and sql_raw != "—" else None) or "7ymz9qk4d3n1a"

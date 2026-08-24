@@ -83,6 +83,19 @@ function filterNav(items: INavData[], rbac: RbacService): INavData[] {
 }
 
 function isNavAllowed(item: INavData, rbac: RbacService): boolean {
-  const screen = screenForNavUrl(item.url as string | undefined);
+  const url = item.url as string | undefined;
+  // Config Ops sub-screens (/config_ops_console/{group|cib|retail}) are gated per scope, so a user
+  // granted only 'group' never sees the cib / retail items.
+  const scope = configScopeOfUrl(url);
+  if (scope) {
+    return rbac.configScopeVisible(scope);
+  }
+  const screen = screenForNavUrl(url);
   return screen ? rbac.canView(screen) : true;
+}
+
+/** '/config_ops_console/cib' → 'cib'; the parent '/config_ops_console' (or anything else) → null. */
+function configScopeOfUrl(url: string | undefined): string | null {
+  const m = (url ?? '').match(/^\/config_ops_console\/([^/]+)/);
+  return m ? m[1] : null;
 }

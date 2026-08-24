@@ -233,42 +233,46 @@ export function mockFileProperties(path: string): FileProperties {
 // Config Ops Console — table catalogue per scope
 // ---------------------------------------------------------------------------
 
-/** Catalogue definitions per scope — name + COB/active flags (rendered as Y/N). */
+/** Catalogue definitions per scope — name + COB/active flags (rendered as Y/N) + RBAC category. */
 interface CatalogueDef {
   name: string;
   cob: boolean;
   active: boolean;
+  /** RBAC category grant bucket (OMT-FUNCTIONAL / OMT-TECHNICAL / OMT-BOTH). */
+  category: string;
 }
 
 const CONFIG_TABLE_DEFS: Record<ConfigScope, CatalogueDef[]> = {
   cib: [
-    { name: 'CIB_ACCOUNT_MASTER', cob: true, active: true },
-    { name: 'CIB_LIMIT_CONFIG', cob: false, active: true },
-    { name: 'CIB_FX_RATES', cob: true, active: false },
-    { name: 'CIB_PAYMENT_ROUTES', cob: true, active: true },
-    { name: 'CIB_SWIFT_MAPPING', cob: false, active: true }
+    { name: 'CIB_ACCOUNT_MASTER', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'CIB_LIMIT_CONFIG', cob: false, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'CIB_FX_RATES', cob: true, active: false, category: 'OMT-BOTH' },
+    { name: 'CIB_PAYMENT_ROUTES', cob: true, active: true, category: 'OMT-TECHNICAL' },
+    { name: 'CIB_SWIFT_MAPPING', cob: false, active: true, category: 'OMT-TECHNICAL' }
   ],
   group: [
-    { name: 'GRP_ENTITY_HIERARCHY', cob: true, active: true },
-    { name: 'GRP_COST_CENTER', cob: false, active: true },
-    { name: 'GRP_GL_MAPPING', cob: true, active: false },
-    { name: 'GRP_RISK_WEIGHTS', cob: true, active: true }
+    { name: 'GRP_ENTITY_HIERARCHY', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'GRP_COST_CENTER', cob: false, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'GRP_GL_MAPPING', cob: true, active: false, category: 'OMT-TECHNICAL' },
+    { name: 'GRP_RISK_WEIGHTS', cob: true, active: true, category: 'OMT-BOTH' }
   ],
   retail: [
-    { name: 'RTL_PRODUCT_CATALOG', cob: true, active: true },
-    { name: 'RTL_BRANCH_CONFIG', cob: false, active: true },
-    { name: 'RTL_FEE_SCHEDULE', cob: true, active: true },
-    { name: 'RTL_CARD_BINS', cob: false, active: false },
-    { name: 'RTL_LOYALTY_TIERS', cob: true, active: true },
-    { name: 'RTL_ATM_NETWORK', cob: true, active: true }
+    { name: 'RTL_PRODUCT_CATALOG', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'RTL_BRANCH_CONFIG', cob: false, active: true, category: 'OMT-TECHNICAL' },
+    { name: 'RTL_FEE_SCHEDULE', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'RTL_CARD_BINS', cob: false, active: false, category: 'OMT-BOTH' },
+    { name: 'RTL_LOYALTY_TIERS', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'RTL_ATM_NETWORK', cob: true, active: true, category: 'OMT-TECHNICAL' }
   ]
 };
 
 /** Prefix used to synthesise extra catalogue rows so pagination is demonstrable. */
 const SCOPE_PREFIX: Record<ConfigScope, string> = { cib: 'CIB', group: 'GRP', retail: 'RTL' };
 
-/** Catalogue columns — the generic `{ cols, rows }` shape the real API returns. */
-const CATALOGUE_COLS = ['APP_ENV', 'TABLE_NAME', 'IS_COBDT', 'IS_ACTIVE'];
+/** Catalogue columns — the generic `{ cols, rows }` shape the real API returns. TABLE_CATEGORY is
+ *  required for RBAC category grants (the real /api/config/{scope}/tables must return it too). */
+const CATALOGUE_COLS = ['APP_ENV', 'TABLE_NAME', 'TABLE_CATEGORY', 'IS_COBDT', 'IS_ACTIVE'];
+const CATEGORY_CYCLE = ['OMT-FUNCTIONAL', 'OMT-TECHNICAL', 'OMT-BOTH'];
 
 const yn = (v: boolean): string => (v ? 'Y' : 'N');
 
@@ -280,10 +284,11 @@ const yn = (v: boolean): string => (v ? 'Y' : 'N');
 export function mockConfigTables(scope: ConfigScope): TabularData {
   const defs = CONFIG_TABLE_DEFS[scope] ?? [];
   const prefix = SCOPE_PREFIX[scope] ?? 'OLS';
-  const rows: unknown[][] = defs.map((d) => [environment.appEnv,d.name, yn(d.cob), yn(d.active)]);
+  const rows: unknown[][] = defs.map((d) => [environment.appEnv, d.name, d.category, yn(d.cob), yn(d.active)]);
   // Pad out to ~60 rows so the grid's pagination is exercised.
   for (let i = defs.length + 1; i <= 60; i++) {
-    rows.push([environment.appEnv,`${prefix}_REF_DATA_${String(i).padStart(3, '0')}`, yn(i % 3 === 0), yn(i % 4 !== 0)]);
+    rows.push([environment.appEnv, `${prefix}_REF_DATA_${String(i).padStart(3, '0')}`,
+      CATEGORY_CYCLE[i % CATEGORY_CYCLE.length], yn(i % 3 === 0), yn(i % 4 !== 0)]);
   }
   return { cols: CATALOGUE_COLS, rows };
 }

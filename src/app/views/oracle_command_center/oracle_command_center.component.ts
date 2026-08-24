@@ -5,6 +5,7 @@ import { DynTableComponent } from '../../components/dyn-table/dyn-table.componen
 import { LoaderComponent } from '../../components/loader/loader.component';
 import { ConfirmService } from '../../components/confirm/confirm.service';
 import { ErrorReportService } from '../../components/error-report/error-report.service';
+import { IfSectionDirective } from '../../auth/if-section.directive';
 import { RbacService } from '../../auth/rbac.service';
 import { environment } from '../../../environments/environment';
 import { formatDateTime, syncAgo } from '../../shared/date-utils';
@@ -30,7 +31,7 @@ const REFRESH_INTERVALS = [5, 10, 15, 30] as const;
   selector: 'app-oracle-command-center',
   templateUrl: './oracle_command_center.component.html',
   styleUrls: ['./oracle_command_center.component.scss'],
-  imports: [LoaderComponent, DynTableComponent]
+  imports: [LoaderComponent, DynTableComponent, IfSectionDirective]
 })
 export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   private readonly svc = inject(OracleCcService);
@@ -158,9 +159,9 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly detailOpen = signal(false);
   readonly activePanel = signal<string>('');
 
-  /** Kill requires ADMIN access + a technical/both role (OMT-TECHNICAL / OMT-BOTH);
-   *  ADMIN+functional and any READ are view-only. Drives the Kill buttons + drawer action. */
-  readonly canKill = computed(() => this.rbac.canActTechnical());
+  /** Kill requires WRITE on the Oracle Command Center screen (ADMIN, or a SCREEN/WRITE grant).
+   *  READ users are view-only. Drives the Kill buttons + drawer action. See RBAC_DESIGN.md. */
+  readonly canKill = computed(() => this.rbac.canWrite('oracle_command_center'));
   readonly killActions: DynAction[] = [{ key: 'kill', label: 'Kill', tone: 'danger', title: 'Kill this session' }];
   /** Session-row actions: deep-dive always; kill only for admins (per-row whitelist hides it on KILLED rows). */
   readonly sessionActions = computed<DynAction[]>(() => {
@@ -563,7 +564,11 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
 
     this.svc.killSession(db, sid, serial).subscribe({
       next: (res) => {
-        if (res.success) {
+        if (res.gone) {
+          // The session vanished before the kill landed — nothing to kill. Not an error: a gentle
+          // note, then just re-read so the (now absent) session drops off the lists.
+          this.notify(true, `Session ${label} had already ended — nothing to kill.`);
+        } else if (res.success) {
           this.notify(true, `Session ${label} marked for kill.`);
         } else {
           this.showKillError(label, dbName, res.message || 'The database rejected the request.');
@@ -689,8 +694,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly planTextALoading = signal(false);
   readonly planTextBLoading = signal(false);
 
-  /** Apply-fix is a WRITE — same admin gate as kill-session. */
-  readonly canApplyFix = computed(() => this.rbac.canActTechnical());
+  /** Apply-fix is a WRITE — same gate as kill-session (WRITE on the OCC screen). */
+  readonly canApplyFix = computed(() => this.rbac.canWrite('oracle_command_center'));
 
   /** Distinct plan_hash_values available for the diff selectors. */
   readonly planPhvs = computed<number[]>(() =>

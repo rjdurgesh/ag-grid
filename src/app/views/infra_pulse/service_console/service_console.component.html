@@ -233,7 +233,7 @@
                                 <span class="isc-row__hb-abs">{{ formatDateTime(svc.lastHeartbeat) }}</span>
                                 <span class="isc-row__hb-rel">{{ timeAgo(svc.lastHeartbeat) }}</span>
                               </span>
-                              <span class="isc-row__actions" role="cell" *olsCanAct>
+                              <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
                                 <button type="button" class="isc-btn isc-btn--start"
                                   [disabled]="isUp(svc) || isPending(svc)" (click)="start(panel.app, server, svc)">
                                   <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
@@ -304,7 +304,7 @@
                       <span class="isc-row__hb-abs">{{ formatDateTime(item.service.lastHeartbeat) }}</span>
                       <span class="isc-row__hb-rel">{{ timeAgo(item.service.lastHeartbeat) }}</span>
                     </span>
-                    <span class="isc-row__actions" role="cell" *olsCanAct>
+                    <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
                       <button type="button" class="isc-btn isc-btn--start"
                         [disabled]="isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="start(item.app, item.server, item.service)">
                         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>

@@ -1,15 +1,31 @@
-@if (filterable()) {
+@if (filterable() || columnFilters()) {
   <div class="dt-filter">
-    <svg class="dt-filter__ic" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
-      <path d="M10.5 10.5 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-    </svg>
-    <input type="text" class="dt-filter__in" [value]="filterText()"
-      (input)="filterText.set($any($event.target).value)" [placeholder]="filterPlaceholder()"
-      aria-label="Filter rows" />
-    @if (filterText()) {
+    @if (filterable()) {
+      <svg class="dt-filter__ic" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M10.5 10.5 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <input type="text" class="dt-filter__in" [value]="filterText()"
+        (input)="filterText.set($any($event.target).value)" [placeholder]="filterPlaceholder()"
+        aria-label="Filter rows" />
+      @if (filterText()) {
+        <button type="button" class="dt-filter__clear" (click)="filterText.set('')" aria-label="Clear filter">×</button>
+      }
+    }
+    @if (columnFilters()) {
+      <button type="button" class="dt-colbtn" [class.is-active]="showColFilters()"
+        (click)="toggleColFilters()" [attr.aria-pressed]="showColFilters()" title="Filter by individual columns">
+        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+          <path d="M2 3h12M4 8h8M6 13h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        Column filters
+      </button>
+    }
+    @if (filterText() || hasColFilters()) {
       <span class="dt-filter__count">{{ visibleRowCount() }} of {{ totalRowCount() }}</span>
-      <button type="button" class="dt-filter__clear" (click)="filterText.set('')" aria-label="Clear filter">×</button>
+    }
+    @if (hasColFilters()) {
+      <button type="button" class="dt-filter__clearcols" (click)="clearColFilters()">Clear columns</button>
     }
   </div>
 }
@@ -24,6 +40,28 @@
           <th class="dt-actions-h">Actions</th>
         }
       </tr>
+      @if (columnFilters() && showColFilters()) {
+        <tr class="dt-fltrow">
+          @for (c of model().columns; track trackCol($index, c); let first = $first) {
+            <th [class.dt-first-h]="first">
+              @if (isChipCol(c)) {
+                <select class="dt-fltsel" [attr.aria-label]="'Filter ' + c.label"
+                  (change)="setColFilter(c.key, $any($event.target).value)">
+                  <option value="" [selected]="!colFilterValue(c.key)">All</option>
+                  @for (v of distinctValues(c); track v) {
+                    <option [value]="v" [selected]="colFilterValue(c.key) === v">{{ v }}</option>
+                  }
+                </select>
+              } @else {
+                <input type="text" class="dt-fltin" [value]="colFilterValue(c.key)"
+                  (input)="setColFilter(c.key, $any($event.target).value)"
+                  [placeholder]="c.label" [attr.aria-label]="'Filter ' + c.label" />
+              }
+            </th>
+          }
+          @if (hasActions()) { <th class="dt-actions-h"></th> }
+        </tr>
+      }
     </thead>
     <tbody>
       @for (f of flat(); track trackRow($index, f)) {

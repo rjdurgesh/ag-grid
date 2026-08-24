@@ -39,15 +39,53 @@
 }
 .dt-filter__clear:hover { background: color-mix(in srgb, var(--cui-body-color) 10%, transparent); color: var(--cui-body-color); }
 
+/* "Column filters" toggle + its clear button (right side of the filter toolbar). */
+.dt-colbtn {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--dt-line); border-radius: 7px; background: transparent;
+  color: var(--cui-secondary-color); font-size: 11.5px; font-weight: 600;
+  padding: 4px 9px; cursor: pointer; white-space: nowrap;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.dt-colbtn:hover { color: var(--cui-body-color); background: color-mix(in srgb, var(--cui-body-color) 6%, transparent); }
+.dt-colbtn.is-active {
+  color: var(--cui-primary); border-color: color-mix(in srgb, var(--cui-primary) 55%, var(--dt-line));
+  background: color-mix(in srgb, var(--cui-primary) 12%, transparent);
+}
+.dt-filter__clearcols {
+  flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
+  font-size: 11px; font-weight: 700; color: var(--cui-secondary-color); white-space: nowrap;
+}
+.dt-filter__clearcols:hover { color: var(--cui-body-color); text-decoration: underline; }
+
 .dt-scroll { overflow: auto; border: 1px solid var(--dt-line); border-radius: 10px; }
 table.dt { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.dt th, table.dt td { padding: 8px 11px; text-align: left; white-space: nowrap; }
 table.dt thead th {
   position: sticky; top: 0; z-index: 3; background: var(--dt-surface2); color: var(--cui-secondary-color);
+  height: 34px; box-sizing: border-box;   /* fixed so the column-filter row can pin directly below */
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; border-bottom: 1px solid var(--dt-line);
 }
 table.dt tbody tr { border-top: 1px solid color-mix(in srgb, var(--cui-body-color) 6%, transparent); }
 table.dt tbody tr:hover { background: color-mix(in srgb, var(--cui-primary) 7%, transparent); }
+
+/* Per-column filter row — a second sticky header row pinned just under the labels (top = header
+   height). Its frozen first / actions cells keep their sticky-left/right + higher z-index from the
+   existing .dt-first-h / .dt-actions-h rules, so they stay aligned during horizontal scroll. */
+table.dt thead tr.dt-fltrow th {
+  top: 34px; z-index: 3; background: var(--dt-surface2);
+  padding: 5px 8px; text-transform: none; letter-spacing: 0; font-weight: 400;
+}
+.dt-fltin, .dt-fltsel {
+  width: 100%; min-width: 68px; box-sizing: border-box;
+  border: 1px solid var(--dt-line); border-radius: 6px; background: var(--cui-body-bg);
+  color: var(--cui-body-color); font: inherit; font-size: 11.5px; padding: 3px 6px; outline: none;
+}
+.dt-fltin::placeholder { color: var(--cui-secondary-color); }
+.dt-fltin:focus, .dt-fltsel:focus {
+  border-color: color-mix(in srgb, var(--cui-primary) 55%, var(--dt-line));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cui-primary) 16%, transparent);
+}
 
 td.num, th.num { text-align: right; font-family: var(--dt-mono); font-variant-numeric: tabular-nums; }
 .dt-mono { font-family: var(--dt-mono); }

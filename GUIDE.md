@@ -129,53 +129,57 @@ Key files: `auth/auth.service.ts` (facade), `auth/sso-auth.service.ts` (OIDC eng
 
 ## 3b. RBAC — roles & permissions
 
-Access is driven by the user's access level from your user table, fetched once after
-login: **`POST /api/auth/roles` `{ username }`** → a single-entry **`{ ACCESS: ROLE }`**
-map, e.g. `{ "ADMIN": "OMT-BOTH" }`. The **key** is the access level (`ADMIN` / `READ` /
-`SALT`) which maps to the internal `is_admin` / `is_read` / `is_salt` flags that gate the
-app; the **value** is the role label shown on the profile card as **`ACCESS | ROLE`**
-("ADMIN | OMT-BOTH"). `username` goes in the body (not the URL). Parsing + the
-access→flag mapping live in [`rbac.service.ts`](src/app/auth/rbac.service.ts) (`parseRoles`).
+**Full handbook: [`RBAC_DESIGN.md`](RBAC_DESIGN.md)** (the model + a grant cookbook — this is a summary.)
 
-**Local testing** (while `USE_MOCK = true`): flip `DEV_ROLES` in
-[`api-endpoints.ts`](src/app/shared/api-endpoints.ts) to preview each level — the mock
-maps the flags to the `{ ACCESS: ROLE }` shape (`ADMIN`→`OMT-BOTH`, `READ`→`OMT-READ`,
-`SALT`→`OMT-SALT`). Ignored once the real endpoint answers.
+Two gates: (1) the user is **active in `ols_users`** (`LGCL_DEL_FLG='N'` — read-only, never modified);
+(2) **SSO**. Then one call, **`POST /api/access/me` `{ username, app_env }`** →  the resolved
+**`AccessSnapshot`** (assembled server-side in [`access_api.py`](backend/access_api.py) from
+`ols_users` + the grants table). [`rbac.service.ts`](src/app/auth/rbac.service.ts) caches it and
+answers every gate.
 
-**Rules:**
-| Flag | Sees | Can act |
-|---|---|---|
-| `is_admin` | every screen | everywhere |
-| `is_read` | every screen | nothing (all action buttons hidden) |
-| `is_salt` | only `SALT_SCREENS` (Home + Config Ops) | on those screens (salt wins over read there) |
-| none | — | → redirected to the **No-Access** page |
+**Base role** comes from `ols_users` flags (`IS_ADMIN` / `IS_READ` / `IS_SALT`):
+| Role | Sees | Writes | Servers / config tables |
+|---|---|---|---|
+| `ADMIN` | everything | everywhere (ignores grants) | all |
+| `READ` (default) | every screen, read-only | only where granted | **opt-in** (granted only) |
+| `SALT` | Home + Config Ops only | only where granted | opt-in |
+| none | — | → **No-Access** page |
 
-**Technical-action privilege** (Oracle Command Center **kill-session** + Service Console
-**start/stop**) is stricter than plain `canWrite`: it needs **ADMIN access AND a technical/both
-role** — `canActTechnical()` = `is_admin && role ∈ {OMT-TECHNICAL, OMT-BOTH}` (matched on the
-role value). So `ADMIN|OMT-TECHNICAL` and `ADMIN|OMT-BOTH` can act; **`ADMIN|OMT-FUNCTIONAL`
-and every `READ:*` are view-only** (buttons hidden); no-access sees nothing (guard → No-Access).
-Both screens still *view*-gate via `canView` (admin + read). Gated in the UI by the
-[`*olsCanAct`](src/app/auth/can-act.directive.ts) directive (Service Console) and the
-`canKill` computed (Oracle CC), with a defensive re-check before each action fires.
+**Overrides = grants in `ols_app_access`** — one generic table
+`(username, resource_type, resource_scope, resource_key, access_level, app_env)`. Types:
+`SCREEN` (per-screen write, e.g. OCC kill / Service start-stop), `SERVER` (Log Analytics opt-in),
+`TABLE_CATEGORY` + `TABLE` (Config Ops opt-in read + per-table write, category matched on
+`ols_master_table_config.table_category`), `SECTION … DENY` (hide a section, e.g. OCC SQL
+Intelligence). `ACCESS_LEVEL` = `READ`/`WRITE`/`DENY`; per-table wins over category. **To grant, you
+INSERT rows — no code change** (cookbook in RBAC_DESIGN.md §6).
 
-**Generic core** — [`src/app/auth/rbac.config.ts`](src/app/auth/rbac.config.ts) is the
-one place that lists screens. To gate a new screen: add its `ScreenKey` (+ to
-`ALL_SCREENS`, and `SALT_SCREENS` if salt should see it), a `SCREEN_ROUTES` entry, a
-`screenForNavUrl()` mapping, then on the route add `data: { screen: '<key>' }` +
-`canActivate: [rbacGuard]`. That's it — guard, nav filter and directives all read
-from here.
+**Per-screen enforcement:** Log Analytics filters its server list (`serverAllowed`); Config Ops
+shows only granted **sub-screens** (group/cib/retail via `configScopeVisible`) and granted **tables**
+(`configTableAccess`), with the content modal's write buttons gated per-table
+(`grid-data [canWriteRow]`); Infra Health is open read; Service Console start/stop = `canWrite`; OCC
+kill/apply = `canWrite`, and sections hide via `*olsIfSection`.
+
+**Generic core** — [`rbac.config.ts`](src/app/auth/rbac.config.ts) lists screens. A new screen:
+add its `ScreenKey` (+ `ALL_SCREENS`, + `SALT_SCREENS` if relevant), a `SCREEN_ROUTES` entry, a
+`screenForNavUrl()` mapping, and `data: { screen: '<key>' }` + `canActivate: [rbacGuard]` on the
+route. Everything else follows.
 
 **Enforcement pieces:**
-- [`rbac.service.ts`](src/app/auth/rbac.service.ts) — `canView(screen)` / `canWrite(screen)` / `canActTechnical()` / `hasAnyAccess()`.
-- [`rbac.guard.ts`](src/app/auth/rbac.guard.ts) — blocks routes; redirects to the first allowed screen or `/no-access`.
-- Sidebar nav is filtered by `canView` in [`default-layout.component.ts`](src/app/layout/default-layout/default-layout.component.ts).
-- [`*olsCanAct`](src/app/auth/can-act.directive.ts) — hides technical-action controls (Service Console Start/Stop); Oracle CC kill uses the `canKill` computed. Both = `canActTechnical()`.
-- [`*olsCanWrite="'<screen>'"`](src/app/auth/can-write.directive.ts) — hides action controls by plain `canWrite` (still used elsewhere).
-- `<app-grid-data [readOnly]="…">` — hides Config Ops mutating controls (Add/Save/Delete/Edit/Duplicate/Roll/Upload); bound from `canWrite('config_ops_console')`.
+- [`rbac.service.ts`](src/app/auth/rbac.service.ts) — `canView` / `canWrite(screen)` / `configScopeVisible` / `configTableAccess` / `canWriteTable` / `serverAllowed` / `sectionAllowed` / `hasAnyAccess`.
+- [`rbac.guard.ts`](src/app/auth/rbac.guard.ts) — blocks routes; redirects to first allowed or `/no-access`.
+- Sidebar nav filtered by `canView` **+ per-scope** for Config Ops in [`default-layout.component.ts`](src/app/layout/default-layout/default-layout.component.ts).
+- [`*olsCanWrite="'<screen>'"`](src/app/auth/can-write.directive.ts) — hides per-screen write controls (Service Console start/stop).
+- [`*olsIfSection="{screen,key}"`](src/app/auth/if-section.directive.ts) — hides a section (OCC SQL Intelligence).
+- `<app-grid-data [canWriteRow]="…">` — per-table write gate for the Config Ops content modal.
+- **Admin diagnostic:** `POST /api/access/effective` `{ caller, username, app_env }` → resolved snapshot + raw grants ("why can't user X see table Y?").
 
-To go live: point `API.auth.roles` at your backend so it returns the flags from the
-user table (`USE_MOCK = false`). Nothing else changes.
+**Local testing** (`USE_MOCK`/access mocked): flip `devRoles` in
+[`environment.ts`](src/environments/environment.ts) to ADMIN/READ/SALT — the mock
+(`mock-api.interceptor.ts` `mockAccessSnapshot`) serves a representative snapshot per role.
+
+**To go live:** wire `app.state.app_db_config` (the app DB holding `ols_users` + `ols_app_access`),
+set `ACCESS_USE_DUMMY=0`, ensure `/api/config/{scope}/tables` returns `TABLE_CATEGORY`, and
+**re-check every write server-side from the SSO token** (RBAC_DESIGN.md §9 — UI hiding is not security).
 
 ---
 
@@ -384,9 +388,13 @@ chip carries the meaning at rest), `__children` (drilldown tree), `<key>__sev` (
 
 `app-dyn-table` inputs: `[model]` (the payload), `[actions]`/`(action)` (row buttons),
 `[maxRows]` (cap → past N rows a vertical scrollbar kicks in with a sticky header; horizontal
-scroll for wide/extra columns is always on), and `[filterable]`/`filterPlaceholder` (a
+scroll for wide/extra columns is always on), `[filterable]`/`filterPlaceholder` (a
 client-side box that matches across every column and prunes drilldown trees to matching
-branches — used on the Sessions list where a DBA may face 100+ rows). The **first column (row
+branches — used on the Sessions list where a DBA may face 100+ rows), and `[columnFilters]`
+(a toggleable **per-column filter row** pinned under the header: a text box per column plus a
+**dropdown of the distinct values for `chip` columns** — e.g. pick `status = ACTIVE`. All
+column filters AND together, and with the global box; chip columns match exactly, others by
+substring. On the Sessions Detail table for precise filtering at 100–200+ sessions). The **first column (row
 identifier) and the action column are both frozen** (CSS `position:sticky; left:0` / `right:0`,
 like Excel freeze panes / ag-grid pinned columns): they stay pinned to their edges while the
 middle columns scroll horizontally — so you never lose which row you're on, and the
@@ -414,8 +422,8 @@ down DB still gets a tab (grey) and its sections show read errors — the app ne
 | `POST /api/oracle_cc/{db}/locks` | `{}` | Section 5 — TX/TM enqueue locks, `state` BLOCKING/WAITING/HELD; each row killable. `summary:{blocking,waiting,total}`. |
 | `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — **flat blocker↔victim pairs** (one row per blocking relationship): blocker SID/user/name/machine, object held + type, **blocker SQL_ID + SQL text**, victim SID/user/name, wait event + time, victim SQL_ID + SQL text. Both SQL_IDs are clickable → SQL Intelligence; SQL text uses the `clob` popup. (Blocker SQL_ID is often `—` — a blocker idle "in transaction" has no current statement.) Kill targets the **blocker** (frees the victim). `summary:{chains=distinct blockers, waiters=row count}`. |
 | `POST /api/oracle_cc/{db}/sessions` | `{ status }` (`active`\|`inactive`\|`killed`\|`all`, default `active`) | Section 7 — session inventory filtered by state; each row carries `__actions` (`detail` always, `kill` unless already KILLED). Includes a **`running_for`** column (LAST_CALL_ET formatted; `—` for non-active) so long-running work is explicit instead of colour-coded. Row `__sev` = `crit` for KILLED only (long-running active is shown by the column, not an amber tint). `summary:{active,inactive,killed,total}` (full counts regardless of filter, for the tab badges). |
-| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`), or `kind:'resource'` (Resource Profile). a panel is `available:false` only if its own query fails (built independently). Panels: rollback (KILLED only), plan, waits (V$SESSION_EVENT), binds (peeked binds), ash (ASH), **resource**, monitor (SQL Monitor), stats, locks, awr (DBA_HIST). The **plan** panel carries a generated `diagnosis` card (`{sev, findings[], hint}` — bottleneck line incl. its dominant resource, worst cardinality mis-estimate on a real access line + stale-stats root cause, cautious index hint), the **structured runtime plan** (`analysis.plan` with the same **Est. accuracy / Time % / Spent on** columns as SQL Intelligence Plan Analysis) + `analysis.stats`, and the raw `DISPLAY_CURSOR ALLSTATS LAST` text (collapsible). Same `V$SQL_PLAN_STATISTICS_ALL` engine. The **resource** panel (`resource:{pga_used/alloc/max_mb, temp_mb, activity, workareas}`) shows the CPU-vs-wait-class activity split (ASH, last 10 min), PGA (V$PROCESS), temp spill (V$TEMPSEG_USAGE) and active sort/hash work areas + spill passes (V$SQL_WORKAREA_ACTIVE). |
-| `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). |
+| `POST /api/oracle_cc/{db}/session-detail` | `{ sid, serial, sql_id?, panel? }` | Section 7 SID deep-dive: `{ status, session:{…facts}, panels:[…] }`. **Vanished session** (closed before drill-in → no `v$session` row) returns `{ status:'success', available:false, reason:'gone', session, panels:[] }` (HTTP 200); the drawer shows a friendly **"Session no longer active"** message instead of the generic load error (which is reserved for real failures). `panel` omitted → all panels (or the drawer's "Refresh all"); `panel:'ash'` → just that one (per-tab refresh, merged in place). Each panel is `kind:'text'` (plan / SQL Monitor), `kind:'table'` (dyn-table payload), `kind:'rollback'` (killed-session rollback monitor: `%`, undo blocks/records done vs pending, elapsed, est. remaining — from `V$SESSION_LONGOPS('Transaction Rollback')` + `V$TRANSACTION`), or `kind:'resource'` (Resource Profile). a panel is `available:false` only if its own query fails (built independently). Panels: rollback (KILLED only), plan, waits (V$SESSION_EVENT), binds (peeked binds), ash (ASH), **resource**, monitor (SQL Monitor), stats, locks, awr (DBA_HIST). The **plan** panel carries a generated `diagnosis` card (`{sev, findings[], hint}` — bottleneck line incl. its dominant resource, worst cardinality mis-estimate on a real access line + stale-stats root cause, cautious index hint), the **structured runtime plan** (`analysis.plan` with the same **Est. accuracy / Time % / Spent on** columns as SQL Intelligence Plan Analysis) + `analysis.stats`, and the raw `DISPLAY_CURSOR ALLSTATS LAST` text (collapsible). Same `V$SQL_PLAN_STATISTICS_ALL` engine. The **resource** panel (`resource:{pga_used/alloc/max_mb, temp_mb, activity, workareas}`) shows the CPU-vs-wait-class activity split (ASH, last 10 min), PGA (V$PROCESS), temp spill (V$TEMPSEG_USAGE) and active sort/hash work areas + spill passes (V$SQL_WORKAREA_ACTIVE). |
+| `POST /api/oracle_cc/{db}/kill-session` | `{ sid, serial, immediate? }` | `{ status, success, message, gone? }`. **Admin-gated** in the UI (`RbacService.roles().is_admin`) + explicit danger-confirm before it fires. Used by Locks, Blocking, and Sessions (row + deep-dive drawer). **Already-gone session** (vanished before the kill landed) returns `success:true, gone:true` (a no-op, NOT an error) → the UI shows a gentle "had already ended — nothing to kill" toast instead of the error popup. The real path must catch **ORA-00030 / ORA-00020** and return this shape (see the stub template in `oracle_cc_api.py`). |
 
 **Section 8 — SQL Intelligence** (investigate a `sql_id` after the session is gone; every historical query is capped to `SQLI_HISTORY_DAYS` = **5 days** of AWR/ASH). Entry points: a `sql_id` search box, the finder (for when you only know "the slow report yesterday"), **and clicking any `SQL_ID` in Sessions / Critical Locks / Blocking** — those cells are links (via the shared DynTable's `[linkColumns]="['sql_id']"` + `(cellClick)` → `onSqlCell`, which expands the section, investigates, and scrolls to it).
 
@@ -448,8 +456,13 @@ Notes for the real wiring:
 - **Connection resolution**: routes read `request.app.state.db_configs.get(db)` directly (the dict
   app.py builds in `load_db_configs()`), and hand it to the data layer. `database.connect()` accepts
   a live connection (passthrough), a `{user,password,dsn}` dict, or a DSN string — **swap its body
-  for your connector if it differs**. Tunables (owner schema, top-N, history days) are passed IN as
-  params so the data layer has no import cycle with the config module. The shaping helpers
+  for your connector if it differs**. `connect()` also installs a **LOB output-type handler** on
+  every connection so `CLOB`/`NCLOB` come back as `str` and `BLOB` as `bytes` — so
+  `DBMS_XPLAN.DISPLAY_CURSOR`, `REPORT_SQL_MONITOR`, `sql_fulltext`, CLOB config columns and
+  `LISTAGG` overflow are read directly (no LOB locators to `.read()`, and no "LOB variable no longer
+  valid" after the cursor closes). If you replace `connect()`, keep that handler. Tunables (owner
+  schema, top-N, history days) are passed IN as params so the data layer has no import cycle with the
+  config module. The shaping helpers
   (`_lock_row`, `_blk_row`, `_sqli_*_payload`, …) are the only things shared between a route and its
   `*_dummy` — so both paths return the identical shape.
 - **Dummy ↔ real switch**: every section also has a `*_dummy` (canned data) in `oracle_cc_dummy.py`;

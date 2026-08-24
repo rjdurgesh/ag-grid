@@ -520,6 +520,24 @@ def kill_session(db: str, body: KillRequest) -> dict:
     # ALTER SYSTEM KILL SESSION takes no binds; sid/serial are Pydantic-validated ints (injection-safe).
     stmt = f"ALTER SYSTEM KILL SESSION '{int(body.sid)},{int(body.serial)}'" + (" IMMEDIATE" if body.immediate else "")
     _ = stmt
+    # Wire a SEPARATE privileged connection here, then run `stmt` on it. Handle the
+    # "already gone" case as a SUCCESS no-op (the goal is met — the session is not there) so the UI
+    # never shows an error for a session that vanished between listing and killing:
+    #
+    #   import oracledb
+    #   try:
+    #       priv = get_privileged_connection(t)        # ALTER SYSTEM privilege; NOT the read-only monitor
+    #       with priv.cursor() as cur:
+    #           cur.execute(stmt)
+    #       return {"status": "success", "success": True,
+    #               "message": f"Session {body.sid},{body.serial} has been marked for kill."}
+    #   except oracledb.DatabaseError as exc:
+    #       (err,) = exc.args
+    #       # ORA-00030 (user session ID does not exist) / ORA-00020 (no session) → already gone.
+    #       if getattr(err, "code", None) in (30, 20):
+    #           return {"status": "success", "success": True, "gone": True,
+    #                   "message": f"Session {body.sid},{body.serial} had already ended — nothing to kill."}
+    #       raise
     raise RuntimeError("kill_session: wire a privileged connection (ALTER SYSTEM) — not the read-only monitor")
 
 
@@ -697,6 +715,16 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
         raise HTTPException(status_code=500, detail="Internal server error")
     errors = raw.get("errors") or {}
     f = raw.get("facts") or {}
+    # The session vanished between listing it and drilling in (it closed immediately) → there is no
+    # row in v$session, so there is nothing to deep-dive. Return a clean "gone" response (HTTP 200)
+    # so the UI shows a friendly "no longer active" message instead of the generic load error.
+    if not f:
+        return {
+            "status": "success", "available": False, "reason": "gone",
+            "session": {"sid": sid, "serial": serial, "session": f"{sid},{serial}",
+                        "sql_id": q.sql_id or "—"},
+            "panels": [],
+        }
     status = (f.get("status") or "ACTIVE").upper()
     sql_id = q.sql_id or (f.get("sql_id") if f.get("sql_id") not in (None, "—") else None)
     session = {

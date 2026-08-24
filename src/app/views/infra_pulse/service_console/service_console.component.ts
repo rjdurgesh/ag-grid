@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, WritableSignal, computed, inject, signal } from '@angular/core';
 
-import { CanActDirective } from '../../../auth/can-act.directive';
+import { CanWriteDirective } from '../../../auth/can-write.directive';
 import { RbacService } from '../../../auth/rbac.service';
 import { ConfirmService } from '../../../components/confirm/confirm.service';
 import { ErrorReportService } from '../../../components/error-report/error-report.service';
@@ -66,7 +66,7 @@ const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
   selector: 'app-service-console',
   templateUrl: './service_console.component.html',
   styleUrls: ['./service_console.component.scss'],
-  imports: [LoaderComponent, CanActDirective]
+  imports: [LoaderComponent, CanWriteDirective]
 })
 export class ServiceConsoleComponent implements OnInit, OnDestroy {
   private readonly infra = inject(InfraDataService);
@@ -275,7 +275,7 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   }
 
   async start(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
-    if (!this.rbac.canActTechnical()) {
+    if (!this.rbac.canWrite('service_console')) {
       return;
     }
     const ok = await this.confirm.ask({
@@ -290,7 +290,7 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   }
 
   async stop(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
-    if (!this.rbac.canActTechnical()) {
+    if (!this.rbac.canWrite('service_console')) {
       return;
     }
     const ok = await this.confirm.ask({

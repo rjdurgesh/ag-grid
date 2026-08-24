@@ -152,4 +152,6 @@ export interface KillResult {
   status?: string;
   success: boolean;
   message: string;
+  /** True when the session had already ended — a success no-op (nothing was killed, not an error). */
+  gone?: boolean;
 }

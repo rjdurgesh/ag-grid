@@ -61,6 +61,25 @@ export class DynTableComponent {
   readonly filterPlaceholder = input<string>('Filter rows — SID, user, SQL_ID, machine…');
   protected readonly filterText = signal('');
 
+  /** Add a toggleable PER-COLUMN filter row under the header — a text box per column, and a
+   *  dropdown of the distinct values for `chip` columns (e.g. pick status = ACTIVE). All active
+   *  column filters combine with AND, and with the global filter above. For big tables (100s of
+   *  sessions) where "match anything" isn't precise enough. */
+  readonly columnFilters = input<boolean>(false);
+  protected readonly showColFilters = signal(false);
+  /** column key → filter text (chip columns hold an exact value; others a substring). */
+  protected readonly colFilters = signal<Record<string, string>>({});
+
+  /** Active per-column filters, normalised: chip = exact match, others = lowercased substring. */
+  private readonly activeColFilters = computed<{ key: string; val: string; chip: boolean }[]>(() => {
+    const map = this.colFilters();
+    const chipKeys = new Set((this.model()?.columns ?? []).filter((c) => c.type === 'chip').map((c) => c.key));
+    return Object.entries(map)
+      .filter(([, v]) => v && v.trim())
+      .map(([key, v]) => ({ key, chip: chipKeys.has(key), val: chipKeys.has(key) ? v : v.trim().toLowerCase() }));
+  });
+  readonly hasColFilters = computed(() => this.activeColFilters().length > 0);
+
   private readonly expandedIds = signal<Set<string>>(new Set<string>());
 
   readonly hasActions = computed(() => this.actions().length > 0);
@@ -69,18 +88,32 @@ export class DynTableComponent {
    *  matches (so drilldown trees stay navigable while filtering); the pruned subtree is kept. */
   readonly visibleRows = computed<Record<string, unknown>[]>(() => {
     const q = this.filterText().trim().toLowerCase();
+    const cf = this.activeColFilters();
     const rows = this.model()?.rows ?? [];
-    if (!q) {
+    if (!q && !cf.length) {
       return rows;
     }
     const cols = this.model()?.columns ?? [];
+    const matches = (row: Record<string, unknown>): boolean => {
+      // Global box: any column contains the text.
+      if (q && !cols.some((c) => String(row[c.key] ?? '').toLowerCase().includes(q))) {
+        return false;
+      }
+      // Per-column filters (AND): chip columns match exactly, others by substring.
+      for (const f of cf) {
+        const cell = String(row[f.key] ?? '');
+        if (f.chip ? cell !== f.val : !cell.toLowerCase().includes(f.val)) {
+          return false;
+        }
+      }
+      return true;
+    };
     const prune = (list: Record<string, unknown>[]): Record<string, unknown>[] => {
       const out: Record<string, unknown>[] = [];
       for (const row of list) {
         const kids = row['__children'] as Record<string, unknown>[] | undefined;
         const keptKids = Array.isArray(kids) && kids.length ? prune(kids) : [];
-        const self = cols.some((c) => String(row[c.key] ?? '').toLowerCase().includes(q));
-        if (self || keptKids.length) {
+        if (matches(row) || keptKids.length) {
           out.push(keptKids.length ? { ...row, __children: keptKids } : row);
         }
       }
@@ -107,7 +140,7 @@ export class DynTableComponent {
   readonly flat = computed<FlatRow[]>(() => {
     const out: FlatRow[] = [];
     const exp = this.expandedIds();
-    const forceOpen = this.filterText().trim().length > 0;
+    const forceOpen = this.filterText().trim().length > 0 || this.hasColFilters();
     const walk = (rows: Record<string, unknown>[], level: number, prefix: string): void => {
       rows.forEach((row, i) => {
         const id = prefix ? `${prefix}.${i}` : `${i}`;
@@ -122,6 +155,47 @@ export class DynTableComponent {
     walk(this.visibleRows(), 0, '');
     return out;
   });
+
+  // --- Per-column filters ----------------------------------------------------
+  toggleColFilters(): void {
+    this.showColFilters.update((v) => !v);
+  }
+  colFilterValue(key: string): string {
+    return this.colFilters()[key] ?? '';
+  }
+  setColFilter(key: string, value: string): void {
+    const next = { ...this.colFilters() };
+    if (value && value.trim()) {
+      next[key] = value;
+    } else {
+      delete next[key];
+    }
+    this.colFilters.set(next);
+  }
+  clearColFilters(): void {
+    this.colFilters.set({});
+  }
+  isChipCol(col: DynColumn): boolean {
+    return col.type === 'chip';
+  }
+  /** Distinct non-empty values for a column across the whole tree — drives a chip column's dropdown. */
+  distinctValues(col: DynColumn): string[] {
+    const vals = new Set<string>();
+    const walk = (rows: Record<string, unknown>[]): void => {
+      for (const r of rows) {
+        const v = String(r[col.key] ?? '').trim();
+        if (v && v !== '—') {
+          vals.add(v);
+        }
+        const kids = r['__children'] as Record<string, unknown>[] | undefined;
+        if (Array.isArray(kids)) {
+          walk(kids);
+        }
+      }
+    };
+    walk(this.model()?.rows ?? []);
+    return [...vals].sort();
+  }
 
   toggle(id: string): void {
     const next = new Set(this.expandedIds());

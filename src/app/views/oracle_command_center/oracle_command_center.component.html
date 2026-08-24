@@ -252,12 +252,12 @@
     </section>
   </div>
 
-  <!-- ============= ROW 6 : Sessions & performance deep-dive ============= -->
+  <!-- ============= ROW 6 : Sessions Detail ============= -->
   <div class="occ__row">
     <section class="occ-panel" [class.is-collapsed]="isCollapsed('sessions')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">☰</span>
-        <h2 class="occ-panel__title">Sessions &amp; performance deep-dive</h2>
+        <h2 class="occ-panel__title">Sessions Detail</h2>
         <span class="occ-panel__spacer"></span>
         @if (sectionLoading('sessions')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
         @else if (hasStamp('sessions')) { <span class="occ-hstamp">{{ stampAbs('sessions') }} · {{ stampRel('sessions') }}</span> }
@@ -283,6 +283,7 @@
             @if (d.rows.length) {
               <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
                 filterPlaceholder="Filter sessions — SID, user, machine, SQL_ID, event…"
+                [columnFilters]="true"
                 [actions]="sessionActions()" (action)="onSessionAction($event)"
                 [linkColumns]="['sql_id']" (cellClick)="onSqlCell($event)" />
               <p class="occ-note"><b>Note:</b> the <b>Deep-dive</b> action shows the live execution plan, waits, SQL Monitor, stats and locks for the session. <b>Click a SQL_ID</b> to investigate its plan history in SQL Intelligence. @if (canKill()) { <b>Kill</b> ends it and rolls back its transaction. } @else { Killing a session requires an admin role. }</p>
@@ -293,8 +294,8 @@
     </section>
   </div>
 
-  <!-- ============= ROW 7 : SQL Intelligence ============= -->
-  <div class="occ__row">
+  <!-- ============= ROW 7 : SQL Intelligence (RBAC: hidden when the section is denied) ============= -->
+  <div class="occ__row" *olsIfSection="{ screen: 'oracle_command_center', key: 'sql_intelligence' }">
     <section class="occ-panel occ-sqli" [class.is-collapsed]="isCollapsed('sqli')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⌬</span>
@@ -623,6 +624,17 @@
         <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
       </div>
       <div class="occ-drawer__body"><div class="occ-empty occ-empty--err">Couldn't load the deep-dive. Close and retry.</div></div>
+    } @else if (detail()?.available === false) {
+      <div class="occ-drawer__head">
+        <h3 class="occ-drawer__title">Session no longer active</h3>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+      </div>
+      <div class="occ-drawer__body">
+        <div class="occ-empty">
+          This session has already ended — it closed before the deep-dive could load, so there's nothing to show.
+          Close this and refresh <b>Sessions Detail</b> to see the current list.
+        </div>
+      </div>
     } @else if (detail(); as d) {
       <div class="occ-drawer__head">
         <div class="occ-drawer__id">

@@ -34,6 +34,8 @@ function isFlagSet(value: unknown): boolean {
 const TABLE_NAME_KEYS = ['TABLE_NAME', 'TABLENAME', 'TABLE', 'NAME'];
 const ACTIVE_KEYS = ['IS_ACTIVE', 'ACTIVE'];
 const COB_KEYS = ['IS_COBDT', 'IS_COB', 'COBDT', 'COB'];
+/** Category column (RBAC category grants). Must be returned by /api/config/{scope}/tables. */
+const CATEGORY_KEYS = ['TABLE_CATEGORY', 'CATEGORY', 'TABLE_CAT'];
 
 /** Find the actual column name in `cols` matching one of `candidates`. */
 function resolveKey(cols: string[], candidates: string[], fallback: string): string {
@@ -160,11 +162,18 @@ export abstract class ConfigScopeBase implements OnInit {
   private tableNameKey = 'TABLE_NAME';
   private activeKey = 'IS_ACTIVE';
   private cobKey = 'IS_COBDT';
+  private categoryKey = 'TABLE_CATEGORY';
   /** The table-name field, bound to the grid's idField + titleField. */
   readonly tableNameField = signal('TABLE_NAME');
 
-  /** RBAC read-only: true when the user may view but not act on Config Ops. */
-  readonly readOnly = computed(() => !this.rbac.canWrite('config_ops_console'));
+  /** RBAC scope-level read-only: true when the user can't write ANY table in this scope (hides
+   *  catalogue-level controls). Per-table write is decided by {@link canWriteRow} in the modal. */
+  readonly readOnly = computed(() => !this.rbac.configScopeWritable(this.scope));
+
+  /** RBAC per-table write gate for the content modal — bound to the grid's `[canWriteRow]`.
+   *  A user can edit some tables and not others (per-table / category grants). */
+  readonly canWriteRow = (row: Record<string, unknown>): boolean =>
+    this.rbac.canWriteTable(this.scope, String(row[this.tableNameKey] ?? ''), String(row[this.categoryKey] ?? ''));
 
   /** In-page tab: the config grid or the (currently empty) MISC activity view. */
   readonly activeTab = signal<'config' | 'misc'>('config');
@@ -191,6 +200,7 @@ export abstract class ConfigScopeBase implements OnInit {
         this.tableNameKey = resolveKey(cols, TABLE_NAME_KEYS, 'TABLE_NAME');
         this.activeKey = resolveKey(cols, ACTIVE_KEYS, 'IS_ACTIVE');
         this.cobKey = resolveKey(cols, COB_KEYS, 'IS_COBDT');
+        this.categoryKey = resolveKey(cols, CATEGORY_KEYS, 'TABLE_CATEGORY');
         this.tableNameField.set(this.tableNameKey);
 
         this.columns.set(
@@ -201,7 +211,12 @@ export abstract class ConfigScopeBase implements OnInit {
             ...(field === this.tableNameKey ? { minWidth: 240, flex: 2 } : {})
           }))
         );
-        this.rows.set((data?.rows ?? []).map((arr) => Object.fromEntries(cols.map((c, i) => [c, arr[i]]))));
+        // RBAC opt-in read: show only the tables this user may see (per-table / category grants).
+        // ADMIN sees all. A table the user has no grant for is filtered out entirely.
+        const all = (data?.rows ?? []).map((arr) => Object.fromEntries(cols.map((c, i) => [c, arr[i]])));
+        this.rows.set(all.filter((r) =>
+          this.rbac.configTableAccess(this.scope, String(r[this.tableNameKey] ?? ''), String(r[this.categoryKey] ?? '')) !== 'none'
+        ));
         this.loading.set(false);
       },
       error: () => this.loading.set(false)

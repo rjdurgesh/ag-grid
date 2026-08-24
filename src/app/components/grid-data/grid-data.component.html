@@ -72,7 +72,7 @@
               Export Data
             </button>
           </li>
-          @if (modalIsCob() && !readOnly()) {
+          @if (modalIsCob() && modalWritable()) {
             <li>
               <button cDropdownItem type="button" (click)="uploadData()">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M12 21V9m0 0 4 4m-4-4-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
@@ -185,7 +185,7 @@
     <span class="ols-total-rows">Total Rows : {{ modalTotalRows() }}</span>
     <span class="me-auto small text-body-secondary ms-3">{{ modalSelectedCount() }} selected</span>
 
-    @if (!readOnly()) {
+    @if (modalWritable()) {
       <button cButton color="primary" variant="outline" size="sm" [disabled]="!modalContent()" (click)="addRow()">Add</button>
       @if (hasPendingSave()) {
         <button cButton color="success" size="sm" (click)="saveSelected()">

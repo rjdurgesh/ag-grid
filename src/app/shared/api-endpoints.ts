@@ -54,6 +54,17 @@ export const API = {
      */
     roles: `${API_BASE_URL}/api/auth/roles`
   },
+  access: {
+    /**
+     * The resolved RBAC snapshot for the signed-in user. **POST** `{ username, app_env }` →
+     * `AccessSnapshot` (active flag + role + visible screens + config scopes/grants + servers +
+     * denied sections). The single source the app reads to gate screens, tables, servers,
+     * sections and write buttons. See access_api.py / RBAC_DESIGN.md.
+     */
+    me: `${API_BASE_URL}/api/access/me`,
+    /** Admin-only diagnostic: `{ caller, username, app_env }` → resolved snapshot + raw grants. */
+    effective: `${API_BASE_URL}/api/access/effective`
+  },
   system: {
     /** One-shot memory snapshot → `MemoryStats`. */
     memory: `${API_BASE_URL}/api/system/memory`,

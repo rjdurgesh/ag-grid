@@ -94,6 +94,13 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond({ NONE: '' });
   }
 
+  // RBAC access snapshot (POST /api/access/me) — built from devRoles so flipping the dev flags
+  // exercises each role. Mirrors backend access_api.build_snapshot; grants below demonstrate every
+  // feature (opt-in server, config category + per-table write, per-screen write, section deny).
+  if (path === '/api/access/me') {
+    return respond(mockAccessSnapshot());
+  }
+
   // --- System / dashboard ---------------------------------------------------
   if (path === '/api/system/memory') {
     return respond(mockMemory());
@@ -279,4 +286,63 @@ function hasErrSentinel(body: unknown): boolean {
 
 function titleCase(value: string): string {
   return value.replace(/(^|[._-])(\w)/g, (_, sep, ch) => (sep ? ' ' : '') + ch.toUpperCase()).trim();
+}
+
+/**
+ * Dev access snapshot for `POST /api/access/me`, built from `environment.devRoles` so toggling the
+ * dev flags exercises ADMIN / READ / SALT. Shape matches backend `access_api.build_snapshot`.
+ * The READ grants below intentionally show off every gate (opt-in server, config category + a
+ * per-table WRITE, per-screen WRITE, and a denied section) so the whole system is demoable in dev.
+ */
+function mockAccessSnapshot(): Record<string, unknown> {
+  const dr = environment.devRoles;
+  const role = dr.is_admin ? 'ADMIN' : dr.is_read ? 'READ' : dr.is_salt ? 'SALT' : 'NONE';
+  const base = {
+    status: 'success', active: role !== 'NONE', username: environment.username,
+    display_name: titleCase(environment.username), email: `${environment.username.toLowerCase()}@example.com`,
+    role, app_env: environment.appEnv
+  };
+  if (role === 'ADMIN') {
+    return {
+      ...base,
+      screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
+      write_screens: ['service_console', 'oracle_command_center'],
+      config: { scopes: ['group', 'cib', 'retail'], all: true, category_grants: [], table_grants: [] },
+      servers: ['*'], all_servers: true, denied_sections: []
+    };
+  }
+  if (role === 'SALT') {
+    return {
+      ...base,
+      screens: ['home', 'config_ops_console'], write_screens: [],
+      config: {
+        scopes: ['cib'], all: false, category_grants: [],
+        table_grants: [
+          { scope: 'cib', table: 'CIB_LIMIT_CONFIG', level: 'READ' },
+          { scope: 'cib', table: 'CIB_FX_RATES', level: 'READ' }
+        ]
+      },
+      servers: [], all_servers: false, denied_sections: []
+    };
+  }
+  if (role === 'NONE') {
+    return {
+      ...base, screens: [], write_screens: [],
+      config: { scopes: [], all: false, category_grants: [], table_grants: [] },
+      servers: [], all_servers: false, denied_sections: []
+    };
+  }
+  // READ (default demo)
+  return {
+    ...base,
+    screens: ['home', 'log_analytics', 'infra_health', 'service_console', 'oracle_command_center', 'config_ops_console'],
+    write_screens: ['service_console'],
+    config: {
+      scopes: ['group'], all: false,
+      category_grants: [{ scope: 'group', category: 'OMT-FUNCTIONAL', level: 'READ' }],
+      table_grants: [{ scope: 'group', table: 'GRP_COST_CENTER', level: 'WRITE' }]
+    },
+    servers: ['eurv15'], all_servers: false,
+    denied_sections: [{ screen: 'oracle_command_center', key: 'sql_intelligence' }]
+  };
 }

@@ -3,100 +3,216 @@ import { Observable, of } from 'rxjs';
 import { catchError, map, shareReplay, tap } from 'rxjs/operators';
 
 import { ApiDataService } from '../shared/api-data.service';
-import { API } from '../shared/api-endpoints';
+import { API, apiEnv } from '../shared/api-endpoints';
 import { environment } from '../../environments/environment';
-import { AccessRoleResponse, UserRoles } from '../shared/models';
+import { AccessSnapshot, UserRoles } from '../shared/models';
 import { USER_KEY } from './sso-auth.service';
-import { ALL_SCREENS, SALT_SCREENS, SCREEN_ROUTES, ScreenKey } from './rbac.config';
+import { ALL_SCREENS, SCREEN_ROUTES, ScreenKey } from './rbac.config';
 
-const NO_ROLES: UserRoles = { is_admin: false, is_read: false, is_salt: false };
+/** Effective access level of a config table for a user. */
+export type TableAccess = 'none' | 'read' | 'write';
 
-/** Access level + role label parsed out of the `{ ACCESS: ROLE }` response. */
-interface ParsedRoles {
-  flags: UserRoles;
-  /** Access level, e.g. "ADMIN". */
-  access: string;
-  /** Role label, e.g. "OMT-BOTH". */
-  role: string;
-}
+const EMPTY: AccessSnapshot = {
+  active: false, username: '', display_name: '', email: '', role: 'NONE', app_env: '',
+  screens: [], write_screens: [],
+  config: { scopes: [], all: false, category_grants: [], table_grants: [] },
+  servers: [], all_servers: false, denied_sections: []
+};
 
-const NO_PARSED: ParsedRoles = { flags: NO_ROLES, access: '', role: '' };
-
-/**
- * Parse `POST /api/auth/roles` → `{ ACCESS: ROLE }` (single entry). The key is the
- * access level (ADMIN / READ / SALT) which drives the RBAC flags; the value is the
- * role label shown on the profile card. Empty / unknown → no access.
- */
-function parseRoles(res: AccessRoleResponse | null | undefined): ParsedRoles {
-  const [entry] = res ? Object.entries(res) : [];
-  if (!entry) {
-    return NO_PARSED;
-  }
-  const [accessRaw, roleRaw] = entry;
-  const access = (accessRaw ?? '').trim();
-  const a = access.toUpperCase();
-  return {
-    flags: { is_admin: a === 'ADMIN', is_read: a === 'READ', is_salt: a === 'SALT' },
-    access,
-    role: (roleRaw ?? '').trim()
-  };
-}
+/** Screens that are always viewable for an active user (landing + external help). */
+const ALWAYS_VIEW = new Set<string>(['home', 'docs', 'extras']);
 
 /**
- * Central RBAC authority. Fetches the user's role flags once and answers
- * `canView` / `canWrite` per screen. Rules:
- *  - admin  → view all + act everywhere
- *  - read   → view all, no actions
- *  - salt   → view + act on SALT_SCREENS only (salt wins over read there)
- *  - none   → no access
+ * Central RBAC authority. Loads ONE resolved access snapshot (`POST /api/access/me`, assembled
+ * server-side from `ols_users` + `ols_app_access`) and answers every gating question the UI asks:
+ * screen view/write, config sub-screen (scope) + per-table access, Log Analytics server visibility,
+ * and per-section allow/deny. See RBAC_DESIGN.md for the model.
+ *
+ * Rules: ADMIN → everything. READ → all screens read; servers/config tables opt-in via grants;
+ * write only where granted. SALT → Config-Ops-only persona (Home + granted config scopes).
+ * Fails **closed** — a failed/empty load means no access.
  */
 @Injectable({ providedIn: 'root' })
 export class RbacService {
   private readonly api = inject(ApiDataService);
 
-  readonly roles = signal<UserRoles>(NO_ROLES);
-  /** Access level from the roles API, e.g. "ADMIN". */
-  readonly access = signal<string>('');
-  /** Role label from the roles API, e.g. "OMT-BOTH". */
-  readonly role = signal<string>('');
-  /** Combined label for the profile card, e.g. "ADMIN | OMT-BOTH". */
-  readonly roleLabel = computed(() => {
-    const a = this.access();
-    const r = this.role();
-    return a && r ? `${a} | ${r}` : a || r;
+  /** The resolved snapshot (the single source of truth). */
+  readonly snapshot = signal<AccessSnapshot>(EMPTY);
+
+  /** Back-compat role flags derived from the snapshot role. */
+  readonly roles = computed<UserRoles>(() => {
+    const r = this.snapshot().role;
+    return { is_admin: r === 'ADMIN', is_read: r === 'READ', is_salt: r === 'SALT' };
   });
+  /** Access level ("ADMIN" / "READ" / "SALT") for the profile card. */
+  readonly access = computed(() => (this.snapshot().active ? this.snapshot().role : ''));
+  /** Combined label for the profile card. */
+  readonly roleLabel = computed(() => this.access());
 
-  private roles$?: Observable<UserRoles>;
+  private snap$?: Observable<AccessSnapshot>;
 
-  /** Fetch roles once (cached). Call before the first guard/nav evaluation. */
-  ensureLoaded(): Observable<UserRoles> {
-    if (!this.roles$) {
-      this.roles$ = this.api
-        .post<AccessRoleResponse>(API.auth.roles, { username: this.currentUsername() })
+  /** Fetch the access snapshot once (cached). Call before the first guard/nav evaluation. */
+  ensureLoaded(): Observable<AccessSnapshot> {
+    if (!this.snap$) {
+      this.snap$ = this.api
+        .post<AccessSnapshot>(API.access.me, {
+          username: this.currentUsername(),
+          app_env: apiEnv(environment.appEnv)
+        })
         .pipe(
-          map((res) => parseRoles(res)),
-          catchError(() => of(NO_PARSED)),
-          tap((p) => {
-            this.roles.set(p.flags);
-            this.access.set(p.access);
-            this.role.set(p.role);
-          }),
-          map((p) => p.flags),
+          map((s) => s ?? EMPTY),
+          catchError(() => of(EMPTY)),        // fail closed → no access
+          tap((s) => this.snapshot.set(s)),
           shareReplay(1)
         );
     }
-    return this.roles$;
+    return this.snap$;
   }
 
-  /** Drop the cached roles (on logout). */
+  /** Drop the cached snapshot (on logout). */
   reset(): void {
-    this.roles$ = undefined;
-    this.roles.set(NO_ROLES);
-    this.access.set('');
-    this.role.set('');
+    this.snap$ = undefined;
+    this.snapshot.set(EMPTY);
   }
 
-  /** UID of the signed-in user for the roles payload (falls back to the demo user). */
+  // --- Screen tier -----------------------------------------------------------
+
+  /** Can the user see this screen? */
+  canView(screen: ScreenKey): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (ALWAYS_VIEW.has(screen)) {
+      return true;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    return s.screens.includes(screen);
+  }
+
+  /** Can the user take write actions on this screen? (OCC kill, Service start/stop.) */
+  canWrite(screen: ScreenKey): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    return s.write_screens.includes(screen);
+  }
+
+  /** Any access at all? False → send to the No-Access page. */
+  hasAnyAccess(): boolean {
+    return this.snapshot().active;
+  }
+
+  /** First screen the user is allowed to open (for redirects). */
+  firstAllowedRoute(): string | null {
+    const screen = ALL_SCREENS.find((s) => this.canView(s));
+    return screen ? SCREEN_ROUTES[screen] : null;
+  }
+
+  // --- Config Ops: scope (group/cib/retail) + per-table --------------------
+
+  /** Is a Config Ops sub-screen (scope) visible? */
+  configScopeVisible(scope: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN' || s.config.all) {
+      return true;
+    }
+    return s.config.scopes.includes(scope);
+  }
+
+  /**
+   * Effective access to one config table — resolves per-table grants (which WIN, incl. DENY) over
+   * category grants. `tableCategory` (OMT-TECHNICAL / OMT-FUNCTIONAL / OMT-BOTH) matches category
+   * grants: granting OMT-BOTH = all; OMT-TECHNICAL/FUNCTIONAL also include OMT-BOTH tables.
+   */
+  configTableAccess(scope: string, tableName: string, tableCategory?: string): TableAccess {
+    const s = this.snapshot();
+    if (!s.active) {
+      return 'none';
+    }
+    if (s.role === 'ADMIN' || s.config.all) {
+      return 'write';
+    }
+    const name = (tableName || '').toLowerCase();
+    // Per-table override wins (including DENY).
+    const t = s.config.table_grants.find((g) => g.scope === scope && (g.table || '').toLowerCase() === name);
+    if (t) {
+      return t.level === 'DENY' ? 'none' : t.level === 'WRITE' ? 'write' : 'read';
+    }
+    // Category grants.
+    const cat = (tableCategory || '').toUpperCase();
+    let level: TableAccess = 'none';
+    for (const c of s.config.category_grants) {
+      if (c.scope !== scope || !categoryMatches(c.category, cat)) {
+        continue;
+      }
+      if (c.level === 'DENY') {
+        return 'none';
+      }
+      level = c.level === 'WRITE' ? 'write' : level === 'write' ? 'write' : 'read';
+    }
+    return level;
+  }
+
+  /** Convenience: is a config table writable? */
+  canWriteTable(scope: string, tableName: string, tableCategory?: string): boolean {
+    return this.configTableAccess(scope, tableName, tableCategory) === 'write';
+  }
+
+  /** Does the user have write on ANY table in this scope? (Gates scope-level / catalogue controls;
+   *  the per-table modal buttons still use {@link canWriteTable}.) */
+  configScopeWritable(scope: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN' || s.config.all) {
+      return true;
+    }
+    return (
+      s.config.table_grants.some((g) => g.scope === scope && g.level === 'WRITE') ||
+      s.config.category_grants.some((g) => g.scope === scope && g.level === 'WRITE')
+    );
+  }
+
+  // --- Log Analytics servers -------------------------------------------------
+
+  /** Is a Log Analytics server visible to this user? */
+  serverAllowed(serverName: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN' || s.all_servers) {
+      return true;
+    }
+    return s.servers.includes(serverName);
+  }
+
+  // --- Sections (e.g. hide OCC SQL Intelligence) -----------------------------
+
+  /** Is a section within a screen allowed? (ADMIN always; others unless explicitly denied.) */
+  sectionAllowed(screen: string, key: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    return !s.denied_sections.some((d) => d.screen === screen && d.key === key);
+  }
+
+  /** UID of the signed-in user for the access payload (falls back to the demo user). */
   private currentUsername(): string {
     try {
       const raw = localStorage.getItem(USER_KEY);
@@ -111,58 +227,20 @@ export class RbacService {
     }
     return environment.username;
   }
+}
 
-  private salt(): boolean {
-    return this.roles().is_salt;
+/** Does a category GRANT cover a table's category? OMT-BOTH grant = all; TECHNICAL/FUNCTIONAL also cover BOTH tables. */
+function categoryMatches(grantCategory: string, tableCategory: string): boolean {
+  const g = (grantCategory || '').toUpperCase();
+  const t = (tableCategory || '').toUpperCase();
+  if (g === 'OMT-BOTH' || g === '*') {
+    return true;
   }
-
-  /** Can the user see this screen? */
-  canView(screen: ScreenKey): boolean {
-    const r = this.roles();
-    if (r.is_admin || r.is_read) {
-      return true;
-    }
-    if (r.is_salt) {
-      return SALT_SCREENS.includes(screen);
-    }
-    return false;
+  if (g === 'OMT-TECHNICAL') {
+    return t === 'OMT-TECHNICAL' || t === 'OMT-BOTH';
   }
-
-  /** Can the user take actions on this screen? (read never can; salt only on its screens) */
-  canWrite(screen: ScreenKey): boolean {
-    const r = this.roles();
-    if (r.is_admin) {
-      return true;
-    }
-    if (r.is_salt && SALT_SCREENS.includes(screen)) {
-      return true;
-    }
-    return false;
+  if (g === 'OMT-FUNCTIONAL') {
+    return t === 'OMT-FUNCTIONAL' || t === 'OMT-BOTH';
   }
-
-  /**
-   * Privilege for destructive / technical actions — Oracle Command Center kill-session and
-   * Service Console start/stop. Requires **ADMIN access** (mandatory) **and** a technical or
-   * both role (`OMT-TECHNICAL` / `OMT-BOTH`). ADMIN + `OMT-FUNCTIONAL` and every READ/SALT
-   * user is view-only. A technical READ still cannot act — the ADMIN level is required.
-   */
-  canActTechnical(): boolean {
-    if (!this.roles().is_admin) {
-      return false;
-    }
-    const role = this.role().toUpperCase();
-    return role.includes('TECHNICAL') || role.includes('BOTH');
-  }
-
-  /** Any access at all? False → send to the No-Access page. */
-  hasAnyAccess(): boolean {
-    const r = this.roles();
-    return r.is_admin || r.is_read || r.is_salt;
-  }
-
-  /** First screen the user is allowed to open (for redirects). */
-  firstAllowedRoute(): string | null {
-    const screen = ALL_SCREENS.find((s) => this.canView(s));
-    return screen ? SCREEN_ROUTES[screen] : null;
-  }
+  return g === t;
 }

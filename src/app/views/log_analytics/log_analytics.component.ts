@@ -19,6 +19,7 @@ import {
 import { FiletreeComponent, LazyRoot, TreeRoot } from '../../components/filetree/filetree.component';
 import { LoaderComponent } from '../../components/loader/loader.component';
 import { FileProperties, LogServer } from '../../shared/models';
+import { RbacService } from '../../auth/rbac.service';
 import { formatDateTime } from '../../shared/date-utils';
 import { FileWindowOpts, LogAnalyticsService } from './log_analytics.service';
 
@@ -65,6 +66,7 @@ const norm = (s: string): string => (s ?? '').replace(/\\/g, '/').replace(/\/+$/
 export class LogAnalyticsComponent implements OnInit {
   private readonly svc = inject(LogAnalyticsService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly rbac = inject(RbacService);
   /** Reference to the tree so we can hand lazily-loaded folder children back. */
   private readonly filetree = viewChild(FiletreeComponent);
 
@@ -159,9 +161,11 @@ export class LogAnalyticsComponent implements OnInit {
       .getServers()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((servers) => {
-        this.servers.set(servers);
-        if (servers.length) {
-          this.selectServer(servers[0].key);
+        // RBAC opt-in: a user sees only the servers granted to them (ADMIN / all_servers see all).
+        const allowed = servers.filter((s) => this.rbac.serverAllowed(s.serverName));
+        this.servers.set(allowed);
+        if (allowed.length) {
+          this.selectServer(allowed[0].key);
         }
       });
   }

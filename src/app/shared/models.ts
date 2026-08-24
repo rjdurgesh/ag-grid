@@ -169,6 +169,60 @@ export interface UserRoles {
  */
 export type AccessRoleResponse = Record<string, string>;
 
+// --- RBAC access snapshot (POST /api/access/me — see access_api.py / RBAC_DESIGN.md) ---------
+
+/** A config-ops grant (category or per-table), scoped to one sub-screen (group/cib/retail). */
+export interface ConfigCategoryGrant {
+  scope: string;
+  category: string;
+  level: 'READ' | 'WRITE' | 'DENY';
+}
+export interface ConfigTableGrant {
+  scope: string;
+  table: string;
+  level: 'READ' | 'WRITE' | 'DENY';
+}
+
+/** A denied section within a screen (e.g. hide SQL Intelligence in the OCC). */
+export interface DeniedSection {
+  screen: string;
+  key: string;
+}
+
+/**
+ * The resolved access snapshot for the signed-in user — the ONE thing the app reads to decide
+ * what to show and which write actions to enable. Assembled server-side from `ols_users`
+ * (identity + base role) + `ols_app_access` (grants). See RBAC_DESIGN.md.
+ */
+export interface AccessSnapshot {
+  status?: string;
+  /** Gate 1: active in ols_users (LGCL_DEL_FLG='N'). False → sign out / No-Access. */
+  active: boolean;
+  username: string;
+  display_name: string;
+  email: string;
+  role: 'ADMIN' | 'READ' | 'SALT' | 'NONE';
+  app_env: string;
+  /** Screen keys the user may VIEW. */
+  screens: string[];
+  /** Screens with write (OCC kill, Service start/stop). ADMIN → all write-capable screens. */
+  write_screens: string[];
+  /** Config Ops access (per sub-screen scope + grants for table resolution). */
+  config: {
+    /** Visible sub-screen scopes: e.g. ['group','cib']. */
+    scopes: string[];
+    /** ADMIN shortcut — full config access, ignore grants. */
+    all?: boolean;
+    category_grants: ConfigCategoryGrant[];
+    table_grants: ConfigTableGrant[];
+  };
+  /** Log Analytics: visible server names. `all_servers` true → every server. */
+  servers: string[];
+  all_servers: boolean;
+  /** Sections hidden for this user. */
+  denied_sections: DeniedSection[];
+}
+
 /** Authenticated user profile. From OpenID: username = UID (sub), displayName = full name. */
 export interface AuthUser {
   /** Unique user id (OpenID `sub`). */
