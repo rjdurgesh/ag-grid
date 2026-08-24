@@ -58,7 +58,8 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 | `GRANTED_BY`, `GRANTED_ON`, `COMMENTS` | audit trail |
 
 **`RESOURCE_SCOPE` values:** `log_analytics`, `config_ops:group`, `config_ops:cib`,
-`config_ops:retail`, `service_console`, `oracle_command_center`.
+`config_ops:retail`, `infra_health`, `service_console`, `oracle_command_center`
+(and `oracle_command_center:<db>` for a per-DB `SECTION` deny).
 
 ### DDL + sample grants — runnable script
 
@@ -70,7 +71,7 @@ is reproduced here for reference:
 ```sql
 CREATE TABLE ols_app_access (
   username       VARCHAR2(64)  NOT NULL,
-  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | TABLE_CATEGORY | TABLE | SECTION
+  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION
   resource_scope VARCHAR2(64)  NOT NULL,
   resource_key   VARCHAR2(128) DEFAULT '*' NOT NULL,
   access_level   VARCHAR2(10)  NOT NULL,   -- READ | WRITE | DENY
@@ -87,14 +88,26 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
 
 ## 4. Per-screen behaviour
 
+**Full-access shortcut:** one row `SCREEN / '*' / '*' / READ` = see everything read-only; `… / WRITE`
+= everything + every action. (Like ADMIN, but via a grant rather than `IS_ADMIN`.)
+
 | Screen | Visible when… | Write | Resource control |
 |---|---|---|---|
 | **Home** | the user has ≥1 feature | — | RBAC-filtered: shows only the Infra / Service / Oracle sections the user can access; nothing → a "your tools are in the sidebar" note |
 | **Log Analytics** | a `SERVER` grant exists | (read-only screen) | **Servers opt-in** — user sees only granted `SERVER` rows |
 | **Config Ops** (group/cib/retail) | a config grant exists in that scope | per-**table** (`TABLE`/`TABLE_CATEGORY` = `WRITE`) → the content modal's add/edit/delete/duplicate | **Tables opt-in** — category grant + per-table overrides |
 | **Infra Health** | an `APP` grant (or `SCREEN / infra_health` = all apps) | — | **Apps opt-in** — user sees only granted `APP` rows (OLS_GROUP / OLS_CIB / …) |
-| **Service Console** | `SCREEN / service_console / * / READ` (or WRITE) | `SCREEN … WRITE` → start/stop buttons | none (screen-level) |
-| **Oracle Command Center** | a `DB` grant (or `SCREEN / oracle_command_center` = all DBs) | **per-DB** — kill/apply on a DB needs `DB … WRITE` for that DB | **DBs opt-in + per-DB level** (READ tab = view-only, WRITE tab = killable). Also **Sections opt-out** — `SECTION … DENY` hides one (e.g. SQL Intelligence) |
+| **Service Console** | a `SCREEN` or `APP` grant | `SCREEN … WRITE` → start/stop buttons | **Apps opt-in** — an `APP / service_console` grant limits which apps' services show (`SCREEN` grant = all apps) |
+| **Oracle Command Center** | a `DB` grant (or `SCREEN / oracle_command_center` = all DBs) | **per-DB** — kill/apply on a DB needs `DB … WRITE` for that DB | **DBs opt-in + per-DB level** (READ tab = view-only, WRITE tab = killable). **Sections**: `SECTION … DENY` hides a panel — scope `oracle_command_center` = every DB, `oracle_command_center:<db>` = that DB only. Section keys: space / top / topidx / idxhealth / locks / blocking / temp / sessions / sql_intelligence |
+
+### Exclusion — "all EXCEPT these" (`DENY`)
+Grant `*` (all) on a resource, then add a `DENY` row per key to carve out exceptions. `DENY` **wins**
+over the `*` grant and also trims an explicit allow-list — but it **never reveals a screen on its own**
+(you still need the `*`/allow grant to open the screen). Supported for `SERVER` (Log Analytics),
+`APP` (Infra Health & Service Console) and `DB` (OCC tabs); Config Ops has its own subtractive `DENY`
+at the `TABLE` / `TABLE_CATEGORY` level. The snapshot carries the exclusions as `denied_servers`,
+`infra.denied_apps`, `service.denied_apps`, `oracle.denied_dbs`, honoured by every `*Allowed` gate.
+_Example: `SERVER/log_analytics/*/READ` + `SERVER/log_analytics/eur17/DENY` = all servers except eur17._
 
 ### Config Ops resolution (category + per-table)
 - **Category grant** `TABLE_CATEGORY` covers many tables at once (matched on `ols_master_table_config.table_category`):
@@ -117,6 +130,10 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
   `*olsCanWrite="'<screen>'"` (write buttons) and `*olsIfSection="{screen,key}"` (hide a section).
 
 ## 6. Grant cookbook (each requirement = INSERT rows)
+
+> A **full, copy-paste cookbook covering every pattern** (full-access, log-analytics all/one/many,
+> config category+table combinations, infra apps, service-console apps, OCC per-DB + per-section) is
+> in [`backend/sql/access_examples.sql`](backend/sql/access_examples.sql). A few highlights:
 
 ```sql
 -- Log Analytics: user JDOE may see ONLY server eurv15
@@ -150,6 +167,10 @@ VALUES ('DBAUSER','DB','oracle_command_center','cib_batch','READ','PROD','ADMIN1
 
 -- Oracle Command Center: hide SQL Intelligence for JDOE
 VALUES ('JDOE','SECTION','oracle_command_center','sql_intelligence','DENY','PROD','ADMIN1');
+
+-- Exclusion ("all EXCEPT"): JDOE sees ALL OCC DB tabs (write) EXCEPT retail_batch
+VALUES ('JDOE','DB','oracle_command_center','*','WRITE','PROD','ADMIN1');
+VALUES ('JDOE','DB','oracle_command_center','retail_batch','DENY','PROD','ADMIN1');
 
 -- SALT user BOB (IS_SALT='Y' in ols_users): only two CIB config tables
 VALUES ('BOB','TABLE','config_ops:cib','CIB_LIMIT_CONFIG','READ','PROD','ADMIN1');

@@ -183,10 +183,12 @@ export interface ConfigTableGrant {
   level: 'READ' | 'WRITE' | 'DENY';
 }
 
-/** A denied section within a screen (e.g. hide SQL Intelligence in the OCC). */
+/** A denied section within a screen (e.g. hide SQL Intelligence in the OCC). `db` scopes the hide
+ *  to a single OCC database; absent → hidden on every DB. */
 export interface DeniedSection {
   screen: string;
   key: string;
+  db?: string;
 }
 
 /**
@@ -211,18 +213,24 @@ export interface AccessSnapshot {
   config: {
     /** Visible sub-screen scopes: e.g. ['group','cib']. */
     scopes: string[];
-    /** ADMIN shortcut — full config access, ignore grants. */
+    /** Full config access (ADMIN, or a full-access wildcard grant). `all_level` = READ / WRITE. */
     all?: boolean;
+    all_level?: 'READ' | 'WRITE';
     category_grants: ConfigCategoryGrant[];
     table_grants: ConfigTableGrant[];
   };
-  /** Log Analytics: visible server names. `all_servers` true → every server. */
+  /** Log Analytics: visible server names. `all_servers` true → every server; `denied_servers`
+   *  subtracts specific servers from that ("all EXCEPT these"). */
   servers: string[];
   all_servers: boolean;
-  /** Infrastructure Health: which apps are visible (`all_apps` → every app). */
-  infra: { all_apps: boolean; apps: string[] };
-  /** Oracle Command Center: per-DB access. `all_dbs` → every DB at `all_level`; else `dbs[key]`. */
-  oracle: { all_dbs: boolean; all_level: 'READ' | 'WRITE'; dbs: Record<string, 'READ' | 'WRITE'> };
+  denied_servers?: string[];
+  /** Infrastructure Health: which apps are visible (`all_apps` → every app; `denied_apps` subtracts). */
+  infra: { all_apps: boolean; apps: string[]; denied_apps?: string[] };
+  /** Service Console: which apps' services are visible (`all_apps` → every app; `denied_apps` subtracts). */
+  service: { all_apps: boolean; apps: string[]; denied_apps?: string[] };
+  /** Oracle Command Center: per-DB access. `all_dbs` → every DB at `all_level`; else `dbs[key]`.
+   *  `denied_dbs` subtracts specific DBs from an `all_dbs` grant ("all DBs EXCEPT these"). */
+  oracle: { all_dbs: boolean; all_level: 'READ' | 'WRITE'; dbs: Record<string, 'READ' | 'WRITE'>; denied_dbs?: string[] };
   /** Sections hidden for this user. */
   denied_sections: DeniedSection[];
 }

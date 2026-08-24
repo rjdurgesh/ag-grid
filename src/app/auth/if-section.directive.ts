@@ -15,14 +15,14 @@ export class IfSectionDirective {
   private readonly vcr = inject(ViewContainerRef);
   private readonly rbac = inject(RbacService);
 
-  readonly olsIfSection = input.required<{ screen: string; key: string }>();
+  readonly olsIfSection = input.required<{ screen: string; key: string; db?: string }>();
 
   private shown = false;
 
   constructor() {
     effect(() => {
       const s = this.olsIfSection();
-      const can = this.rbac.sectionAllowed(s.screen, s.key);
+      const can = this.rbac.sectionAllowed(s.screen, s.key, s.db);
       if (can && !this.shown) {
         this.vcr.createEmbeddedView(this.tpl);
         this.shown = true;

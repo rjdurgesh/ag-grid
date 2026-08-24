@@ -44,9 +44,9 @@ CREATE UNIQUE INDEX ols_app_access_uq
 CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_active);
 
 COMMENT ON TABLE  ols_app_access                IS 'RBAC override grants for the OLS Dashboard (see RBAC_DESIGN.md).';
-COMMENT ON COLUMN ols_app_access.resource_type  IS 'SCREEN | SERVER | TABLE_CATEGORY | TABLE | SECTION';
-COMMENT ON COLUMN ols_app_access.resource_scope IS 'log_analytics | config_ops:group|cib|retail | service_console | oracle_command_center';
-COMMENT ON COLUMN ols_app_access.access_level    IS 'READ | WRITE | DENY (DENY subtracts; per-table wins over category)';
+COMMENT ON COLUMN ols_app_access.resource_type  IS 'SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION';
+COMMENT ON COLUMN ols_app_access.resource_scope IS 'log_analytics | config_ops:group|cib|retail | infra_health | service_console | oracle_command_center[:<db>]';
+COMMENT ON COLUMN ols_app_access.access_level    IS 'READ | WRITE | DENY (DENY subtracts / excludes; per-table wins over category; SERVER/APP/DB DENY = "all EXCEPT")';
 
 --------------------------------------------------------------------------------
 -- 3) Sample grants (edit usernames / envs to taste, then COMMIT)

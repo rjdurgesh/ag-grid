@@ -269,9 +269,9 @@ export class HomeComponent implements OnInit {
       this.infra.reloadConfig();
     }
 
-    // Infra Health aggregates only the apps this user is granted (per-app RBAC); Service Console
-    // has no per-app control, so its aggregate spans every app.
+    // Infra Health and Service Console each aggregate only the apps the user is granted (per-app RBAC).
     const infraApps = INFRA_APPS.filter((app) => this.rbac.infraAppAllowed(app));
+    const serviceApps = INFRA_APPS.filter((app) => this.rbac.serviceAppAllowed(app));
 
     if (this.canInfra()) {
       forkJoin(infraApps.map((app) => this.infra.health(app)))
@@ -290,7 +290,7 @@ export class HomeComponent implements OnInit {
     }
 
     if (this.canServices()) {
-      forkJoin(INFRA_APPS.map((app) => this.infra.services(app)))
+      forkJoin(serviceApps.map((app) => this.infra.services(app)))
         .pipe(takeUntilDestroyed(this.destroyRef))
         .subscribe({
           next: (list) => {

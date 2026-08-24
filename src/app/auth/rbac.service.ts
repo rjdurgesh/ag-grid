@@ -15,10 +15,11 @@ export type TableAccess = 'none' | 'read' | 'write';
 const EMPTY: AccessSnapshot = {
   active: false, username: '', display_name: '', email: '', role: 'NONE', app_env: '',
   screens: [], write_screens: [],
-  config: { scopes: [], all: false, category_grants: [], table_grants: [] },
-  servers: [], all_servers: false,
-  infra: { all_apps: false, apps: [] },
-  oracle: { all_dbs: false, all_level: 'READ', dbs: {} },
+  config: { scopes: [], all: false, all_level: 'READ', category_grants: [], table_grants: [] },
+  servers: [], all_servers: false, denied_servers: [],
+  infra: { all_apps: false, apps: [], denied_apps: [] },
+  service: { all_apps: false, apps: [], denied_apps: [] },
+  oracle: { all_dbs: false, all_level: 'READ', dbs: {}, denied_dbs: [] },
   denied_sections: []
 };
 
@@ -145,8 +146,11 @@ export class RbacService {
     if (!s.active) {
       return 'none';
     }
-    if (s.role === 'ADMIN' || s.config.all) {
+    if (s.role === 'ADMIN') {
       return 'write';
+    }
+    if (s.config.all) {
+      return s.config.all_level === 'WRITE' ? 'write' : 'read';
     }
     const name = (tableName || '').toLowerCase();
     // Per-table override wins (including DENY).
@@ -181,8 +185,11 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN' || s.config.all) {
+    if (s.role === 'ADMIN') {
       return true;
+    }
+    if (s.config.all) {
+      return s.config.all_level === 'WRITE';
     }
     return (
       s.config.table_grants.some((g) => g.scope === scope && g.level === 'WRITE') ||
@@ -192,13 +199,20 @@ export class RbacService {
 
   // --- Log Analytics servers -------------------------------------------------
 
-  /** Is a Log Analytics server visible to this user? */
+  /** Is a Log Analytics server visible to this user? A `denied_servers` entry wins over an
+   *  `all_servers` grant, so "all servers EXCEPT this one" is expressible. */
   serverAllowed(serverName: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN' || s.all_servers) {
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    if ((s.denied_servers ?? []).includes(serverName)) {
+      return false;
+    }
+    if (s.all_servers) {
       return true;
     }
     return s.servers.includes(serverName);
@@ -206,31 +220,56 @@ export class RbacService {
 
   // --- Infra Health apps + OCC databases -------------------------------------
 
-  /** Is an Infrastructure Health app (OLS_GROUP / OLS_CIB / …) visible to this user? */
+  /** Is an Infrastructure Health app (OLS_GROUP / OLS_CIB / …) visible to this user? A
+   *  `denied_apps` entry wins over an `all_apps` grant ("all apps EXCEPT this one"). */
   infraAppAllowed(app: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN' || s.infra.all_apps) {
+    if (s.role === 'ADMIN') {
       return true;
     }
-    return s.infra.apps.includes((app || '').toUpperCase());
+    const a = (app || '').toUpperCase();
+    if ((s.infra.denied_apps ?? []).includes(a)) {
+      return false;
+    }
+    return s.infra.all_apps || s.infra.apps.includes(a);
   }
 
-  /** Is an OCC database (tab) visible to this user? */
+  /** Is a Service Console app's services visible to this user? (`denied_apps` subtracts.) */
+  serviceAppAllowed(app: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    const a = (app || '').toUpperCase();
+    if ((s.service.denied_apps ?? []).includes(a)) {
+      return false;
+    }
+    return s.service.all_apps || s.service.apps.includes(a);
+  }
+
+  /** Is an OCC database (tab) visible to this user? (`denied_dbs` subtracts from an all-DBs grant.) */
   dbAllowed(db: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN' || s.oracle.all_dbs) {
+    if (s.role === 'ADMIN') {
       return true;
     }
-    return (db || '').toLowerCase() in s.oracle.dbs;
+    const k = (db || '').toLowerCase();
+    if ((s.oracle.denied_dbs ?? []).includes(k)) {
+      return false;
+    }
+    return s.oracle.all_dbs || k in s.oracle.dbs;
   }
 
-  /** May the user WRITE (kill / apply-fix) on this OCC database? */
+  /** May the user WRITE (kill / apply-fix) on this OCC database? (A denied DB is never writable.) */
   dbWritable(db: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
@@ -239,16 +278,22 @@ export class RbacService {
     if (s.role === 'ADMIN') {
       return true;
     }
+    const k = (db || '').toLowerCase();
+    if ((s.oracle.denied_dbs ?? []).includes(k)) {
+      return false;
+    }
     if (s.oracle.all_dbs) {
       return s.oracle.all_level === 'WRITE';
     }
-    return s.oracle.dbs[(db || '').toLowerCase()] === 'WRITE';
+    return s.oracle.dbs[k] === 'WRITE';
   }
 
   // --- Sections (e.g. hide OCC SQL Intelligence) -----------------------------
 
-  /** Is a section within a screen allowed? (ADMIN always; others unless explicitly denied.) */
-  sectionAllowed(screen: string, key: string): boolean {
+  /** Is a section within a screen allowed? (ADMIN always; others unless explicitly denied.) A deny
+   *  with no `db` hides the section everywhere; a deny with a `db` hides it only on that OCC DB
+   *  (pass the active `db` to honour per-DB section grants). */
+  sectionAllowed(screen: string, key: string, db?: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
@@ -256,7 +301,9 @@ export class RbacService {
     if (s.role === 'ADMIN') {
       return true;
     }
-    return !s.denied_sections.some((d) => d.screen === screen && d.key === key);
+    const cur = (db || '').toLowerCase();
+    return !s.denied_sections.some((d) =>
+      d.screen === screen && d.key === key && (!d.db || d.db.toLowerCase() === cur));
   }
 
   /** UID of the signed-in user for the access payload (falls back to the demo user). */

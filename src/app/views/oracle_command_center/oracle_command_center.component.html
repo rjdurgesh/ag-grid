@@ -62,7 +62,7 @@
 
   <!-- ============= ROW 1 : Database Storage (full width) ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('space')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'space', db: activeKey() }" [class.is-collapsed]="isCollapsed('space')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">▤</span>
         <h2 class="occ-panel__title">Database Storage</h2>
@@ -121,7 +121,7 @@
 
   <!-- ============= ROW 2 : Top Table Storage Consumers ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('top')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'top', db: activeKey() }" [class.is-collapsed]="isCollapsed('top')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">◱</span>
         <h2 class="occ-panel__title">Top Table Storage Consumers</h2>
@@ -146,7 +146,7 @@
 
   <!-- ============= ROW 3 : Top Index Storage Consumers | Index Health ============= -->
   <div class="occ__row occ__row--split">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('topidx')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'topidx', db: activeKey() }" [class.is-collapsed]="isCollapsed('topidx')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⌸</span>
         <h2 class="occ-panel__title">Top Index Storage Consumers</h2>
@@ -165,7 +165,7 @@
       }
     </section>
 
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('idxhealth')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'idxhealth', db: activeKey() }" [class.is-collapsed]="isCollapsed('idxhealth')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⚕</span>
         <h2 class="occ-panel__title">Index Health &amp; Stability</h2>
@@ -190,7 +190,7 @@
 
   <!-- ============= ROW 4 : Critical Locks ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('locks')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'locks', db: activeKey() }" [class.is-collapsed]="isCollapsed('locks')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⚿</span>
         <h2 class="occ-panel__title">Critical Locks</h2>
@@ -222,7 +222,7 @@
 
   <!-- ============= ROW 5 : Blocking Sessions ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('blocking')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'blocking', db: activeKey() }" [class.is-collapsed]="isCollapsed('blocking')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⛓</span>
         <h2 class="occ-panel__title">Blocking Sessions</h2>
@@ -254,7 +254,7 @@
 
   <!-- ============= ROW 5b : Temp Tablespace ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('temp')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'temp', db: activeKey() }" [class.is-collapsed]="isCollapsed('temp')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">❄</span>
         <h2 class="occ-panel__title">Temp Tablespace</h2>
@@ -289,7 +289,7 @@
 
   <!-- ============= ROW 6 : Sessions Detail ============= -->
   <div class="occ__row">
-    <section class="occ-panel" [class.is-collapsed]="isCollapsed('sessions')">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'sessions', db: activeKey() }" [class.is-collapsed]="isCollapsed('sessions')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">☰</span>
         <h2 class="occ-panel__title">Sessions Detail</h2>
@@ -330,7 +330,7 @@
   </div>
 
   <!-- ============= ROW 7 : SQL Intelligence (RBAC: hidden when the section is denied) ============= -->
-  <div class="occ__row" *olsIfSection="{ screen: 'oracle_command_center', key: 'sql_intelligence' }">
+  <div class="occ__row" *olsIfSection="{ screen: 'oracle_command_center', key: 'sql_intelligence', db: activeKey() }">
     <section class="occ-panel occ-sqli" [class.is-collapsed]="isCollapsed('sqli')">
       <div class="occ-panel__head">
         <span class="occ-panel__ic">⌬</span>

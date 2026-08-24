@@ -83,15 +83,19 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   /** Server-hostname search. */
   readonly query = signal('');
 
-  readonly panels: ServicePanel[] = INFRA_APPS.map((app) => ({
-    app,
-    label: INFRA_APP_LABELS[app],
-    data: signal<AppServices | null>(null),
-    loading: signal(false),
-    error: signal(false),
-    expanded: signal(true),
-    expandedServers: signal(new Set<string>())
-  }));
+  // RBAC: only the apps this user is granted for Service Console (ADMIN / all_apps → every app).
+  // Filtering the panels limits both what renders AND what's fetched.
+  readonly panels: ServicePanel[] = INFRA_APPS
+    .filter((app) => this.rbac.serviceAppAllowed(app))
+    .map((app) => ({
+      app,
+      label: INFRA_APP_LABELS[app],
+      data: signal<AppServices | null>(null),
+      loading: signal(false),
+      error: signal(false),
+      expanded: signal(true),
+      expandedServers: signal(new Set<string>())
+    }));
 
   readonly statusGroups: StatusGroup[] = [
     { category: 'down', label: 'Stopped', expanded: signal(true) },

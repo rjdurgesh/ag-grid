@@ -156,10 +156,15 @@ service_console / * / READ`. **Home** is opt-in (visible when the user has ≥1 
 **Overrides = grants in `ols_app_access`** — one generic table
 `(username, resource_type, resource_scope, resource_key, access_level, app_env)`. Types:
 `SCREEN` (per-screen write, e.g. OCC kill / Service start-stop), `SERVER` (Log Analytics opt-in),
+`APP` (Infra Health / Service Console per-app), `DB` (OCC per-database + per-DB level),
 `TABLE_CATEGORY` + `TABLE` (Config Ops opt-in read + per-table write, category matched on
 `ols_master_table_config.table_category`), `SECTION … DENY` (hide a section, e.g. OCC SQL
 Intelligence). `ACCESS_LEVEL` = `READ`/`WRITE`/`DENY`; per-table wins over category. **To grant, you
-INSERT rows — no code change** (cookbook in RBAC_DESIGN.md §6).
+INSERT rows — no code change** (cookbook in [`backend/sql/access_examples.sql`](backend/sql/access_examples.sql), reference RBAC_DESIGN.md §6).
+
+**Exclusion ("all EXCEPT")** — grant `*` then add a `DENY` row per key to carve out exceptions
+(`SERVER`/`APP`/`DB`); `DENY` wins over `*` and trims explicit allow-lists, but never reveals a screen
+alone. Snapshot carries `denied_servers` / `infra.denied_apps` / `service.denied_apps` / `oracle.denied_dbs`.
 
 **Per-screen enforcement:** Log Analytics filters its server list (`serverAllowed`); Config Ops
 shows only granted **sub-screens** (group/cib/retail via `configScopeVisible`) and granted **tables**

@@ -120,10 +120,10 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             "display_name": "", "email": "", "app_env": app_env,
             "screens": [], "write_screens": [],
             "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": []},
-            "servers": [], "all_servers": False,
-            "infra": {"all_apps": False, "apps": []},
-            "service": {"all_apps": False, "apps": []},
-            "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}},
+            "servers": [], "all_servers": False, "denied_servers": [],
+            "infra": {"all_apps": False, "apps": [], "denied_apps": []},
+            "service": {"all_apps": False, "apps": [], "denied_apps": []},
+            "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}, "denied_dbs": []},
             "denied_sections": [],
         }
 
@@ -142,10 +142,10 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             "write_screens": WRITE_CAPABLE_SCREENS,
             "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
                        "category_grants": [], "table_grants": []},
-            "servers": ["*"], "all_servers": True,
-            "infra": {"all_apps": True, "apps": []},
-            "service": {"all_apps": True, "apps": []},
-            "oracle": {"all_dbs": True, "all_level": "WRITE", "dbs": {}},
+            "servers": ["*"], "all_servers": True, "denied_servers": [],
+            "infra": {"all_apps": True, "apps": [], "denied_apps": []},
+            "service": {"all_apps": True, "apps": [], "denied_apps": []},
+            "oracle": {"all_dbs": True, "all_level": "WRITE", "dbs": {}, "denied_dbs": []},
             "denied_sections": [],
         })
         return base
@@ -173,6 +173,12 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
     all_db_level = "READ"
     full_read = False
     full_write = False
+    # DENY (exclusion) sets — subtract a specific key from an "all" (`*`) grant, so
+    # "all servers/apps/DBs EXCEPT these" is expressible. DENY never reveals a screen.
+    denied_servers: set[str] = set()
+    denied_infra_apps: set[str] = set()
+    denied_service_apps: set[str] = set()
+    denied_dbs: set[str] = set()
 
     for g in grants:
         rtype = (g.get("resource_type") or "").strip().upper()
@@ -189,28 +195,40 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             continue
 
         if rtype == "SERVER" and rscope == "log_analytics":
-            if level != "DENY":
-                granted_screens.add("log_analytics")          # any server grant reveals the screen
+            if level == "DENY":
+                if rkey and rkey != "*":
+                    denied_servers.add(rkey)                   # "all servers EXCEPT this one"
+            else:
+                granted_screens.add("log_analytics")          # any allow grant reveals the screen
                 if rkey == "*":
                     all_servers = True
                 elif rkey:
                     servers.append(rkey)
         elif rtype == "APP" and rscope == "infra_health":       # Infra Health, per app
-            if level != "DENY":
+            if level == "DENY":
+                if rkey and rkey != "*":
+                    denied_infra_apps.add(rkey.upper())
+            else:
                 granted_screens.add("infra_health")
                 if rkey == "*":
                     all_infra_apps = True
                 elif rkey:
                     infra_apps.add(rkey.upper())
         elif rtype == "APP" and rscope == "service_console":    # Service Console, per app
-            if level != "DENY":
+            if level == "DENY":
+                if rkey and rkey != "*":
+                    denied_service_apps.add(rkey.upper())
+            else:
                 granted_screens.add("service_console")
                 if rkey == "*":
                     all_service_apps = True
                 elif rkey:
                     service_apps.add(rkey.upper())
         elif rtype == "DB" and rscope == "oracle_command_center":  # OCC, per DB + per-DB level
-            if level != "DENY" and rkey:
+            if level == "DENY":
+                if rkey and rkey != "*":
+                    denied_dbs.add(rkey.lower())
+            elif rkey:
                 granted_screens.add("oracle_command_center")
                 if rkey == "*":
                     all_dbs = True
@@ -272,13 +290,22 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             all_db_level = "WRITE"
             write_screens.update(WRITE_CAPABLE_SCREENS)
 
+    # DENY subtracts: drop explicitly-denied keys from the explicit allow-lists (defence in depth —
+    # the frontend also honours the denied_* lists, which is what makes "all EXCEPT x" work).
+    servers = [s for s in servers if s not in denied_servers]
+    infra_apps -= denied_infra_apps
+    service_apps -= denied_service_apps
+    for k in denied_dbs:
+        oracle_dbs.pop(k, None)
+
     # SALT is a Config-Ops-only persona — it never sees non-config screens, even if granted.
     if role == "SALT":
         granted_screens = set()
         write_screens.clear()
-        infra_apps.clear(); all_infra_apps = False
-        service_apps.clear(); all_service_apps = False
-        oracle_dbs.clear(); all_dbs = False
+        infra_apps.clear(); all_infra_apps = False; denied_infra_apps.clear()
+        service_apps.clear(); all_service_apps = False; denied_service_apps.clear()
+        oracle_dbs.clear(); all_dbs = False; denied_dbs.clear()
+        denied_servers.clear()
 
     screens = sorted(granted_screens)
     if config_scopes or config_all:
@@ -298,9 +325,13 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
         },
         "servers": sorted(set(servers)),
         "all_servers": all_servers,
-        "infra": {"all_apps": all_infra_apps, "apps": sorted(infra_apps)},
-        "service": {"all_apps": all_service_apps, "apps": sorted(service_apps)},
-        "oracle": {"all_dbs": all_dbs, "all_level": all_db_level, "dbs": oracle_dbs},
+        "denied_servers": sorted(denied_servers),
+        "infra": {"all_apps": all_infra_apps, "apps": sorted(infra_apps),
+                  "denied_apps": sorted(denied_infra_apps)},
+        "service": {"all_apps": all_service_apps, "apps": sorted(service_apps),
+                    "denied_apps": sorted(denied_service_apps)},
+        "oracle": {"all_dbs": all_dbs, "all_level": all_db_level, "dbs": oracle_dbs,
+                   "denied_dbs": sorted(denied_dbs)},
         "denied_sections": denied_sections,
     })
     return base
@@ -390,6 +421,8 @@ def _dummy_grants(username: str) -> list[dict]:
         {"resource_type": "TABLE_CATEGORY", "resource_scope": "config_ops:group", "resource_key": "OMT-FUNCTIONAL", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "TABLE", "resource_scope": "config_ops:group", "resource_key": "GRP_COST_CENTER", "access_level": "WRITE", "app_env": "PROD"},
         {"resource_type": "SCREEN", "resource_scope": "service_console", "resource_key": "*", "access_level": "WRITE", "app_env": "PROD"},
+        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_GROUP", "access_level": "READ", "app_env": "PROD"},
+        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_CIB", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "APP", "resource_scope": "infra_health", "resource_key": "OLS_GROUP", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "group", "access_level": "WRITE", "app_env": "PROD"},
         {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "cib_batch", "access_level": "READ", "app_env": "PROD"},
