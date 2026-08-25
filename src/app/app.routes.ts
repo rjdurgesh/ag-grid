@@ -2,6 +2,7 @@ import { Routes } from '@angular/router';
 
 import { authGuard } from './auth/auth.guard';
 import { rbacGuard } from './auth/rbac.guard';
+import { opsAdminGuard } from './auth/ops-admin.guard';
 
 export const routes: Routes = [
   {
@@ -46,6 +47,13 @@ export const routes: Routes = [
         canActivate: [rbacGuard],
         data: { screen: 'oracle_command_center' },
         loadChildren: () => import('./views/oracle_command_center/route').then((m) => m.routes)
+      },
+      {
+        // Super-exclusive: gated by the `ols_ops_access` table via opsAdminGuard (NOT rbacGuard).
+        path: 'user_management',
+        canActivate: [opsAdminGuard],
+        data: { screen: 'user_management' },
+        loadChildren: () => import('./views/user_management/route').then((m) => m.routes)
       }
     ]
   },

@@ -101,6 +101,59 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockAccessSnapshot());
   }
 
+  // --- User Management (ops-admin) — in-memory dev store (see umStore below) ----------------
+  if (path === '/api/access/admin/catalogue') {
+    umSeed();
+    return respond({ status: 'success', catalogue: mockCatalogue() });
+  }
+  if (path === '/api/access/admin/user') {
+    umSeed();
+    const uid = String(((req.body ?? {}) as { uid?: string }).uid ?? '').trim();
+    const active = !!uid && !uid.toUpperCase().includes('GHOST');   // type GHOST* to demo the not-found path
+    if (!active) {
+      return respond({
+        status: 'success', grants: [], snapshot: null,
+        lookup: { exists: false, active: false, username: uid, message: umNoUser(uid) }
+      });
+    }
+    return respond({
+      status: 'success',
+      lookup: { exists: true, active: true, username: uid, display_name: titleCase(uid), email: `${uid.toLowerCase()}@ols.local` },
+      grants: umStore.grants.get(uid.toUpperCase()) ?? [], snapshot: null
+    });
+  }
+  if (path === '/api/access/admin/grant') {
+    const g = (req.body ?? {}) as UmGrant;
+    return respond({ status: 'success', grants: umUpsertGrant(g) });
+  }
+  if (path === '/api/access/admin/grant/delete') {
+    const g = (req.body ?? {}) as UmGrant;
+    return respond({ status: 'success', deleted: 1, grants: umDeleteGrant(g) });
+  }
+  if (path === '/api/access/admin/ops') {
+    umSeed();
+    const b = (req.body ?? {}) as { action?: string; uid?: string };
+    const action = String(b.action ?? '').toLowerCase();
+    const uid = String(b.uid ?? '').trim();
+    const key = uid.toUpperCase();
+    if (action === 'add') {
+      if (!uid || key.includes('GHOST')) {
+        return respondError(422, umNoUser(uid || 'that'));
+      }
+      umStore.ops.set(key, true);
+    } else if (action === 'disable' && umStore.ops.has(key)) {
+      umStore.ops.set(key, false);
+    } else if (action === 'enable' && umStore.ops.has(key)) {
+      umStore.ops.set(key, true);
+    } else if (action === 'remove') {
+      umStore.ops.delete(key);
+    }
+    const ops_admins = [...umStore.ops.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([u, active]) => ({ username: u, is_active: active ? 'Y' : 'N' }));
+    return respond({ status: 'success', ops_admins });
+  }
+
   // --- System / dashboard ---------------------------------------------------
   if (path === '/api/system/memory') {
     return respond(mockMemory());
@@ -300,7 +353,9 @@ function mockAccessSnapshot(): Record<string, unknown> {
   const base = {
     status: 'success', active: role !== 'NONE', username: environment.username,
     display_name: titleCase(environment.username), email: `${environment.username.toLowerCase()}@example.com`,
-    role, app_env: environment.appEnv
+    role, app_env: environment.appEnv,
+    // Ops-admin gate (ols_ops_access) is INDEPENDENT of role; in dev the ADMIN role stands in for it.
+    is_ops_admin: role === 'ADMIN'
   };
   const noInfra = { all_apps: false, apps: [] as string[], denied_apps: [] as string[] };
   const noSvc = { all_apps: false, apps: [] as string[], denied_apps: [] as string[] };
@@ -358,5 +413,98 @@ function mockAccessSnapshot(): Record<string, unknown> {
       { screen: 'oracle_command_center', key: 'sql_intelligence' },              // hidden on every DB
       { screen: 'oracle_command_center', key: 'idxhealth', db: 'cib_batch' }      // hidden only on CIB BATCH
     ]
+  };
+}
+
+// --- User Management dev store ----------------------------------------------------------------
+// A tiny in-memory store so the ops-admin screen is fully interactive in dev (grant/revoke, manage
+// ops-admins) without a backend. Seeded once; type a UID containing "GHOST" to exercise the
+// "not an OLS user" path. Mirrors the /api/access/admin/* contract in access_api.py.
+
+interface UmGrant {
+  username: string; resource_type: string; resource_scope: string;
+  resource_key: string; access_level: string; app_env: string;
+}
+const umNoUser = (uid: string) =>
+  `The ${uid} user does not exist in OLS. Please submit the appropriate provisioning request before proceeding.`;
+const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, boolean>() };
+let umSeeded = false;
+
+function umSeed(): void {
+  if (umSeeded) {
+    return;
+  }
+  umSeeded = true;
+  umStore.ops.set(environment.username.toUpperCase(), true);
+  umStore.ops.set('DBAUSER', true);
+  umStore.grants.set('JDOE', [
+    { username: 'JDOE', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ', app_env: 'PROD' },
+    { username: 'JDOE', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ', app_env: 'PROD' },
+    { username: 'JDOE', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'WRITE', app_env: 'PROD' },
+    { username: 'JDOE', resource_type: 'SECTION', resource_scope: 'oracle_command_center', resource_key: 'sql_intelligence', access_level: 'DENY', app_env: 'PROD' }
+  ]);
+}
+
+function umKeyEq(a: UmGrant, b: UmGrant): boolean {
+  return a.resource_type === b.resource_type && a.resource_scope === b.resource_scope &&
+    (a.resource_key || '').toUpperCase() === (b.resource_key || '').toUpperCase() && a.app_env === b.app_env;
+}
+
+function umUpsertGrant(g: UmGrant): UmGrant[] {
+  umSeed();
+  const k = (g.username || '').toUpperCase();
+  const list = umStore.grants.get(k) ?? [];
+  const idx = list.findIndex((x) => umKeyEq(x, g));
+  if (idx >= 0) {
+    list[idx] = g;
+  } else {
+    list.push(g);
+  }
+  umStore.grants.set(k, list);
+  return list;
+}
+
+function umDeleteGrant(g: UmGrant): UmGrant[] {
+  const k = (g.username || '').toUpperCase();
+  const list = (umStore.grants.get(k) ?? []).filter((x) => !umKeyEq(x, g));
+  umStore.grants.set(k, list);
+  return list;
+}
+
+function mockCatalogue(): Record<string, unknown> {
+  return {
+    screens: [
+      { key: 'log_analytics', label: 'Log Analytics', write_capable: false },
+      { key: 'infra_health', label: 'Infrastructure Health', write_capable: false },
+      { key: 'service_console', label: 'Service Console', write_capable: true },
+      { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true }
+    ],
+    config: {
+      scopes: [{ key: 'group', label: 'OLS GROUP' }, { key: 'cib', label: 'OLS CIB' }, { key: 'retail', label: 'OLS RETAIL' }],
+      categories: [
+        { key: 'OMT-FUNCTIONAL', label: 'Functional tables' },
+        { key: 'OMT-TECHNICAL', label: 'Technical tables' },
+        { key: 'OMT-BOTH', label: 'All tables (both)' }
+      ],
+      tables: []
+    },
+    servers: ['eur17', 'eur34', 'eurv15', 'eurv145'],
+    apps: [
+      { key: 'OLS_GROUP', label: 'OLS GROUP' }, { key: 'OLS_CIB', label: 'OLS CIB' },
+      { key: 'OLS_RETAIL', label: 'OLS RETAIL' }, { key: 'POSEIDON', label: 'POSEIDON' }
+    ],
+    databases: [
+      { key: 'group', label: 'OLS GROUP' }, { key: 'cib_batch', label: 'OLS CIB Batch' },
+      { key: 'cib_reporting', label: 'OLS CIB Reporting' }, { key: 'retail_batch', label: 'OLS RETAIL Batch' },
+      { key: 'retail_reporting', label: 'OLS RETAIL Reporting' }
+    ],
+    sections: [
+      { key: 'space', label: 'Database Storage' }, { key: 'top', label: 'Top Table Storage' },
+      { key: 'topidx', label: 'Top Index Storage' }, { key: 'idxhealth', label: 'Index Health' },
+      { key: 'locks', label: 'Critical Locks' }, { key: 'blocking', label: 'Blocking Sessions' },
+      { key: 'temp', label: 'Temp Tablespace' }, { key: 'sessions', label: 'Sessions Detail' },
+      { key: 'sql_intelligence', label: 'SQL Intelligence' }
+    ],
+    app_envs: ['PROD', 'STG', 'DEV', '*']
   };
 }

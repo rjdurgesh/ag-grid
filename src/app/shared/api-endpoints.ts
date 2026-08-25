@@ -63,7 +63,32 @@ export const API = {
      */
     me: `${API_BASE_URL}/api/access/me`,
     /** Admin-only diagnostic: `{ caller, username, app_env }` → resolved snapshot + raw grants. */
-    effective: `${API_BASE_URL}/api/access/effective`
+    effective: `${API_BASE_URL}/api/access/effective`,
+    /**
+     * User Management (ops-admin only — gated by `ols_ops_access`). Every call carries `caller`
+     * (the acting ops-admin, re-checked server-side). See access_api.py / RBAC_DESIGN.md.
+     */
+    admin: {
+      /** `{ caller }` → the grantable-resource catalogue the pickers render. */
+      catalogue: `${API_BASE_URL}/api/access/admin/catalogue`,
+      /** `{ caller, uid, app_env }` → `{ lookup, grants, snapshot }` for one user. */
+      user: `${API_BASE_URL}/api/access/admin/user`,
+      /** `{ caller, username, resource_type, resource_scope, resource_key, access_level, app_env }` → grant (upsert). */
+      grant: `${API_BASE_URL}/api/access/admin/grant`,
+      /** `{ caller, username, resource_type, resource_scope, resource_key, app_env }` → revoke (hard delete). */
+      grantDelete: `${API_BASE_URL}/api/access/admin/grant/delete`,
+      /** `{ caller, action: 'list'|'add'|'disable'|'enable'|'sql_on'|'sql_off'|'remove', uid? }` → manage the ops-admin gate table. */
+      ops: `${API_BASE_URL}/api/access/admin/ops`
+    }
+  },
+  /**
+   * S-Studio — the Config Ops SQL console (ops-admins with `can_sql` only). See sql_studio_api.py.
+   */
+  sqlStudio: {
+    /** `{ caller, scope }` → the databases in that config scope. */
+    databases: `${API_BASE_URL}/api/sql_studio/databases`,
+    /** `{ caller, db, sql }` → run the statement/script → `{ result: SqlResult }`. */
+    execute: `${API_BASE_URL}/api/sql_studio/execute`
   },
   system: {
     /** One-shot memory snapshot → `MemoryStats`. */

@@ -19,6 +19,7 @@ from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
 from service_console_api import router as service_console_router
+from sql_studio_api import router as sql_studio_router
 from system_api import router as system_router
 from utils.logging import configure_logging, get_logger
 
@@ -70,6 +71,12 @@ app.state.db_configs = load_db_configs()
 # stub because access runs in dummy mode (ACCESS_USE_DUMMY=1). See access_api.py / RBAC_DESIGN.md.
 app.state.app_db_config = {}
 
+# S-Studio (Config Ops SQL console) runs writes/DDL, so it needs PRIVILEGED connections — kept
+# SEPARATE from the read-only OCC monitor `db_configs` above (never run DDL through the monitor).
+# Wire {scope_key: privileged_connection} here (same keys as db_configs). Empty stub in dev; if left
+# empty in prod, sql_studio_api falls back to db_configs and logs a warning. See RBAC_DESIGN.md §12.
+app.state.sql_db_configs = {}
+
 # The Angular dev server runs on :4200. Add your real front-end origins for prod.
 ALLOWED_ORIGINS = [
     "http://localhost:4200",
@@ -90,6 +97,7 @@ app.include_router(system_router)
 app.include_router(infra_health_router)
 app.include_router(service_console_router)
 app.include_router(oracle_cc_router)
+app.include_router(sql_studio_router)
 
 
 @app.get("/health", tags=["meta"])

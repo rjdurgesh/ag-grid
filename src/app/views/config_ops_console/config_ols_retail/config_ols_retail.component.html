@@ -6,6 +6,11 @@
     <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'misc'" (click)="activeTab.set('misc')" role="tab">
       MISC Activity
     </button>
+    @if (canSql()) {
+      <button type="button" class="scope-tab scope-tab--sql" [class.scope-tab--active]="activeTab() === 'sstudio'" (click)="activeTab.set('sstudio')" role="tab">
+        S-Studio
+      </button>
+    }
   </div>
 
   @if (activeTab() === 'config') {

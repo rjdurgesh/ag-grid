@@ -1,0 +1,73 @@
+<div class="ols-card sst">
+  <div class="sst__bar">
+    <div class="sst__field">
+      <label for="sst-db">Database</label>
+      <div class="sst__db">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" class="sst__db-icon"><ellipse cx="12" cy="5.5" rx="7" ry="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 5.5v13c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-13" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 12c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <select id="sst-db" [ngModel]="selectedDb()" (ngModelChange)="selectedDb.set($event)"
+                [disabled]="loadingDbs() || !databases().length">
+          @if (loadingDbs()) { <option>Loading…</option> }
+          @for (d of databases(); track d.key) { <option [value]="d.key">{{ d.label }} ({{ d.key }})</option> }
+        </select>
+      </div>
+    </div>
+    <div class="sst__bar-actions">
+      <button type="button" class="sst__btn" (click)="clearEditor()" [disabled]="!sql() && !result()">Clear</button>
+      <button type="button" class="sst__btn sst__btn--run" (click)="run()"
+              [disabled]="running() || !sql().trim() || !selectedDb()">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M7 5l11 7-11 7z" fill="currentColor"/></svg>
+        {{ running() ? 'Running…' : 'Run' }}
+      </button>
+    </div>
+  </div>
+
+  <textarea class="sst__editor" [ngModel]="sql()" (ngModelChange)="sql.set($event)" spellcheck="false"
+            placeholder="-- SELECT · DML · anonymous PL/SQL block · CREATE PACKAGE / PROCEDURE / FUNCTION · deployment&#10;-- Manual commit: end your script with COMMIT; to persist DML (DDL auto-commits)."></textarea>
+
+  <p class="sst__hint">
+    Runs against <strong>{{ selectedLabel() || '—' }}</strong>. Manual commit — include
+    <code>COMMIT;</code> to persist DML; DDL auto-commits. Every run asks for confirmation.
+  </p>
+
+  @if (result(); as r) {
+    <div class="sst__result">
+      <div class="sst__result-head">
+        <span class="sst__result-db">{{ selectedLabel() }}</span>
+        <button type="button" class="sst__x" (click)="dismissResult()" aria-label="Dismiss result">×</button>
+      </div>
+
+      @switch (r.kind) {
+        @case ('error') {
+          <div class="sst__err">
+            <div class="sst__err-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5v5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.05" fill="currentColor"/></svg>
+              Oracle error
+            </div>
+            <pre class="sst__err-body">{{ r.error }}</pre>
+          </div>
+        }
+        @case ('exec') {
+          <div class="sst__ok">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>{{ r.message }}</span>
+          </div>
+        }
+        @case ('select') {
+          <div class="sst__grid-info">
+            {{ r.row_count }} row{{ r.row_count === 1 ? '' : 's' }}@if (r.truncated) { <span class="sst__trunc"> · showing first {{ r.row_count }} (result capped)</span> }
+          </div>
+          <div class="sst__grid-wrap">
+            <table class="sst__grid">
+              <thead><tr>@for (c of r.columns; track $index) { <th>{{ c }}</th> }</tr></thead>
+              <tbody>
+                @for (row of r.rows; track $index) {
+                  <tr>@for (val of row; track $index) { <td>{{ cell(val) }}</td> }</tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      }
+    </div>
+  }
+</div>

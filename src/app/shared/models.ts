@@ -233,7 +233,88 @@ export interface AccessSnapshot {
   oracle: { all_dbs: boolean; all_level: 'READ' | 'WRITE'; dbs: Record<string, 'READ' | 'WRITE'>; denied_dbs?: string[] };
   /** Sections hidden for this user. */
   denied_sections: DeniedSection[];
+  /** Ops-admin gate (`ols_ops_access`): may open User Management + hand out grants. Independent of
+   *  `role` — even an ADMIN is false here unless listed in the gate table. */
+  is_ops_admin?: boolean;
+  /** S-Studio gate (`ols_ops_access.can_sql`, assigned per user): sees the Config Ops SQL console.
+   *  Only ever true for an ops-admin. */
+  can_sql?: boolean;
 }
+
+// --- User Management (ops-admin screen — POST /api/access/admin/* — see access_api.py) --------
+
+/** One grantable screen in the catalogue (write_capable → a WRITE grant is meaningful). */
+export interface CatalogueScreen {
+  key: string;
+  label: string;
+  write_capable: boolean;
+}
+/** A generic {key,label} catalogue entry (config scope, category, app, DB, OCC section). */
+export interface CatalogueItem {
+  key: string;
+  label: string;
+}
+/** A config table option (present only when sourced from ols_master_table_config). */
+export interface CatalogueTable {
+  scope: string;
+  name: string;
+  category: string;
+}
+/** The grantable-resource tree the User Management pickers render. Data-driven lists (servers, DBs)
+ *  populate live; a new screen/section needs its one-line registry entry. See RBAC_DESIGN.md §3. */
+export interface AccessCatalogue {
+  screens: CatalogueScreen[];
+  config: { scopes: CatalogueItem[]; categories: CatalogueItem[]; tables: CatalogueTable[] };
+  servers: string[];
+  apps: CatalogueItem[];
+  databases: CatalogueItem[];
+  sections: CatalogueItem[];
+  app_envs: string[];
+}
+/** One `ols_app_access` grant row (as listed / revoked in User Management). */
+export interface GrantRow {
+  username: string;
+  resource_type: string;
+  resource_scope: string;
+  resource_key: string;
+  access_level: 'READ' | 'WRITE' | 'DENY';
+  app_env: string;
+}
+/** Result of validating a grant target against `ols_users`. `active` false → show `message`. */
+export interface UserLookup {
+  exists: boolean;
+  active: boolean;
+  username: string;
+  display_name?: string;
+  email?: string;
+  message?: string;
+}
+/** Response of `POST /api/access/admin/user`. */
+export interface AdminUserResponse {
+  status?: string;
+  lookup: UserLookup;
+  grants: GrantRow[];
+  snapshot: AccessSnapshot | null;
+}
+/** One row of the `ols_ops_access` gate table. `can_sql` = S-Studio access. */
+export interface OpsAdmin {
+  username: string;
+  is_active: string;
+  can_sql?: string;
+}
+
+// --- S-Studio (Config Ops SQL console — POST /api/sql_studio/* — see sql_studio_api.py) --------
+
+/** A database the S-Studio console can run against, within a config scope. */
+export interface SqlDatabase {
+  key: string;
+  label: string;
+}
+/** Result of running a statement/script (discriminated by `kind`). */
+export type SqlResult =
+  | { kind: 'select'; columns: string[]; rows: unknown[][]; row_count: number; truncated?: boolean; statement?: string; statements?: number }
+  | { kind: 'exec'; message: string; rows_affected?: number | null; statement?: string; statements?: number }
+  | { kind: 'error'; error: string };
 
 /** Authenticated user profile. From OpenID: username = UID (sub), displayName = full name. */
 export interface AuthUser {

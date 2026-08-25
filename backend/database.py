@@ -13,6 +13,10 @@ end. Tunables (owner schema, top-N, history days) are passed in as params.
 
 from __future__ import annotations
 
+import datetime
+import decimal
+import os
+import re
 from typing import Any
 
 
@@ -1378,6 +1382,409 @@ def fetch_user_grants(db_config: Any, username: str, app_env: str) -> list[dict]
         """, {"u": username, "env": app_env})
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# User Management — the ops-admin gate (`ols_ops_access`) + grant read/write.
+#
+# `ols_ops_access` is the super-exclusive gate for the User Management screen: a UID in it
+# (is_active='Y') may open the screen AND hand out grants. It is SEPARATE from ols_users
+# (identity/role) and ols_app_access (grants). No audit table by design — revoke = hard DELETE.
+# These are the ONLY writes in the access system; every caller is re-checked as an ops-admin in
+# the API layer, and `granted_by` should be the caller's token identity. See RBAC_DESIGN.md.
+# =============================================================================
+
+def fetch_is_ops_admin(db_config: Any, username: str) -> bool:
+    """True iff `username` is an ACTIVE row in `ols_ops_access` (the User Management gate)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT 1 FROM ols_ops_access
+             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y'
+        """, {"u": username})
+        return cursor.fetchone() is not None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_ops_admins(db_config: Any) -> list[dict]:
+    """Every row in `ols_ops_access` (who may use User Management + their S-Studio flag), active
+    first then by name."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT username, is_active, can_sql FROM ols_ops_access
+             ORDER BY is_active DESC, UPPER(username)
+        """)
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_can_sql(db_config: Any, username: str) -> bool:
+    """True iff `username` is an ACTIVE ops-admin WITH `can_sql='Y'` — the S-Studio gate."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT 1 FROM ols_ops_access
+             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y' AND can_sql = 'Y'
+        """, {"u": username})
+        return cursor.fetchone() is not None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def ops_admin_set_sql(db_config: Any, username: str, allowed: bool) -> int:
+    """Grant/revoke S-Studio (`can_sql`) for an existing ops-admin. Returns rows changed. Commits.
+    WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            UPDATE ols_ops_access SET can_sql = :flag WHERE UPPER(username) = UPPER(:u)
+        """, {"flag": "Y" if allowed else "N", "u": username})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_all_grants(db_config: Any, username: str) -> list[dict]:
+    """Every ACTIVE `ols_app_access` grant for one user across all environments — the rows the
+    User Management screen lists (and can revoke). Ordered for a stable display."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT username, resource_type, resource_scope, resource_key, access_level, app_env
+              FROM ols_app_access
+             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y'
+             ORDER BY resource_type, resource_scope, UPPER(resource_key), app_env
+        """, {"u": username})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_server_names(db_config: Any) -> list[str]:
+    """Distinct Log-Analytics server names from `ols_server_log_config` — feeds the grant
+    catalogue's server picker. Best-effort: the caller wraps this so a missing table just yields
+    an empty list (the UI still allows '*' and free-text)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT DISTINCT server_name FROM ols_server_log_config
+             WHERE server_name IS NOT NULL ORDER BY server_name
+        """)
+        return [row[0] for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def grant_upsert(db_config: Any, username: str, resource_type: str, resource_scope: str,
+                 resource_key: str, access_level: str, app_env: str, granted_by: str) -> None:
+    """Insert or update ONE `ols_app_access` grant (idempotent on its natural key). Re-granting the
+    same resource updates the level and re-activates the row. Commits. WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            MERGE INTO ols_app_access t
+            USING (SELECT :u username, :rt resource_type, :rs resource_scope, :rk resource_key,
+                          :lvl access_level, :env app_env, :gb granted_by FROM dual) s
+               ON (UPPER(t.username) = UPPER(s.username) AND t.resource_type = s.resource_type
+                   AND t.resource_scope = s.resource_scope
+                   AND UPPER(t.resource_key) = UPPER(s.resource_key) AND t.app_env = s.app_env)
+            WHEN MATCHED THEN UPDATE SET t.access_level = s.access_level, t.is_active = 'Y',
+                                         t.granted_by = s.granted_by, t.granted_on = SYSDATE
+            WHEN NOT MATCHED THEN
+                INSERT (username, resource_type, resource_scope, resource_key,
+                        access_level, app_env, is_active, granted_by, granted_on)
+                VALUES (s.username, s.resource_type, s.resource_scope, s.resource_key,
+                        s.access_level, s.app_env, 'Y', s.granted_by, SYSDATE)
+        """, {"u": username, "rt": resource_type, "rs": resource_scope, "rk": resource_key,
+              "lvl": access_level, "env": app_env, "gb": granted_by})
+        connection.commit()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def grant_delete(db_config: Any, username: str, resource_type: str, resource_scope: str,
+                 resource_key: str, app_env: str) -> int:
+    """Hard-DELETE one `ols_app_access` grant by its natural key (no audit kept). Returns the number
+    of rows removed. Commits. WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            DELETE FROM ols_app_access
+             WHERE UPPER(username) = UPPER(:u) AND resource_type = :rt AND resource_scope = :rs
+               AND UPPER(resource_key) = UPPER(:rk) AND app_env = :env
+        """, {"u": username, "rt": resource_type, "rs": resource_scope, "rk": resource_key, "env": app_env})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def ops_admin_upsert(db_config: Any, username: str) -> None:
+    """Add (or re-activate) an ops-admin in `ols_ops_access`. Commits. WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            MERGE INTO ols_ops_access t
+            USING (SELECT :u username FROM dual) s
+               ON (UPPER(t.username) = UPPER(s.username))
+            WHEN MATCHED THEN UPDATE SET t.is_active = 'Y'
+            WHEN NOT MATCHED THEN INSERT (username, is_active) VALUES (s.username, 'Y')
+        """, {"u": username})
+        connection.commit()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def ops_admin_set_active(db_config: Any, username: str, active: bool) -> int:
+    """Enable/disable an existing ops-admin by flipping `is_active` (the "edit" action — the row stays,
+    access is turned off/on). Returns rows changed. Commits. WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            UPDATE ols_ops_access SET is_active = :flag WHERE UPPER(username) = UPPER(:u)
+        """, {"flag": "Y" if active else "N", "u": username})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def ops_admin_delete(db_config: Any, username: str) -> int:
+    """Hard-DELETE an ops-admin from `ols_ops_access` (no audit). Returns rows removed. Commits.
+    WRITE — ops-admin only. (No self-lockout guard: the UI may remove any UID, incl. the caller's.)"""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("DELETE FROM ols_ops_access WHERE UPPER(username) = UPPER(:u)", {"u": username})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# S-Studio — raw SQL / PL-SQL console (Config Ops, ops-admins with can_sql only).
+#
+# Runs whatever the operator types against ONE target database. SELECT → columns+rows;
+# DML/DDL/anonymous-PL-SQL/deploy → a status message; Oracle errors → the ORA-xxxxx text.
+# MANUAL COMMIT: the connection has autocommit OFF and is CLOSED after each run, so uncommitted
+# DML rolls back — nothing persists unless the operator's script includes an explicit COMMIT
+# (DDL still auto-commits in Oracle). SECURITY: `db_config` here MUST be a PRIVILEGED connection,
+# separate from the OCC read-only monitor (see RBAC_DESIGN.md). The API layer re-checks can_sql.
+# =============================================================================
+
+SQL_STUDIO_MAX_ROWS = int(os.environ.get("SQL_STUDIO_MAX_ROWS", "1000"))
+
+
+def _cell(v: Any) -> Any:
+    """Make one result cell JSON-safe for the UI grid."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.isoformat(sep=" ") if isinstance(v, datetime.datetime) else v.isoformat()
+    if isinstance(v, (bytes, bytearray)):
+        return f"({len(v)} bytes)"
+    return str(v)
+
+
+def _looks_like_plsql(text: str) -> bool:
+    """True for an anonymous block or a stored-object CREATE (executed as ONE unit, not ;-split)."""
+    head = text.lstrip().upper()
+    if head.startswith("BEGIN") or head.startswith("DECLARE"):
+        return True
+    return bool(re.match(
+        r"CREATE\s+(OR\s+REPLACE\s+)?(EDITIONABLE\s+|NONEDITIONABLE\s+)?"
+        r"(PACKAGE\s+BODY|PACKAGE|PROCEDURE|FUNCTION|TRIGGER|TYPE\s+BODY|TYPE)\b", head))
+
+
+def _split_sql_statements(text: str) -> list[str]:
+    """Split a plain-SQL script on `;`, ignoring semicolons inside single-quoted strings and
+    `--` line comments. (PL/SQL blocks are handled whole by _looks_like_plsql, not split here.)"""
+    out: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(text)
+    in_quote = False
+    while i < n:
+        c = text[i]
+        if in_quote:
+            buf.append(c)
+            if c == "'":
+                in_quote = False
+            i += 1
+            continue
+        if c == "'":
+            in_quote = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == "-" and i + 1 < n and text[i + 1] == "-":     # -- line comment
+            while i < n and text[i] != "\n":
+                buf.append(text[i])
+                i += 1
+            continue
+        if c == ";":
+            out.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    tail = "".join(buf)
+    out.append(tail)
+    return [s for s in (st.strip() for st in out) if s]
+
+
+def _exec_message(stmt: str, rowcount: int | None) -> str:
+    """Friendly status for a non-SELECT statement."""
+    head = stmt.lstrip().upper()
+    verb = head.split(None, 1)[0] if head else "STATEMENT"
+    dml = {"INSERT": "inserted", "UPDATE": "updated", "DELETE": "deleted", "MERGE": "merged"}
+    if verb in dml:
+        rc = rowcount if (rowcount or 0) >= 0 else 0
+        return f"{rc} row{'' if rc == 1 else 's'} {dml[verb]}."
+    if verb == "COMMIT":
+        return "Commit complete."
+    if verb == "ROLLBACK":
+        return "Rollback complete."
+    return f"{verb.title()} succeeded."
+
+
+def _plsql_message(text: str) -> str:
+    head = text.lstrip().upper()
+    if head.startswith("BEGIN") or head.startswith("DECLARE"):
+        return "PL/SQL procedure successfully completed."
+    m = re.match(
+        r"CREATE\s+(OR\s+REPLACE\s+)?(EDITIONABLE\s+|NONEDITIONABLE\s+)?"
+        r"(PACKAGE\s+BODY|PACKAGE|PROCEDURE|FUNCTION|TRIGGER|TYPE\s+BODY|TYPE)\b", head)
+    obj = m.group(3).title() if m else "Object"
+    return f"{obj} created."
+
+
+def execute_sql(db_config: Any, sql: str) -> dict:
+    """Run one statement / block / script against `db_config` and return a UI-ready result:
+      SELECT  → {kind:'select', columns, rows, row_count, truncated}
+      other   → {kind:'exec',   message, rows_affected, statements}
+      failure → {kind:'error',  error}   (the ORA-xxxxx message)
+    Autocommit is OFF and the connection is closed after the run (manual COMMIT — see module note)."""
+    text = (sql or "").strip()
+    if not text:
+        return {"kind": "error", "error": "No SQL to run."}
+    text = text.rstrip().rstrip("/").rstrip()      # tolerate a trailing SQL*Plus '/'
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        if _looks_like_plsql(text):
+            cursor.execute(text)
+            rc = cursor.rowcount
+            return {"kind": "exec", "message": _plsql_message(text),
+                    "rows_affected": rc if (rc or 0) > 0 else None, "statements": 1}
+        result: dict | None = None
+        executed = 0
+        for stmt in _split_sql_statements(text):
+            cursor.execute(stmt)
+            executed += 1
+            if cursor.description:                 # a row source → SELECT-like
+                cols = [d[0] for d in cursor.description]
+                rows = cursor.fetchmany(SQL_STUDIO_MAX_ROWS + 1)
+                truncated = len(rows) > SQL_STUDIO_MAX_ROWS
+                rows = rows[:SQL_STUDIO_MAX_ROWS]
+                result = {"kind": "select", "columns": cols,
+                          "rows": [[_cell(v) for v in r] for r in rows],
+                          "row_count": len(rows), "truncated": truncated, "statement": stmt}
+            else:
+                result = {"kind": "exec", "message": _exec_message(stmt, cursor.rowcount),
+                          "rows_affected": cursor.rowcount if (cursor.rowcount or 0) >= 0 else None,
+                          "statement": stmt}
+        if result is None:
+            return {"kind": "exec", "message": "Nothing to run.", "statements": 0}
+        result["statements"] = executed
+        return result
+    except Exception as e:                          # includes oracledb.Error → the ORA-xxxxx text
+        return {"kind": "error", "error": str(e).strip()}
     finally:
         if cursor:
             cursor.close()

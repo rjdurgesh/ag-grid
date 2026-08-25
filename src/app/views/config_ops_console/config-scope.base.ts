@@ -175,8 +175,16 @@ export abstract class ConfigScopeBase implements OnInit {
   readonly canWriteRow = (row: Record<string, unknown>): boolean =>
     this.rbac.canWriteTable(this.scope, String(row[this.tableNameKey] ?? ''), String(row[this.categoryKey] ?? ''));
 
-  /** In-page tab: the config grid or the (currently empty) MISC activity view. */
-  readonly activeTab = signal<'config' | 'misc'>('config');
+  /** In-page tab: config grid, MISC activity, or the S-Studio SQL console. */
+  readonly activeTab = signal<'config' | 'misc' | 'sstudio'>('config');
+
+  /** S-Studio tab visible ONLY for authorised operators (`ols_ops_access.can_sql`). */
+  readonly canSql = computed(() => this.rbac.canSql());
+
+  /** The config scope, exposed for the S-Studio child (`[scope]`). */
+  get scopeKey(): ConfigScope {
+    return this.scope;
+  }
 
   /** Display label for this scope, e.g. "OLS CIB". */
   get label(): string {

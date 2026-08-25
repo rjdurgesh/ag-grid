@@ -20,7 +20,7 @@ const EMPTY: AccessSnapshot = {
   infra: { all_apps: false, apps: [], denied_apps: [] },
   service: { all_apps: false, apps: [], denied_apps: [] },
   oracle: { all_dbs: false, all_level: 'READ', dbs: {}, denied_dbs: [] },
-  denied_sections: []
+  denied_sections: [], is_ops_admin: false, can_sql: false
 };
 
 /** Screens always resolvable (external help + login/error routes). Home is NOT here — it's opt-in
@@ -88,6 +88,11 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
+    // User Management has its OWN super-exclusive gate (`ols_ops_access`) — it is NOT part of the
+    // normal opt-in set, and even an ADMIN cannot see it unless listed. Check it before anything else.
+    if (screen === 'user_management') {
+      return this.isOpsAdmin();
+    }
     if (ALWAYS_VIEW.has(screen)) {
       return true;
     }
@@ -95,6 +100,20 @@ export class RbacService {
       return true;
     }
     return s.screens.includes(screen);
+  }
+
+  /** Is the user an ops-admin (may open User Management + hand out grants)? Gated solely by the
+   *  `ols_ops_access` table — independent of ADMIN/READ/SALT. */
+  isOpsAdmin(): boolean {
+    const s = this.snapshot();
+    return s.active && !!s.is_ops_admin;
+  }
+
+  /** May the user use S-Studio (the Config Ops SQL console)? Gated by `ols_ops_access.can_sql`,
+   *  assigned specifically per user — even other ops-admins are false unless granted. */
+  canSql(): boolean {
+    const s = this.snapshot();
+    return s.active && !!s.can_sql;
   }
 
   /** Can the user take write actions on this screen? (OCC kill, Service start/stop.) */

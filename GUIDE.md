@@ -188,9 +188,19 @@ route. Everything else follows.
 - `<app-grid-data [canWriteRow]="…">` — per-table write gate for the Config Ops content modal.
 - **Admin diagnostic:** `POST /api/access/effective` `{ caller, username, app_env }` → resolved snapshot + raw grants ("why can't user X see table Y?").
 
+**User Management screen** (Administration → User Management) lets an *ops-admin* grant/revoke access
+from the UI (no SQL). Gated by a separate super-exclusive table **`ols_ops_access`** (`username`,
+`is_active`) — a UID in it sees the screen, **everyone else (incl. `IS_ADMIN`) does not**; snapshot flag
+`is_ops_admin`, route guard [`ops-admin.guard.ts`](src/app/auth/ops-admin.guard.ts). Catalogue-driven
+form (`POST /api/access/admin/*`) grants any `ols_app_access` row to any active OLS user (target
+validated against `ols_users`), revoke = **hard delete** (no audit), and it manages the ops-admin list
+itself (no self-lockout guard). DDL/seed: [`backend/sql/ops_access_setup.sql`](backend/sql/ops_access_setup.sql).
+Full detail: RBAC_DESIGN.md §11.
+
 **Local testing** (`USE_MOCK`/access mocked): flip `devRoles` in
 [`environment.ts`](src/environments/environment.ts) to ADMIN/READ/SALT — the mock
-(`mock-api.interceptor.ts` `mockAccessSnapshot`) serves a representative snapshot per role.
+(`mock-api.interceptor.ts` `mockAccessSnapshot`) serves a representative snapshot per role. In dev the
+ADMIN role also stands in for the ops-admin gate, so User Management is reachable.
 
 **To go live:** wire `app.state.app_db_config` (the app DB holding `ols_users` + `ols_app_access`),
 set `ACCESS_USE_DUMMY=0`, ensure `/api/config/{scope}/tables` returns `TABLE_CATEGORY`, and

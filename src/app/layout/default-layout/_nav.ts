@@ -60,6 +60,17 @@ export const navItems: INavData[] = [
     iconComponent: { name: 'cil-layers' }
   },
   {
+    // Only rendered for ops-admins (ols_ops_access) — the nav filter drops the whole group
+    // when its single item is not viewable. Deliberately separate from the Tools group above.
+    title: true,
+    name: 'Administration'
+  },
+  {
+    name: 'User Management',
+    url: '/user_management',
+    iconComponent: { name: 'cil-people' }
+  },
+  {
     title: true,
     name: 'Documentation',
     class: 'mt-auto'

@@ -186,7 +186,7 @@ VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','PROD','ADMIN1');
 | A new Log Analytics server | One `SERVER` INSERT per user (opt-in → invisible until granted) | **None** |
 | A new OCC section | Wrap it once with `*olsIfSection`; deny via `SECTION` rows | 1 line |
 | A whole new screen | Register its key in `rbac.config.ts` + `data.screen` on the route (the one line you write to create any screen) | 1 line |
-| Grant / revoke for a user | INSERT / flip `IS_ACTIVE` | **None** |
+| Grant / revoke for a user | INSERT / flip `IS_ACTIVE` — or use the **User Management** screen (§11) | **None** |
 
 The grant table never needs an `ALTER` — the permission *vocabulary is data*.
 
@@ -222,4 +222,51 @@ see table Y?" without guessing.
 
 Dev note: the frontend mock (`mock-api.interceptor.ts`) and backend dummy (`access_api._access_dummy`)
 serve the snapshot from `environment.devRoles` / the username in dev — flip `devRoles` to
-ADMIN / READ / SALT to exercise each role without a database.
+ADMIN / READ / SALT to exercise each role without a database. In dev the **ADMIN** role also stands in
+for the ops-admin gate (`is_ops_admin`), so User Management is reachable.
+
+## 11. User Management screen (ops-admin) — hand out access from the UI
+
+A dedicated **Administration → User Management** screen lets an *ops-admin* grant/revoke any
+`ols_app_access` row for any active OLS user, and manage the ops-admin list itself — no SQL needed.
+
+**Super-exclusive gate — `ols_ops_access`.** A third, deliberately tiny table (`username`,
+`is_active`) is the ONLY thing that reveals User Management. A UID in it (active) sees the screen;
+**everyone else — including full `IS_ADMIN` users — does not.** It is independent of the base role.
+The snapshot carries `is_ops_admin`; `RbacService.canView('user_management')` and `opsAdminGuard`
+(NOT the normal `rbacGuard`) both read it. DDL + bootstrap seed: `backend/sql/ops_access_setup.sql`.
+Bootstrap by SQL once (chicken-and-egg is intentional); after that the screen can add more ops-admins.
+
+**What it does** (all `POST /api/access/admin/*`, every call re-checks the caller against
+`ols_ops_access`):
+- **Catalogue-driven form** (`/admin/catalogue`) — pickers for screens, config scopes/categories,
+  servers, apps, DBs, sections, plus levels & env. Data-driven lists (servers, OCC DBs) populate
+  live; config tables are free-text; a new screen/section shows up once it's in its normal registry
+  (§3/§7). Includes the “all EXCEPT” DENY pattern.
+- **Load a user** (`/admin/user`) — validated against `ols_users`. If absent or `LGCL_DEL_FLG≠'N'`
+  → *“The &lt;uid&gt; user does not exist in OLS. Please submit the appropriate provisioning request
+  before proceeding.”* (via `access_api.no_ols_user_msg`) and no editing.
+- **Grant / revoke** (`/admin/grant`, `/admin/grant/delete`) — build several grants (“Add to list”)
+  then **Apply** them together (batched), or revoke individually; grant = upsert, **revoke = hard
+  DELETE** (no audit table, by design). Segmented READ/WRITE/DENY control (only valid levels enabled).
+  **No duplicates** — staging and the upsert both key on `(type,scope,key,env)` (re-adding updates).
+- **Copy profile** — “Copy access from another user”: **Fetch detail** validates the source against
+  `ols_users` (+ loads their `ols_app_access` grants), **View access** opens a modal listing exactly
+  what they hold, and only then does **Copy** enable — staging those grants (retargeted) into the
+  pending list so one Apply clones A's access onto B (deduped on merge).
+- **Manage ops-admins** — each row has **Disable/Enable** (edit = flip `is_active`, `/admin/ops`
+  action `disable`/`enable`, keeps the row) and **Remove** (hard delete).
+- **Confirmation on every write** — Apply, Revoke, Add/Disable/Enable/Remove all go through the shared
+  `ConfirmService.ask()` dialog first; nothing mutates on a stray click.
+- **Manage ops-admins** (`/admin/ops`) — list / add / remove. Add requires an active OLS user.
+  **No self-lockout guard** — an ops-admin can remove their own UID (recover by SQL).
+
+**Authority:** an ops-admin may grant *anything to anyone* (no level cap). `granted_by` is the caller
+(derive from the SSO token at go-live — §9). The writes here (grant/revoke, ops add/remove) are the
+**only** writes in the whole access system.
+
+Code: data `backend/database.py` (`fetch_is_ops_admin`/`fetch_ops_admins`/`fetch_all_grants`/
+`fetch_server_names` + `grant_upsert`/`grant_delete`/`ops_admin_upsert`/`ops_admin_delete`);
+API `backend/access_api.py` (`build_catalogue` + the `/admin/*` routes); UI
+`src/app/views/user_management/*` + `auth/ops-admin.guard.ts` + `UserManagementService`. Full grant
+patterns (the SQL equivalents of every form action) remain in `backend/sql/access_examples.sql`.

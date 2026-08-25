@@ -58,6 +58,65 @@ WRITE_CAPABLE_SCREENS = ["service_console", "oracle_command_center"]
 
 _CONFIG_PREFIX = "config_ops:"
 
+# ---- Grant catalogue (drives the User Management pickers) --------------------
+# Static registries for the resources a new screen/section still registers once (see §3 of the
+# design). Data-driven lists (servers from ols_server_log_config, OCC DBs from db_configs) are
+# merged in at request time by build_catalogue(); config tables stay category-driven + free-text.
+SCREEN_CATALOGUE = [
+    {"key": "log_analytics", "label": "Log Analytics", "write_capable": False},
+    {"key": "infra_health", "label": "Infrastructure Health", "write_capable": False},
+    {"key": "service_console", "label": "Service Console", "write_capable": True},
+    {"key": "oracle_command_center", "label": "Oracle Command Center", "write_capable": True},
+]
+CONFIG_SCOPE_CATALOGUE = [
+    {"key": "group", "label": "OLS GROUP"},
+    {"key": "cib", "label": "OLS CIB"},
+    {"key": "retail", "label": "OLS RETAIL"},
+]
+CONFIG_CATEGORIES = [
+    {"key": "OMT-FUNCTIONAL", "label": "Functional tables"},
+    {"key": "OMT-TECHNICAL", "label": "Technical tables"},
+    {"key": "OMT-BOTH", "label": "All tables (both)"},
+]
+APP_CATALOGUE = [
+    {"key": "OLS_GROUP", "label": "OLS GROUP"},
+    {"key": "OLS_CIB", "label": "OLS CIB"},
+    {"key": "OLS_RETAIL", "label": "OLS RETAIL"},
+    {"key": "POSEIDON", "label": "POSEIDON"},
+]
+OCC_SECTION_CATALOGUE = [
+    {"key": "space", "label": "Database Storage"},
+    {"key": "top", "label": "Top Table Storage"},
+    {"key": "topidx", "label": "Top Index Storage"},
+    {"key": "idxhealth", "label": "Index Health"},
+    {"key": "locks", "label": "Critical Locks"},
+    {"key": "blocking", "label": "Blocking Sessions"},
+    {"key": "temp", "label": "Temp Tablespace"},
+    {"key": "sessions", "label": "Sessions Detail"},
+    {"key": "sql_intelligence", "label": "SQL Intelligence"},
+]
+# Friendly labels for the OCC databases; the actual key list is db_configs at runtime.
+OCC_DB_LABELS = {
+    "group": "OLS GROUP", "cib_batch": "OLS CIB Batch", "cib_reporting": "OLS CIB Reporting",
+    "retail_batch": "OLS RETAIL Batch", "retail_reporting": "OLS RETAIL Reporting",
+}
+APP_ENVS = ["PROD", "STG", "DEV", "*"]
+
+
+def build_catalogue(server_names: list[str], db_keys: list[str]) -> dict:
+    """Assemble the grantable-resource tree the User Management UI renders. Static registries +
+    the two live lists (servers, OCC DBs) passed in. Config stays category + free-text."""
+    databases = [{"key": k, "label": OCC_DB_LABELS.get(k, k.replace("_", " ").title())} for k in db_keys]
+    return {
+        "screens": SCREEN_CATALOGUE,
+        "config": {"scopes": CONFIG_SCOPE_CATALOGUE, "categories": CONFIG_CATEGORIES, "tables": []},
+        "servers": server_names,
+        "apps": APP_CATALOGUE,
+        "databases": databases,
+        "sections": OCC_SECTION_CATALOGUE,
+        "app_envs": APP_ENVS,
+    }
+
 
 class AccessQuery(BaseModel):
     username: str
@@ -69,6 +128,44 @@ class EffectiveQuery(BaseModel):
     caller: str
     username: str
     app_env: str = "PROD"
+
+
+# ---- User Management (ops-admin surface). `caller` is the acting ops-admin; every endpoint
+# re-checks it against `ols_ops_access`. NOTE (go-live): `caller`/`granted_by` MUST come from the
+# validated SSO token, not the body — see RBAC_DESIGN.md §Security. -----------
+class AdminQuery(BaseModel):
+    caller: str
+
+
+class AdminUserQuery(BaseModel):
+    caller: str
+    uid: str
+    app_env: str = "PROD"
+
+
+class GrantBody(BaseModel):
+    caller: str
+    username: str
+    resource_type: str
+    resource_scope: str
+    resource_key: str = "*"
+    access_level: str = "READ"
+    app_env: str = "PROD"
+
+
+class GrantDeleteBody(BaseModel):
+    caller: str
+    username: str
+    resource_type: str
+    resource_scope: str
+    resource_key: str
+    app_env: str
+
+
+class OpsAdminBody(BaseModel):
+    caller: str
+    action: str            # "list" | "add" | "remove"
+    uid: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +204,12 @@ def _scope_of(resource_scope: str | None) -> str | None:
     return s[len(_CONFIG_PREFIX):] if s.startswith(_CONFIG_PREFIX) else None
 
 
-def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> dict:
+def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
+                   is_ops_admin: bool = False, can_sql: bool = False) -> dict:
     """Resolve identity + grants into the UI access snapshot. Pure — no I/O — so the dummy path
-    and the real path share it. See RBAC_DESIGN.md for the exact rules encoded here."""
+    and the real path share it. `is_ops_admin` (from the SEPARATE `ols_ops_access` gate) drives the
+    User Management screen; `can_sql` (same table, assigned per user) drives S-Studio. Both are
+    independent of the base role. See RBAC_DESIGN.md."""
     role = _role_of(identity)
     active = _is_active(identity) and role != "NONE"
 
@@ -124,7 +224,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
             "infra": {"all_apps": False, "apps": [], "denied_apps": []},
             "service": {"all_apps": False, "apps": [], "denied_apps": []},
             "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}, "denied_dbs": []},
-            "denied_sections": [],
+            "denied_sections": [], "is_ops_admin": False, "can_sql": False,
         }
 
     username = identity.get("username", "")
@@ -132,6 +232,8 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str) -> d
         "status": "success", "active": True, "role": role, "app_env": app_env,
         "username": username, "display_name": _display_name(identity),
         "email": (identity.get("emailid") or "").strip(),
+        "is_ops_admin": bool(is_ops_admin),
+        "can_sql": bool(can_sql and is_ops_admin),
     }
 
     # ADMIN: everything, grants ignored.
@@ -350,8 +452,11 @@ def access_me(request: Request, body: AccessQuery) -> dict:
     cfg = getattr(request.app.state, "app_db_config", None)
     try:
         identity = database.fetch_user_identity(cfg, body.username)
-        grants = database.fetch_user_grants(cfg, body.username, body.app_env) if _is_active(identity) else []
-        return build_snapshot(identity, grants, body.app_env)
+        active = _is_active(identity)
+        grants = database.fetch_user_grants(cfg, body.username, body.app_env) if active else []
+        is_ops = database.fetch_is_ops_admin(cfg, body.username) if active else False
+        can_sql = database.fetch_can_sql(cfg, body.username) if is_ops else False
+        return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, can_sql=can_sql)
     except Exception:
         logger.exception("access/me failed for %s", body.username)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -382,6 +487,180 @@ def access_effective(request: Request, body: EffectiveQuery) -> dict:
         raise
     except Exception:
         logger.exception("access/effective failed for %s (caller %s)", body.username, body.caller)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# User Management (ops-admin surface). Every endpoint re-checks the caller against
+# `ols_ops_access` (the super-exclusive gate) — hiding the screen client-side is UX, not security.
+# `granted_by` is the caller (from the token at go-live). See RBAC_DESIGN.md §User Management.
+# ---------------------------------------------------------------------------
+
+_RESOURCE_TYPES = {"SCREEN", "SERVER", "APP", "DB", "TABLE_CATEGORY", "TABLE", "SECTION"}
+
+
+def no_ols_user_msg(uid: str) -> str:
+    """The standard message when a grant/ops target is not an active user in `ols_users`."""
+    return (f"The {uid} user does not exist in OLS. "
+            "Please submit the appropriate provisioning request before proceeding.")
+
+
+def _require_ops_admin(request: Request, caller: str):
+    """Confirm `caller` is an active ops-admin, else 403. Returns the app DB config (None in dummy)."""
+    if ACCESS_USE_DUMMY:
+        if not _dummy_is_ops_admin(caller):
+            raise HTTPException(status_code=403, detail="User Management is restricted to ops-admins")
+        return None
+    cfg = getattr(request.app.state, "app_db_config", None)
+    if not database.fetch_is_ops_admin(cfg, caller):
+        raise HTTPException(status_code=403, detail="User Management is restricted to ops-admins")
+    return cfg
+
+
+def _lookup_target(cfg, uid: str) -> tuple[bool, dict]:
+    """Validate a grant target against ols_users (gate 1). (ok, payload) — ok False when the user is
+    absent or LGCL_DEL_FLG != 'N' (payload carries the standard 'raise a request' message)."""
+    identity = database.fetch_user_identity(cfg, uid)
+    if not _is_active(identity):
+        return False, {"exists": bool(identity), "active": False, "username": uid, "message": no_ols_user_msg(uid)}
+    return True, {"exists": True, "active": True, "username": identity.get("username", uid),
+                  "display_name": _display_name(identity), "email": (identity.get("emailid") or "").strip()}
+
+
+@router.post("/admin/catalogue")
+def admin_catalogue(request: Request, body: AdminQuery) -> dict:
+    """The grantable-resource tree the User Management pickers render (ops-admin only)."""
+    cfg = _require_ops_admin(request, body.caller)
+    if ACCESS_USE_DUMMY:
+        return {"status": "success", "catalogue": build_catalogue([], list(OCC_DB_LABELS.keys()))}
+    try:
+        try:
+            servers = database.fetch_server_names(cfg)
+        except Exception:
+            servers = []      # best-effort: table missing / no rows → the UI still allows '*' + free-text
+        db_keys = list(getattr(request.app.state, "db_configs", {}) or OCC_DB_LABELS)
+        return {"status": "success", "catalogue": build_catalogue(servers, db_keys)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/catalogue failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/user")
+def admin_user(request: Request, body: AdminUserQuery) -> dict:
+    """Look a user up (validated against ols_users) + return their current grants and resolved
+    snapshot. `lookup.active=false` → the UI shows the 'raise a request' message, no grants."""
+    cfg = _require_ops_admin(request, body.caller)
+    if ACCESS_USE_DUMMY:
+        ident = _dummy_identity(body.uid)
+        grants = _dummy_grants(body.uid)
+        snap = build_snapshot(ident, grants, body.app_env, is_ops_admin=_dummy_is_ops_admin(body.uid))
+        return {"status": "success",
+                "lookup": {"exists": True, "active": True, "username": body.uid,
+                           "display_name": _display_name(ident), "email": (ident.get("emailid") or "").strip()},
+                "grants": grants, "snapshot": snap}
+    try:
+        ok, lk = _lookup_target(cfg, body.uid)
+        if not ok:
+            return {"status": "success", "lookup": lk, "grants": [], "snapshot": None}
+        ident = database.fetch_user_identity(cfg, body.uid)
+        grants = database.fetch_all_grants(cfg, body.uid)
+        env_grants = database.fetch_user_grants(cfg, body.uid, body.app_env)
+        snap = build_snapshot(ident, env_grants, body.app_env,
+                              is_ops_admin=database.fetch_is_ops_admin(cfg, body.uid))
+        return {"status": "success", "lookup": lk, "grants": grants, "snapshot": snap}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/user failed for %s", body.uid)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/grant")
+def admin_grant(request: Request, body: GrantBody) -> dict:
+    """Grant (insert/update) ONE `ols_app_access` row for a user. Target must be an active OLS user."""
+    cfg = _require_ops_admin(request, body.caller)
+    rt = (body.resource_type or "").strip().upper()
+    rs = (body.resource_scope or "").strip()
+    rk = (body.resource_key or "*").strip() or "*"
+    lvl = (body.access_level or "").strip().upper()
+    env = (body.app_env or "PROD").strip() or "PROD"
+    if rt not in _RESOURCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid resource_type '{rt}'")
+    if lvl not in ("READ", "WRITE", "DENY"):
+        raise HTTPException(status_code=400, detail=f"Invalid access_level '{lvl}'")
+    if ACCESS_USE_DUMMY:
+        return {"status": "success", "dummy": True}
+    try:
+        ok, _ = _lookup_target(cfg, body.username)
+        if not ok:
+            raise HTTPException(status_code=422, detail=no_ols_user_msg(body.username))
+        database.grant_upsert(cfg, body.username, rt, rs, rk, lvl, env, body.caller)
+        return {"status": "success", "grants": database.fetch_all_grants(cfg, body.username)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/grant failed for %s", body.username)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/grant/delete")
+def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
+    """Revoke (hard-DELETE) ONE `ols_app_access` row by its natural key — no audit kept."""
+    cfg = _require_ops_admin(request, body.caller)
+    if ACCESS_USE_DUMMY:
+        return {"status": "success", "dummy": True, "deleted": 1}
+    try:
+        n = database.grant_delete(cfg, body.username, (body.resource_type or "").strip().upper(),
+                                  (body.resource_scope or "").strip(), (body.resource_key or "").strip(),
+                                  (body.app_env or "").strip())
+        return {"status": "success", "deleted": n, "grants": database.fetch_all_grants(cfg, body.username)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/grant/delete failed for %s", body.username)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/ops")
+def admin_ops(request: Request, body: OpsAdminBody) -> dict:
+    """Manage the ops-admin gate itself (`ols_ops_access`): action = list | add | disable | enable |
+    sql_on | sql_off | remove. `add` requires an active OLS user; `disable`/`enable` flip is_active
+    (the "edit" action); `sql_on`/`sql_off` grant/revoke S-Studio (`can_sql`); `remove` hard-deletes.
+    No self-lockout guard (you can disable/remove your own UID)."""
+    cfg = _require_ops_admin(request, body.caller)
+    action = (body.action or "").strip().lower()
+    if ACCESS_USE_DUMMY:
+        row = {"username": body.caller, "is_active": "Y", "can_sql": "Y"}
+        return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
+    try:
+        if action == "list":
+            return {"status": "success", "ops_admins": database.fetch_ops_admins(cfg)}
+        if not (body.uid or "").strip():
+            raise HTTPException(status_code=400, detail="uid is required")
+        if action == "add":
+            ok, _ = _lookup_target(cfg, body.uid)
+            if not ok:
+                raise HTTPException(status_code=422, detail=no_ols_user_msg(body.uid))
+            database.ops_admin_upsert(cfg, body.uid)
+        elif action == "disable":
+            database.ops_admin_set_active(cfg, body.uid, False)
+        elif action == "enable":
+            database.ops_admin_set_active(cfg, body.uid, True)
+        elif action == "sql_on":
+            database.ops_admin_set_sql(cfg, body.uid, True)
+        elif action == "sql_off":
+            database.ops_admin_set_sql(cfg, body.uid, False)
+        elif action == "remove":
+            database.ops_admin_delete(cfg, body.uid)
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
+        return {"status": "success", "ops_admins": database.fetch_ops_admins(cfg)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/ops %s failed", action)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -430,9 +709,16 @@ def _dummy_grants(username: str) -> list[dict]:
     ]
 
 
+def _dummy_is_ops_admin(username: str) -> bool:
+    """Dev-only stand-in for the `ols_ops_access` gate: ADMIN/OPS-ish UIDs are ops-admins."""
+    u = (username or "").upper()
+    return "ADMIN" in u or "OPS" in u
+
+
 def _access_dummy(username: str, app_env: str) -> dict:
     identity = _dummy_identity(username)
     grants = _dummy_grants(username)
-    snap = build_snapshot(identity, grants, app_env)
+    is_ops = _dummy_is_ops_admin(username)
+    snap = build_snapshot(identity, grants, app_env, is_ops_admin=is_ops, can_sql=is_ops)
     snap["_raw_grants"] = grants
     return snap
