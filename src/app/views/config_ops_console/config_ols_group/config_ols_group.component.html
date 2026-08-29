@@ -1,13 +1,13 @@
 <section class="ols-view ols-surface ols-surface--tight">
   <div class="scope-tabs" role="tablist">
-    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'config'" (click)="activeTab.set('config')" role="tab">
+    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'config'" (click)="selectTab('config')" role="tab">
       Config
     </button>
-    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'misc'" (click)="activeTab.set('misc')" role="tab">
+    <button type="button" class="scope-tab" [class.scope-tab--active]="activeTab() === 'misc'" (click)="selectTab('misc')" role="tab">
       MISC Activity
     </button>
     @if (canSql()) {
-      <button type="button" class="scope-tab scope-tab--sql" [class.scope-tab--active]="activeTab() === 'sstudio'" (click)="activeTab.set('sstudio')" role="tab">
+      <button type="button" class="scope-tab scope-tab--sql" [class.scope-tab--active]="activeTab() === 'sstudio'" (click)="selectTab('sstudio')" role="tab">
         S-Studio
       </button>
     }
@@ -16,6 +16,7 @@
   @if (activeTab() === 'config') {
     <app-grid-data
       #grid
+      [scope]="scopeKey"
       [columns]="columns()"
       [rows]="rows()"
       [loading]="loading()"
@@ -38,6 +39,8 @@
       (rowsUpdated)="onRowsUpdated($event)"
       (rowsDeleted)="onRowsDeleted($event)"
     />
+  } @else if (tabLoading()) {
+    <app-loader variant="skeleton" [rows]="6" />
   } @else if (activeTab() === 'sstudio' && canSql()) {
     <app-sql-studio [scope]="scopeKey" />
   } @else {

@@ -269,6 +269,14 @@
               <span class="um__ops-name">{{ o.username }}</span>
               @if (o.is_active !== 'Y') { <span class="um__ops-off">disabled</span> }
               <div class="um__ops-actions">
+                <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_users === 'Y'" (click)="toggleUsers(o)"
+                        [title]="o.can_users === 'Y' ? 'User Management granted — click to revoke' : 'Grant User Management (super admin)'">
+                  User Mgmt {{ o.can_users === 'Y' ? '✓' : '✕' }}
+                </button>
+                <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_sql === 'Y'" (click)="toggleSql(o)"
+                        [title]="o.can_sql === 'Y' ? 'S-Studio granted — click to revoke' : 'Grant S-Studio (SQL console)'">
+                  S-Studio {{ o.can_sql === 'Y' ? '✓' : '✕' }}
+                </button>
                 <button type="button" class="um__ops-btn" (click)="editOps(o)"
                         [title]="o.is_active === 'Y' ? 'Disable (keep the row)' : 'Enable'">
                   {{ o.is_active === 'Y' ? 'Disable' : 'Enable' }}

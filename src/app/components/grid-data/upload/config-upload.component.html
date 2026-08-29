@@ -1,0 +1,100 @@
+@if (visible()) {
+  <div class="upl-backdrop" (click)="close()"></div>
+  <div class="upl" role="dialog" aria-modal="true" (click)="$event.stopPropagation()">
+    <div class="upl__head">
+      <div>
+        <h3 class="upl__title">Upload data</h3>
+        <p class="upl__sub">Load a CSV into <strong>{{ tableName() }}</strong> — reviewed and validated before anything is written.</p>
+      </div>
+      <button type="button" class="upl__x" (click)="close()" aria-label="Close">×</button>
+    </div>
+
+    <div class="upl__body">
+      <!-- ---- step 1: file + delimiter ---- -->
+      <div class="upl-pick">
+        <label class="upl-file">
+          <input type="file" accept=".csv,text/csv" (change)="onFile($event)" />
+          <span class="upl-file__btn">Choose CSV…</span>
+          <span class="upl-file__name">{{ fileName() || 'no file selected' }}</span>
+        </label>
+        <label class="upl-field">
+          <span>Delimiter</span>
+          <select [ngModel]="delimiter()" (ngModelChange)="delimiter.set($event)">
+            <option value="auto">Auto-detect</option>
+            <option value=",">, (comma)</option>
+            <option value=";">; (semicolon)</option>
+            <option value="tab">⭾ (tab)</option>
+            <option value="|">| (pipe)</option>
+            <option value=":">: (colon)</option>
+          </select>
+        </label>
+        <button type="button" class="upl-btn upl-btn--primary" [disabled]="!fileName()" (click)="parse()">Parse &amp; validate</button>
+      </div>
+      <p class="upl-hint">Dates must be <code>YYYY-MM-DD</code> (timestamps <code>YYYY-MM-DD HH:MM:SS</code>). The header must match the table's columns in the same order; trailing columns may be omitted (loaded as NULL).</p>
+
+      @if (headerError()) {
+        <div class="upl-banner is-err">
+          <strong>Header doesn't match.</strong> {{ headerError() }}
+        </div>
+      }
+
+      <!-- ---- step 2: preview + validate ---- -->
+      @if (parsed() && !headerError()) {
+        <div class="upl-info">
+          <span class="upl-chip">Delimiter: <strong>{{ usedDelimiter() === '\t' ? 'tab' : usedDelimiter() }}</strong></span>
+          <span class="upl-chip">{{ gridRows().length }} rows</span>
+          <span class="upl-chip is-ok">{{ validCount() }} valid</span>
+          @if (issueCount()) { <span class="upl-chip is-err">{{ issueCount() }} with issues</span> }
+          @if (omittedCols().length) { <span class="upl-chip is-warn">NULL: {{ omittedCols().join(', ') }}</span> }
+          @if (dateColField()) {
+            @if (multiDate()) { <span class="upl-chip is-err">Multiple dates — upload one date per file</span> }
+            @else if (cobDate()) { <span class="upl-chip">Date: <strong>{{ cobDate() }}</strong></span> }
+          }
+        </div>
+
+        <div class="upl-toolbar">
+          <div class="upl-modes">
+            <label class="upl-radio"><input type="radio" name="uplmode" value="append" [ngModel]="mode()" (ngModelChange)="mode.set($event)" /> Append</label>
+            <label class="upl-radio"><input type="radio" name="uplmode" value="replace" [ngModel]="mode()" (ngModelChange)="mode.set($event)" /> Replace</label>
+            <span class="upl-modes__hint">
+              @if (mode() === 'append') { adds rows — nothing deleted }
+              @else if (dateColField()) { deletes date {{ cobDate() || '…' }} first, then inserts }
+              @else { deletes ALL rows first, then inserts }
+            </span>
+          </div>
+          <div class="upl-toolbar__right">
+            <div class="upl-seg" role="tablist" aria-label="Row view">
+              <button type="button" class="upl-seg__btn" [class.is-on]="viewMode() === 'all'" (click)="setView('all')">All ({{ gridRows().length }})</button>
+              <button type="button" class="upl-seg__btn" [class.is-on]="viewMode() === 'valid'" (click)="setView('valid')">Valid ({{ validCount() }})</button>
+              <button type="button" class="upl-seg__btn upl-seg__btn--issues" [class.is-on]="viewMode() === 'issues'" [class.has]="issueCount() > 0" (click)="setView('issues')">Issues ({{ issueCount() }})</button>
+            </div>
+            <button type="button" class="upl-btn upl-btn--sm" (click)="export('all')">Export all</button>
+            @if (issueCount()) { <button type="button" class="upl-btn upl-btn--sm" (click)="export('issues')">Export issues</button> }
+          </div>
+        </div>
+
+        <ag-grid-angular
+          class="upl-grid"
+          [rowData]="gridRows()"
+          [columnDefs]="colDefs()"
+          [gridOptions]="gridOptions"
+          [theme]="theme()"
+          (gridReady)="onGridReady($event)"
+          (cellValueChanged)="onCellChanged($event)"
+        />
+        <p class="upl-hint">Red cells failed validation. Edit any cell and it <strong>re-validates automatically</strong> on Enter/blur — the counts above update live and a fixed row moves from <em>Issues</em> to <em>Valid</em>. Use the column filters (header row) to search, and pagination below for large files. Only valid rows are loaded.</p>
+      }
+    </div>
+
+    <div class="upl__foot">
+      @if (resultMsg(); as m) {
+        <span class="upl-result" [class.is-ok]="m.ok" [class.is-err]="!m.ok">{{ m.text }}</span>
+      }
+      <span class="upl-spacer"></span>
+      <button type="button" class="upl-btn" (click)="close()">Close</button>
+      <button type="button" class="upl-btn upl-btn--primary" [disabled]="!canLoad()" (click)="load()">
+        {{ loading() ? 'Loading…' : 'Load ' + validCount() + ' valid row' + (validCount() === 1 ? '' : 's') }}
+      </button>
+    </div>
+  </div>
+}

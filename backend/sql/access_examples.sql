@@ -5,12 +5,21 @@
 -- 'CHANGE_ME' with the real username, and run it. Model + full reference: RBAC_DESIGN.md.
 --
 --   * ADMIN users need NO rows here — set IS_ADMIN='Y' on ols_users for full access.
---     These grants are for READ / SALT users (opt-in: they see ONLY what's granted).
+--     These grants are for READ / SALT users (opt-in: they see ONLY what's granted)…
+--   * …EXCEPT the two DEFAULT screens: **Log Analytics** and **Infrastructure Health** are visible
+--     to EVERY active OLS user with NO grant at all (ungated — all servers / all apps). Do NOT try
+--     to grant or restrict them; the old SERVER / APP-infra_health grants are retired (ignored).
 --   * WRITE includes read; READ is view-only.  DENY subtracts / hides.
 --   * Table structure + the CHECK constraint (must allow all resource_type values below)
 --     live in rbac_setup.sql. Revoke = UPDATE ... SET is_active='N' (keeps the audit row).
 --
--- resource_type : SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION
+--   * VALIDATE ON SCREEN (dev, no DB needed): run in the browser console
+--       localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
+--     scenarios: admin | defaults_only | not_provisioned | config_group_cib | occ_group_write |
+--     service_console | ops_admin | sql_studio   (clear: localStorage.removeItem('ols.devScenario'))
+--
+-- resource_type : SCREEN | APP | DB | TABLE_CATEGORY | TABLE | SECTION
+--   (SERVER and APP/infra_health are retired — Log Analytics + Infra Health are ungated defaults.)
 --------------------------------------------------------------------------------
 SET DEFINE OFF;   -- '&' in comments/values is literal, not a substitution prompt
 
@@ -27,23 +36,12 @@ VALUES ('CHANGE_ME','SCREEN','*','*','WRITE','PROD','ADMIN','FULL read+write acc
 
 
 --==============================================================================
--- 1) LOG ANALYTICS   (read-only screen; control = which servers)
---    resource_key = server name from ols_server_log_config.server_name, or '*' for all
+-- 1) LOG ANALYTICS + INFRASTRUCTURE HEALTH   →   NO GRANT NEEDED (default screens)
 --==============================================================================
--- All servers
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','*','READ','PROD','ADMIN','Log Analytics: all servers');
-
--- A specific single server
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur17','READ','PROD','ADMIN','Log Analytics: only server eur17');
-
--- (variety) A few specific servers — one row each
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur17','READ','PROD','ADMIN','Log Analytics: eur17');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur34','READ','PROD','ADMIN','Log Analytics: eur34');
--- NOTE: Log Analytics is a read-only tool — there is no write level here.
+-- Both are visible to EVERY active OLS user by default (ungated — all servers / all apps shown).
+-- There is nothing to insert here, and no way to restrict them per-user. The old grants
+--   ('SERVER','log_analytics',…)  and  ('APP','infra_health',…)  are RETIRED and ignored.
+-- (See scenario 'defaults_only' to eyeball what a user with no other access sees.)
 
 
 --==============================================================================
@@ -109,20 +107,9 @@ VALUES ('CHANGE_ME','SCREEN','config_ops:retail','*','READ','PROD','ADMIN','Conf
 
 
 --==============================================================================
--- 3) INFRASTRUCTURE HEALTH   (read-only screen; control = which apps)
---    resource_key = OLS_GROUP | OLS_CIB | OLS_RETAIL | POSEIDON, or '*' for all apps
+-- 3) INFRASTRUCTURE HEALTH   →   NO GRANT NEEDED (default screen — see section 1)
 --==============================================================================
--- Monitor ONLY OLS GROUP and OLS RETAIL
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','infra_health','OLS_GROUP','READ','PROD','ADMIN','Infra Health: OLS_GROUP');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','infra_health','OLS_RETAIL','READ','PROD','ADMIN','Infra Health: OLS_RETAIL');
-
--- (variety) ALL apps (two equivalent ways)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','infra_health','*','READ','PROD','ADMIN','Infra Health: all apps');
--- or:  ('CHANGE_ME','SCREEN','infra_health','*','READ',...)   -- SCREEN grant = all apps too
--- NOTE: Infra Health is read-only — no write level.
+-- Ungated: every active user sees all apps. Nothing to insert; per-app restriction is retired.
 
 
 --==============================================================================
@@ -209,21 +196,10 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','PROD','ADMIN','OCC
 -- 6) DENY / EXCLUSION  ("ALL ... EXCEPT these")
 --    Pattern: grant '*' (all) on the resource, then add a DENY row per key to exclude.
 --    DENY wins over the '*' grant, and NEVER reveals a screen on its own (you still need the
---    '*' allow to open the screen). Works for SERVER, APP (infra & service), and DB.
---    (Config Ops has its own subtractive DENY at table/category level — see section 2.)
+--    '*' allow to open the screen). Applies to APP (Service Console) and DB (OCC).
+--    (Config Ops has its own subtractive DENY at table/category level — see section 2.
+--     Log Analytics + Infra Health are ungated defaults, so exclusion does not apply there.)
 --==============================================================================
--- Log Analytics: ALL servers EXCEPT eur17
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','*','READ','PROD','ADMIN','Log Analytics: all servers...');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur17','DENY','PROD','ADMIN','...except eur17');
-
--- Infra Health: ALL apps EXCEPT POSEIDON
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','infra_health','*','READ','PROD','ADMIN','Infra Health: all apps...');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','infra_health','POSEIDON','DENY','PROD','ADMIN','...except POSEIDON');
-
 -- Service Console: start/stop on ALL apps EXCEPT OLS_RETAIL
 INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
 VALUES ('CHANGE_ME','SCREEN','service_console','*','WRITE','PROD','ADMIN','Service Console: write, all apps...');
@@ -236,16 +212,26 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','PROD','ADMIN','OCC
 INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
 VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','PROD','ADMIN','...except RETAIL BATCH');
 
--- (variety) DENY also trims an explicit allow-list, not just '*':
---   see eur10 and eur34 (but NOT eur17, even though it was granted)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur10','READ','PROD','ADMIN','Log Analytics: eur10');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur17','READ','PROD','ADMIN','Log Analytics: eur17 (will be denied)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur34','READ','PROD','ADMIN','Log Analytics: eur34');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SERVER','log_analytics','eur17','DENY','PROD','ADMIN','...but revoke eur17');
+
+--==============================================================================
+-- 7) S-STUDIO (the Config Ops SQL console) — lives in ols_ops_access, NOT ols_app_access
+--==============================================================================
+-- S-Studio is gated by ols_ops_access.can_sql='Y'. This is INDEPENDENT of User Management
+-- (can_users) — you can give someone S-Studio WITHOUT making them a super-admin. The operator also
+-- needs a Config Ops grant (section 2) for each scope whose DBs they'll run against, because
+-- S-Studio lives inside the scope screen. Assign from the User Management screen, or by SQL:
+--
+--   -- S-Studio ONLY (not a super-admin):
+--   INSERT INTO ols_ops_access (username, is_active, can_users, can_sql)
+--   VALUES ('CHANGE_ME','Y','N','Y');
+--   -- + the Config Ops scope(s) they'll query (so the scope screen — and its S-Studio tab — appears):
+--   INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+--   VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','READ','PROD','ADMIN','see GROUP scope for S-Studio');
+--   COMMIT;
+--
+--   -- Turn S-Studio on/off for an EXISTING operator:
+--   UPDATE ols_ops_access SET can_sql='Y' WHERE UPPER(username)=UPPER('CHANGE_ME'); COMMIT;
+-- (Table + all columns: ops_access_setup.sql.)
 
 
 COMMIT;

@@ -53,14 +53,24 @@ Serve the **`browser`** sub-folder as the web root — that's where `index.html`
 `<base href="/">` is already set. Copy that `browser/` folder to the server (e.g.
 `C:\ols\ui`).
 
-Before building for production, set these in `src/environments/environment.ts`:
+**No per-env editing before building.** `src/environments/environment.ts` now resolves the
+environment at **runtime from the browser hostname**, so ONE build runs in DEV / STG / PROD:
+- deployed (any non-localhost host) → `apiBaseUrl: ''` (same-origin — `/api/...` via the proxy),
+  `useMock: false`, and `appEnv` picked from the hostname;
+- local (`localhost`) → `:8000` + the in-app mock, `appEnv: DEV`.
+
+The only thing to set (once) is the **hostname→env map** near the top of `environment.ts`:
 
 ```ts
-apiBaseUrl: '',        // same-origin → API calls go to relative /api/... (works behind the proxy)
-useMock: false,        // hit the real FastAPI, not the in-app mock
+const ENV_BY_HOST = [
+  ['abc.dev.com',   'DEV'],
+  ['abc.stg.com',   'STG'],
+  ['abc.group.com', 'LIVE'],   // production
+] as const;                    // unknown host → LIVE (prod)
 ```
 
-(`useMock` is baked in at build time — it's an Angular setting, not a service env var.)
+Build once and deploy the SAME `dist/.../browser` to every environment — nothing to swap.
+See **"Environments"** at the bottom for the backend side.
 
 ---
 
@@ -234,14 +244,11 @@ Two things this file does:
 
 ### C3. Build settings for `environment.ts`
 
-Single origin, so API calls are relative — same as Options A/B:
-
-```ts
-apiBaseUrl: '',    // relative → /api/... hits OLS_UI_SERVICE, which proxies to the backend
-useMock: false,
-```
-
-Then `ng build` and copy `dist/ols-operations-command-center/browser/` to `C:\ols\ui`.
+Nothing to change per env — `environment.ts` auto-resolves from the hostname (see Step 1): deployed
+hosts use `apiBaseUrl: ''` (relative `/api/...` → `OLS_UI_SERVICE` proxies to the backend) with
+`useMock: false`, and `appEnv` comes from the hostname. Just confirm your hostnames are in
+`ENV_BY_HOST`, `ng build`, and copy `dist/ols-operations-command-center/browser/` to `C:\ols\ui`
+— the SAME build works for DEV, STG and PROD.
 
 ### TLS
 
@@ -269,11 +276,59 @@ in its `AppParameters`.
 - [ ] **(Option C)** `pip install httpx` into the venv; `ui_server.py` proxies `/api/*` to
       `OLS_BACKEND_URL`, so it's a single origin — backend binds `127.0.0.1`, no CORS, and
       only the `OLS_UI_SERVICE` port is opened on the firewall.
-- [ ] `environment.ts`: `useMock: false`, `apiBaseUrl: ''` (single origin — Options A/B **and**
-      C) before building.
+- [ ] `environment.ts` needs **no per-env edit** — it auto-resolves from the hostname; just keep
+      `ENV_BY_HOST` current. (Local dev alone uses `:8000` + the mock.)
 - [ ] TLS: Options A/B terminate at the reverse proxy (FastAPI binds `127.0.0.1`); Option C
       has no proxy — terminate TLS where your org normally does, use plain HTTP internally, or
       give uvicorn `--ssl-keyfile`/`--ssl-certfile`.
 - [ ] Redeploying the UI = rebuild, replace the `browser` folder, then (Option A) restart the
       service, (Option B) just replace files, or (Option C) replace files in `C:\ols\ui` and
       restart `OLS_UI_SERVICE` (uvicorn caches `index.html` handles; a restart is cleanest).
+
+---
+
+## Environments (DEV / STG / PROD from ONE codebase)
+
+You commit ONE codebase and deploy the SAME artifacts to all three environments. Nothing in git is
+"the prod copy" — each side figures out its environment at runtime, so there are **no per-env source
+files to swap**.
+
+**User URLs** (edit `ENV_BY_HOST` in `environment.ts` to match): DEV `www.abc.dev.com` · STG
+`www.abc.stg.com` · PROD `www.abc.group.com`.
+
+**Frontend — auto-detected, nothing to swap.** The built bundle reads `window.location.hostname` and
+picks the environment (the label/pill + the `app_env` it sends to the API). The API is **same-origin**
+(`apiBaseUrl: ''`), so `/api/...` always hits that env's `OLS_UI_SERVICE`, which proxies to that env's
+backend. Deploy the identical `browser/` folder to `www.abc.dev.com`, `www.abc.stg.com`,
+`www.abc.group.com` — each just *works*.
+
+**Backend — one `.env` per server (gitignored), not per-env files in git.** Same code on every box;
+each server's own `.env` (or NSSM `AppEnvironmentExtra`) sets what differs:
+
+| Service | Variable | DEV | STG | PROD |
+|---|---|---|---|---|
+| `OLS_BACKEND_SERVICE` | `APP_ENV` | `DEV` | `STG` | `PROD` |
+| `OLS_BACKEND_SERVICE` | DB creds (read in `load_db_configs`, e.g. `OLS_DB_GROUP_DSN/_USER/_PASSWORD`) | dev DBs | stg DBs | prod DBs |
+| `OLS_BACKEND_SERVICE` | `*_USE_DUMMY` | `0` | `0` | `0` |
+| `OLS_UI_SERVICE` | `OLS_BACKEND_URL` | dev backend origin | stg backend origin | prod backend origin |
+| `OLS_UI_SERVICE` | `OLS_UI_DIR` | `C:\ols\ui` | `C:\ols\ui` | `C:\ols\ui` |
+
+So: **do you need multiple env files?** No — you keep one gitignored `.env` **per server** (set once),
+or set the same keys as OS/NSSM env vars. If you'd rather manage them as files, keep secret-free
+`.env.dev` / `.env.stg` / `.env.prod` templates OUTSIDE git and have the deploy copy the right one to
+`.env` — but the code never changes. CORS isn't needed in any deployed env (single origin via the
+proxy); `OLS_ALLOWED_ORIGINS` is only for talking to the backend cross-origin (e.g. local `ng serve`).
+
+### Regression screen (DEV/STG servers only)
+
+The CIB **Regression** tab appears only when `APP_ENV` is `DEV`/`STG`. Those two `OLS_BACKEND_SERVICE`
+boxes need extra prerequisites + `.env` keys (PROD needs none of this):
+
+- **Prereqs on the server:** `git` and `sqlplus` (Instant Client) on PATH.
+- **`.env` keys:** `REGRESSION_LOG_DIR` (sqlplus logs → `\<YYYYMMDD>\<script>__<db>.log`),
+  `REGRESSION_GIT_URL` / `_AUTH` (PAT, server-side only) / `_WORKDIR` / `_BRANCH_PREFIX` (=`release/`) /
+  `_SQL_SUBDIR`, `REGRESSION_FILECOPY_MANIFEST` (path to the developer JSON), `REGRESSION_REFRESH_URL`
+  (dummy for now). Wire `app.state.sql_db_configs` (privileged connections) — Apply/Reset/Trigger run via
+  sqlplus against them. Create the tables once with `backend/sql/regression_setup.sql`, and replace
+  `database.BATCH_MONITOR_SQL` with your real batch-status query.
+- The service account must be able to reach the file-copy source/destination UNC paths.

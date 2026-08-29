@@ -296,10 +296,12 @@ export interface AdminUserResponse {
   grants: GrantRow[];
   snapshot: AccessSnapshot | null;
 }
-/** One row of the `ols_ops_access` gate table. `can_sql` = S-Studio access. */
+/** One row of the `ols_ops_access` privileged-operators table. `can_users` = User Management access,
+ *  `can_sql` = S-Studio access — independent. */
 export interface OpsAdmin {
   username: string;
   is_active: string;
+  can_users?: string;
   can_sql?: string;
 }
 
@@ -310,6 +312,96 @@ export interface SqlDatabase {
   key: string;
   label: string;
 }
+// --- Config Ops CSV Upload & Load (POST /api/config/{scope}/table/{table}/upload) ---------------
+/** Result of a successful load. */
+export interface UploadResult {
+  load_id: number;
+  mode: string;                    // append | replace
+  rows_loaded: number;
+  rows_deleted: number;
+  rows_rejected: number;
+  cob_dt: string | null;
+  archived: string;
+}
+export interface UploadReject { row: number; column: string; reason: string; }
+export interface UploadResponse {
+  status: string;                  // success | rejected | failed
+  result?: UploadResult;
+  rejects?: UploadReject[];
+  rows_rejected?: number;
+}
+
+// --- Regression screen (CIB, DEV/STG — POST /api/regression/* — see regression_api.py) ---------
+
+/** One regression cycle. */
+export interface RegressionRun {
+  run_id: number;
+  app_env: string;
+  status: string;
+  started_by: string;
+  started_on?: string;
+}
+/** Current status of one step (latest log row). */
+export interface RegressionStepState {
+  status: string;                 // not_started | in_progress | complete | error | forced
+  performed_by?: string;
+  forced_by?: string;
+  started_on?: string;
+  finished_on?: string;
+  task_completion_time?: number;
+  stale?: boolean;                // in_progress longer than the threshold → possibly stuck
+  age_seconds?: number;           // how long it's been in_progress
+}
+/** The run + per-step status map. */
+export interface RegressionState {
+  run: RegressionRun | null;
+  steps: Record<string, RegressionStepState>;
+}
+/** One script×db run result. */
+export interface RunSqlResult {
+  script: string;
+  db: string;
+  status: string;                 // complete | error
+  log_file?: string;
+  tail?: string;
+}
+/** A file-copy manifest item. */
+export interface FileCopyItem {
+  source: string;
+  destination: string;
+}
+/** A file-copy result per item. */
+export interface FileCopyResult {
+  source: string;
+  destination: string;
+  ok: boolean;
+  count?: number;
+  kind?: string;
+  error?: string;
+  files?: string[];               // the files actually copied (for the per-item log)
+}
+/** Batch-monitor grid payload. */
+export interface BatchMonitorResult {
+  columns: string[];
+  rows: unknown[][];
+  row_count?: number;
+}
+/** One regression audit-log row (Regression Activity grid). */
+export interface RegressionActivityRow {
+  log_id: number;
+  run_id: number;
+  business_line?: string;
+  step_key: string;
+  action: string;
+  status: string;
+  performed_by: string;
+  started_on?: string;
+  finished_on?: string;
+  task_completion_time?: number;
+  forced_by?: string;
+  details?: string;
+}
+
 /** Result of running a statement/script (discriminated by `kind`). */
 export type SqlResult =
   | { kind: 'select'; columns: string[]; rows: unknown[][]; row_count: number; truncated?: boolean; statement?: string; statements?: number }

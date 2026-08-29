@@ -93,6 +93,11 @@ export class RbacService {
     if (screen === 'user_management') {
       return this.isOpsAdmin();
     }
+    // Log Analytics + Infrastructure Health are visible to EVERY active user (ungated — see
+    // RBAC_DESIGN §2). They are the default screens a user with no other features still sees.
+    if (screen === 'log_analytics' || screen === 'infra_health') {
+      return true;
+    }
     if (ALWAYS_VIEW.has(screen)) {
       return true;
     }
@@ -128,11 +133,11 @@ export class RbacService {
     return s.write_screens.includes(screen);
   }
 
-  /** Any access at all? (Active AND at least one granted screen.) False → No-Access page with the
-   *  "contact OLS Team" message. Opt-in: a valid login with no features assigned lands here. */
+  /** Any access at all? (Active AND at least one feature — a granted screen, User Management, or
+   *  S-Studio.) False → No-Access page with the "contact OLS Team" message. */
   hasAnyAccess(): boolean {
     const s = this.snapshot();
-    return s.active && s.screens.length > 0;
+    return s.active && (s.screens.length > 0 || this.isOpsAdmin() || this.canSql());
   }
 
   /** First screen the user is allowed to open (for redirects). */
@@ -143,7 +148,9 @@ export class RbacService {
 
   // --- Config Ops: scope (group/cib/retail) + per-table --------------------
 
-  /** Is a Config Ops sub-screen (scope) visible? */
+  /** Is a Config Ops sub-screen (scope) visible? Strictly follows config grants, so a scope the user
+   *  has no grant in (e.g. RETAIL) is never shown. S-Studio for a scope therefore needs a config
+   *  grant in that scope (it lives inside the scope screen). */
   configScopeVisible(scope: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
@@ -218,42 +225,16 @@ export class RbacService {
 
   // --- Log Analytics servers -------------------------------------------------
 
-  /** Is a Log Analytics server visible to this user? A `denied_servers` entry wins over an
-   *  `all_servers` grant, so "all servers EXCEPT this one" is expressible. */
-  serverAllowed(serverName: string): boolean {
-    const s = this.snapshot();
-    if (!s.active) {
-      return false;
-    }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
-    if ((s.denied_servers ?? []).includes(serverName)) {
-      return false;
-    }
-    if (s.all_servers) {
-      return true;
-    }
-    return s.servers.includes(serverName);
+  /** Log Analytics is ungated (Point 3) — every active user sees every server. */
+  serverAllowed(_serverName: string): boolean {
+    return this.snapshot().active;
   }
 
   // --- Infra Health apps + OCC databases -------------------------------------
 
-  /** Is an Infrastructure Health app (OLS_GROUP / OLS_CIB / …) visible to this user? A
-   *  `denied_apps` entry wins over an `all_apps` grant ("all apps EXCEPT this one"). */
-  infraAppAllowed(app: string): boolean {
-    const s = this.snapshot();
-    if (!s.active) {
-      return false;
-    }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
-    const a = (app || '').toUpperCase();
-    if ((s.infra.denied_apps ?? []).includes(a)) {
-      return false;
-    }
-    return s.infra.all_apps || s.infra.apps.includes(a);
+  /** Infrastructure Health is ungated (Point 3) — every active user sees every app. */
+  infraAppAllowed(_app: string): boolean {
+    return this.snapshot().active;
   }
 
   /** Is a Service Console app's services visible to this user? (`denied_apps` subtracts.) */

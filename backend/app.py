@@ -10,14 +10,19 @@ Run (from the ``backend/`` directory)::
     uvicorn app:app --reload --port 8000
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import env_loader  # noqa: F401  — loads backend/.env into os.environ before we read APP_ENV etc.
 import oracle_cc_api
 from access_api import router as access_router
 from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
+from regression_api import router as regression_router
+from config_api import router as config_router
 from service_console_api import router as service_console_router
 from sql_studio_api import router as sql_studio_router
 from system_api import router as system_router
@@ -52,6 +57,11 @@ def load_db_configs() -> dict[str, dict]:
     Each value holds whatever your DB layer needs (dsn, user, password, pool, or a live
     connection). In dev it's an empty stub per scope (dummy endpoints don't open connections);
     a scope reads as "reachable" (green tab) only when its value is truthy.
+
+    PER-ENVIRONMENT: this one function serves DEV / STG / PROD — read the target creds from THIS
+    server's environment (``os.getenv``), keyed off ``APP_ENV`` and per-scope vars from its own
+    ``.env`` (e.g. ``OLS_DB_GROUP_DSN`` / ``_USER`` / ``_PASSWORD``). Same code everywhere; only the
+    ``.env`` differs per box, so nothing here is hardcoded to an environment. See DEPLOYMENT.md.
     """
     scopes = ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting")
     return {scope: {} for scope in scopes}
@@ -77,11 +87,19 @@ app.state.app_db_config = {}
 # empty in prod, sql_studio_api falls back to db_configs and logs a warning. See RBAC_DESIGN.md §12.
 app.state.sql_db_configs = {}
 
-# The Angular dev server runs on :4200. Add your real front-end origins for prod.
-ALLOWED_ORIGINS = [
-    "http://localhost:4200",
-    "http://127.0.0.1:4200",
-]
+# Which environment this backend serves — PROD | STG | DEV. Set per deployment (env var or the
+# server's own .env); the SAME code runs in all three. Drives DB selection in load_db_configs()
+# (wire it to read this) and is handy for logging. Frontend detects its env from the hostname and
+# sends its own app_env per request; they align because a given env's UI + backend deploy together.
+APP_ENV = os.getenv("APP_ENV", "PROD").strip().upper()
+app.state.app_env = APP_ENV
+
+# CORS: in production the UI and API share ONE origin (ui_server.py proxies /api → this backend),
+# so no CORS is needed there. It's only needed for LOCAL dev (ng serve on :4200 → backend :8000,
+# cross-origin). Defaults cover localhost; override with OLS_ALLOWED_ORIGINS (comma-separated) if you
+# ever expose the backend cross-origin (e.g. a UI host that calls it directly, without the proxy).
+_DEFAULT_ORIGINS = "http://localhost:4200,http://127.0.0.1:4200"
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("OLS_ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -98,6 +116,8 @@ app.include_router(infra_health_router)
 app.include_router(service_console_router)
 app.include_router(oracle_cc_router)
 app.include_router(sql_studio_router)
+app.include_router(regression_router)
+app.include_router(config_router)
 
 
 @app.get("/health", tags=["meta"])
@@ -106,4 +126,4 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-logger.info("OLS Dashboard API ready")
+logger.info("OLS Dashboard API ready - APP_ENV=%s", APP_ENV)

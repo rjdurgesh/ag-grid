@@ -1400,7 +1400,8 @@ def fetch_user_grants(db_config: Any, username: str, app_env: str) -> list[dict]
 # =============================================================================
 
 def fetch_is_ops_admin(db_config: Any, username: str) -> bool:
-    """True iff `username` is an ACTIVE row in `ols_ops_access` (the User Management gate)."""
+    """True iff `username` may use User Management — an active row with can_users='Y'. Independent
+    of can_sql (S-Studio), so an S-Studio-only operator is NOT an ops-admin."""
     connection = None
     cursor = None
     try:
@@ -1408,7 +1409,7 @@ def fetch_is_ops_admin(db_config: Any, username: str) -> bool:
         cursor = connection.cursor()
         cursor.execute("""
             SELECT 1 FROM ols_ops_access
-             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y'
+             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y' AND can_users = 'Y'
         """, {"u": username})
         return cursor.fetchone() is not None
     finally:
@@ -1427,7 +1428,7 @@ def fetch_ops_admins(db_config: Any) -> list[dict]:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT username, is_active, can_sql FROM ols_ops_access
+            SELECT username, is_active, can_users, can_sql FROM ols_ops_access
              ORDER BY is_active DESC, UPPER(username)
         """)
         cols = [c[0].lower() for c in cursor.description]
@@ -1458,8 +1459,29 @@ def fetch_can_sql(db_config: Any, username: str) -> bool:
             connection.close()
 
 
+def ops_admin_set_users(db_config: Any, username: str, allowed: bool) -> int:
+    """Grant/revoke User Management (`can_users`) for an existing operator. Returns rows changed.
+    Commits. WRITE — ops-admin only."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            UPDATE ols_ops_access SET can_users = :flag WHERE UPPER(username) = UPPER(:u)
+        """, {"flag": "Y" if allowed else "N", "u": username})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
 def ops_admin_set_sql(db_config: Any, username: str, allowed: bool) -> int:
-    """Grant/revoke S-Studio (`can_sql`) for an existing ops-admin. Returns rows changed. Commits.
+    """Grant/revoke S-Studio (`can_sql`) for an existing operator. Returns rows changed. Commits.
     WRITE — ops-admin only."""
     connection = None
     cursor = None
@@ -1785,6 +1807,460 @@ def execute_sql(db_config: Any, sql: str) -> dict:
         return result
     except Exception as e:                          # includes oracledb.Error → the ORA-xxxxx text
         return {"kind": "error", "error": str(e).strip()}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# Regression screen — run + audit log (ols_regression_run / ols_regression_log) and the batch
+# monitor query. DDL: sql/regression_setup.sql. OS-level ops (git/sqlplus/copy) live in
+# regression_ops.py; ALL SQL for the feature is here (see RBAC_DESIGN.md / Regression screen).
+# =============================================================================
+
+def regression_run_start(db_config: Any, app_env: str, started_by: str) -> int:
+    """Open a new regression run for this env; returns run_id. Commits."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        rid = cursor.var(int)
+        cursor.execute("""
+            INSERT INTO ols_regression_run (app_env, status, started_by)
+            VALUES (:env, 'in_progress', :by)
+            RETURNING run_id INTO :rid
+        """, {"env": app_env, "by": started_by, "rid": rid})
+        connection.commit()
+        return int(rid.getvalue()[0])
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_run_finish(db_config: Any, run_id: int, status: str = "complete") -> None:
+    """Close out a regression run: set its status + finished_on. Commits."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("UPDATE ols_regression_run SET status = :st, finished_on = SYSTIMESTAMP WHERE run_id = :r",
+                       {"st": status, "r": run_id})
+        connection.commit()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_run_current(db_config: Any, app_env: str) -> dict | None:
+    """The latest in-progress run for this env + the current status of each step (latest log row
+    per step_key). Returns {run, steps:{step_key:{status,...}}} or None."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT run_id, app_env, status, started_by, started_on
+              FROM ols_regression_run
+             WHERE app_env = :env AND status = 'in_progress'
+             ORDER BY run_id DESC FETCH FIRST 1 ROW ONLY
+        """, {"env": app_env})
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cols = [c[0].lower() for c in cursor.description]
+        run = dict(zip(cols, row))
+        rid = run["run_id"]
+        cursor.execute("""
+            SELECT step_key, status, performed_by, forced_by, started_on, finished_on, task_completion_time
+              FROM ols_regression_log l
+             WHERE run_id = :r
+               AND log_id = (SELECT MAX(log_id) FROM ols_regression_log
+                              WHERE run_id = :r AND step_key = l.step_key)
+        """, {"r": rid})
+        scols = [c[0].lower() for c in cursor.description]
+        steps = {r[0]: dict(zip(scols, r)) for r in cursor.fetchall()}
+        # Flag any step that has been "in_progress" longer than the stale threshold — it may be stuck
+        # (server/connection dropped between marking in_progress and writing the result).
+        stale_secs = int(os.getenv("REGRESSION_STEP_STALE_MINUTES", "30") or "30") * 60
+        now = datetime.datetime.now()
+        for s in steps.values():
+            started = s.get("started_on")
+            if s.get("status") == "in_progress" and isinstance(started, datetime.datetime):
+                age = int((now - started).total_seconds())
+                s["age_seconds"] = age
+                s["stale"] = age > stale_secs
+            else:
+                s["stale"] = False
+        return {"run": run, "steps": steps}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_step_state(db_config: Any, run_id: int, step_key: str) -> dict | None:
+    """Latest {status, performed_by, started_on, age_seconds} for one step — the concurrency lock reads
+    this to decide whether the step is already running (and, if in_progress, how long)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT status, performed_by, started_on
+              FROM ols_regression_log
+             WHERE run_id = :r AND step_key = :k
+             ORDER BY log_id DESC FETCH FIRST 1 ROW ONLY
+        """, {"r": run_id, "k": step_key})
+        row = cursor.fetchone()
+        if not row:
+            return None
+        status, performed_by, started_on = row
+        age = None
+        if status == "in_progress" and isinstance(started_on, datetime.datetime):
+            age = int((datetime.datetime.now() - started_on).total_seconds())
+        return {"status": status, "performed_by": performed_by, "started_on": started_on, "age_seconds": age}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_log_write(db_config: Any, run_id: int, step_key: str, action: str, status: str,
+                         performed_by: str, business_line: str | None = None,
+                         forced_by: str | None = None, details: str | None = None,
+                         started_on: Any = None, finished_on: Any = None) -> None:
+    """Append one audit row. task_completion_time = finished-started (seconds) when both given.
+    Commits. `details` is the CLOB describing what was done."""
+    duration = None
+    if started_on and finished_on:
+        try:
+            duration = int((finished_on - started_on).total_seconds())
+        except Exception:  # noqa: BLE001
+            duration = None
+    connection = None
+    cursor = None
+    try:
+        import oracledb
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        # bind `details` as CLOB so long file-copy / sqlplus logs (>4000 bytes) persist without ORA-01461
+        cursor.setinputsizes(det=oracledb.DB_TYPE_CLOB)
+        cursor.execute("""
+            INSERT INTO ols_regression_log
+                (run_id, business_line, step_key, action, status, performed_by,
+                 started_on, finished_on, task_completion_time, forced_by, details)
+            VALUES (:r, :bl, :sk, :ac, :st, :by,
+                    COALESCE(:so, SYSTIMESTAMP), :fo, :dur, :fb, :det)
+        """, {"r": run_id, "bl": business_line, "sk": step_key, "ac": action, "st": status,
+              "by": performed_by, "so": started_on, "fo": finished_on, "dur": duration,
+              "fb": forced_by, "det": details})
+        connection.commit()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 200) -> list[dict]:
+    """Recent audit rows for the Regression Activity grid (optionally scoped to one run)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        where = "WHERE run_id = :r" if run_id else ""
+        binds = {"lim": limit}
+        if run_id:
+            binds["r"] = run_id
+        cursor.execute(f"""
+            SELECT log_id, run_id, business_line, step_key, action, status, performed_by,
+                   started_on, finished_on, task_completion_time, forced_by, details
+              FROM ols_regression_log
+              {where}
+             ORDER BY log_id DESC FETCH FIRST :lim ROWS ONLY
+        """, binds)
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, [_cell(v) for v in row])) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# Batch-monitor query — REPLACE the SQL body with your real batch-status query. It runs against the
+# selected DB and its result set is shown as-is in the "Monitoring Batches" grid.
+BATCH_MONITOR_SQL = """
+    SELECT g.group_name       AS business_line,
+           j.job_name         AS batch,
+           j.status_id        AS status_id,
+           j.last_start_time  AS started,
+           j.last_end_time    AS finished
+      FROM bm_job_utils j
+      LEFT JOIN bm_groups g ON g.group_id = j.group_id
+     ORDER BY g.group_name, j.job_name
+"""
+
+
+def fetch_batch_monitor(db_config: Any, max_rows: int = 2000) -> dict:
+    """Run BATCH_MONITOR_SQL against `db_config`; return {columns, rows} for the grid."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(BATCH_MONITOR_SQL)
+        columns = [d[0] for d in cursor.description]
+        rows = cursor.fetchmany(max_rows)
+        return {"columns": columns, "rows": [[_cell(v) for v in r] for r in rows], "row_count": len(rows)}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# Config Ops — CSV Upload & Load (see UPLOAD_DESIGN.md)
+# Identifiers (table/columns) are interpolated (Oracle can't bind them), so they MUST be validated
+# against the catalogue by the API layer AND regex-checked here (defense in depth). Values are bound.
+# =============================================================================
+
+_IDENT_RE = re.compile(r"^[A-Za-z0-9_$#]+$")
+
+
+def _is_ident(name: str) -> bool:
+    return bool(name) and bool(_IDENT_RE.match(str(name)))
+
+
+def config_table_columns(db_config: Any, table_name: str) -> list[dict]:
+    """Authoritative column list for a table from the data dictionary (ALL_TAB_COLUMNS), in column
+    order: [{name, type, nullable, data_length, data_scale}]. This — not a client list — is what the
+    upload validates/casts against."""
+    if not _is_ident(table_name):
+        raise ValueError(f"Invalid table name: {table_name}")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT column_name, data_type, nullable, data_length, data_scale, data_precision
+              FROM all_tab_columns
+             WHERE table_name = UPPER(:t)
+             ORDER BY column_id
+        """, {"t": table_name})
+        out = []
+        for name, dtype, nullable, dlen, dscale, dprec in cursor.fetchall():
+            out.append({"name": name, "type": dtype, "nullable": nullable == "Y",
+                        "data_length": dlen, "data_scale": dscale, "data_precision": dprec})
+        return out
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_date_column(db_config: Any, table_name: str) -> str | None:
+    """Return the date column for a table from the customer's 1-1 mapping table (COB_DT / REPORTING_DT),
+    or None if the table is not date-partitioned. Mapping table/columns are configurable via env."""
+    map_table = os.getenv("CONFIG_DATE_MAP_TABLE", "ols_table_date_map")
+    key_col = os.getenv("CONFIG_DATE_MAP_KEY_COL", "table_name")
+    date_col = os.getenv("CONFIG_DATE_MAP_DATE_COL", "date_col")
+    if not (_is_ident(map_table) and _is_ident(key_col) and _is_ident(date_col)):
+        raise ValueError("Invalid CONFIG_DATE_MAP_* identifier in configuration.")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"SELECT {date_col} FROM {map_table} WHERE UPPER({key_col}) = UPPER(:t)", {"t": table_name})
+        row = cursor.fetchone()
+        return (str(row[0]) if row and row[0] else None)
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_load_table(db_config: Any, *, table: str, columns: list[str], rows: list,
+                      mode: str, date_col: str | None = None, cob_dt: Any = None,
+                      system_defaults: dict | None = None, lock_key: str | None = None,
+                      locked_by: str | None = None, batch_size: int = 5000) -> dict:
+    """Atomically load ``rows`` into ``table`` in ONE transaction (rolls back on any error):
+      mode='append'  → INSERT only (no delete)
+      mode='replace' → DELETE (whole table if date_col is None, else WHERE date_col = cob_dt) then INSERT.
+    ``columns`` = ordered target columns (the file's columns); ``rows`` = tuples matching ``columns``
+    (already type-cast by the API layer). ``system_defaults`` = {col: value} appended to every row
+    (e.g. INSERTED_BY). Serializes concurrent loads of the same target via ``lock_key`` (SELECT FOR
+    UPDATE NOWAIT). Returns {rows_deleted, rows_loaded}."""
+    import oracledb
+    if not _is_ident(table):
+        raise ValueError(f"Invalid table name: {table}")
+    for c in columns:
+        if not _is_ident(c):
+            raise ValueError(f"Invalid column name: {c}")
+    if date_col is not None and not _is_ident(date_col):
+        raise ValueError(f"Invalid date column: {date_col}")
+    sys_cols = list((system_defaults or {}).keys())
+    for c in sys_cols:
+        if not _is_ident(c):
+            raise ValueError(f"Invalid system column: {c}")
+    sys_vals = [system_defaults[c] for c in sys_cols]
+    all_cols = list(columns) + sys_cols
+
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        # 1. serialize concurrent loads of the same target (auto-releases at commit/rollback)
+        if lock_key:
+            cursor.execute(
+                "MERGE INTO ols_upload_lock l USING (SELECT :k AS lock_key FROM dual) s "
+                "ON (l.lock_key = s.lock_key) "
+                "WHEN NOT MATCHED THEN INSERT (lock_key) VALUES (s.lock_key)", {"k": lock_key})
+            try:
+                cursor.execute("SELECT locked_by FROM ols_upload_lock WHERE lock_key = :k FOR UPDATE NOWAIT", {"k": lock_key})
+            except oracledb.DatabaseError as exc:
+                if exc.args and getattr(exc.args[0], "code", None) == 54:  # ORA-00054 resource busy
+                    raise RuntimeError(f"A load into '{table}' is already in progress. Try again shortly.") from exc
+                raise
+            cursor.execute("UPDATE ols_upload_lock SET locked_by = :by, locked_on = SYSTIMESTAMP WHERE lock_key = :k",
+                           {"by": locked_by, "k": lock_key})
+        # 2. delete per mode
+        rows_deleted = 0
+        if mode == "replace":
+            if date_col:
+                cursor.execute(f"DELETE FROM {table} WHERE {date_col} = :d", {"d": cob_dt})
+            else:
+                cursor.execute(f"DELETE FROM {table}")
+            rows_deleted = cursor.rowcount or 0
+        # 3. batched insert
+        placeholders = ", ".join(f":{i + 1}" for i in range(len(all_cols)))
+        sql = f"INSERT INTO {table} ({', '.join(all_cols)}) VALUES ({placeholders})"
+        rows_loaded = 0
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            cursor.executemany(sql, [tuple(r) + tuple(sys_vals) for r in batch])
+            rows_loaded += len(batch)
+        connection.commit()
+        return {"rows_deleted": rows_deleted, "rows_loaded": rows_loaded}
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_roll_dates(db_config: Any, *, table: str, date_col: str, source_date: Any,
+                      target_dates: list, roller: str | None = None, audit_cols: set | None = None,
+                      batch: int = 0) -> dict:
+    """Roll (copy) every row at ``source_date`` into each ``target_date`` — for each target: DELETE that
+    date, then INSERT..SELECT the source rows with the date column set to the target (and audit columns
+    stamped to ``roller``/SYSDATE). ONE transaction. Returns
+    {source_date, source_count, targets:[{date, count}]}. Bind dates as native datetimes."""
+    import oracledb
+    if not (_is_ident(table) and _is_ident(date_col)):
+        raise ValueError("Invalid table/date column.")
+    audit = {a.upper() for a in (audit_cols or set())}
+    cols = [c["name"] for c in config_table_columns(db_config, table)]
+    if not cols:
+        raise ValueError(f"Unknown table '{table}'.")
+
+    def sel_expr(c: str) -> str:
+        cu = c.upper()
+        if cu == date_col.upper():
+            return ":tgt"
+        if cu in ("INSERTED_BY", "UPDATED_BY") and cu in audit:
+            return ":roller"
+        if cu in ("INSERTED_DATE", "INSERTED_ON", "UPDATED_DATE", "UPDATED_ON") and cu in audit:
+            return "SYSDATE"
+        return c
+
+    insert_cols = ", ".join(cols)
+    select_list = ", ".join(sel_expr(c) for c in cols)
+    uses_roller = any(c.upper() in ("INSERTED_BY", "UPDATED_BY") and c.upper() in audit for c in cols)
+    ins_sql = f"INSERT INTO {table} ({insert_cols}) SELECT {select_list} FROM {table} WHERE {date_col} = :src"
+    del_sql = f"DELETE FROM {table} WHERE {date_col} = :tgt"
+
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {date_col} = :s", {"s": source_date})
+        source_count = int(cursor.fetchone()[0])
+        targets = []
+        for tgt in target_dates:
+            cursor.execute(del_sql, {"tgt": tgt})
+            binds = {"tgt": tgt, "src": source_date}
+            if uses_roller:
+                binds["roller"] = roller
+            cursor.execute(ins_sql, binds)
+            n = cursor.rowcount or 0
+            targets.append({"date": (tgt.isoformat() if hasattr(tgt, "isoformat") else str(tgt))[:10], "count": n})
+        connection.commit()
+        return {"source_date": (source_date.isoformat() if hasattr(source_date, "isoformat") else str(source_date))[:10],
+                "source_count": source_count, "targets": targets}
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_upload_audit_write(db_config: Any, **f) -> int:
+    """INSERT one ols_upload_audit row (its own commit, so failed loads are audited too). Returns
+    load_id. error_detail bound as CLOB. Unknown keys are ignored."""
+    import oracledb
+    cols = ["app_env", "scope", "table_name", "load_mode", "date_col", "cob_dt", "original_filename",
+            "archived_path", "file_hash", "delimiter", "uploaded_by", "uploaded_on", "finished_on",
+            "duration_secs", "rows_in_file", "rows_loaded", "rows_rejected", "rows_deleted", "status",
+            "error_detail"]
+    binds = {c: f.get(c) for c in cols}
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.setinputsizes(error_detail=oracledb.DB_TYPE_CLOB)
+        rid = cursor.var(int)
+        collist = ", ".join(cols)
+        vallist = ", ".join(f"COALESCE(:uploaded_on, SYSTIMESTAMP)" if c == "uploaded_on" else f":{c}" for c in cols)
+        cursor.execute(f"INSERT INTO ols_upload_audit ({collist}) VALUES ({vallist}) RETURNING load_id INTO :rid",
+                       {**binds, "rid": rid})
+        connection.commit()
+        return int(rid.getvalue()[0])
     finally:
         if cursor:
             cursor.close()

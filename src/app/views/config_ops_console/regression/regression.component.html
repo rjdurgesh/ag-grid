@@ -1,0 +1,392 @@
+<div class="rg">
+  <header class="rg__head">
+    <div>
+      <h2 class="rg__title">Regression</h2>
+      <p class="rg__sub">Run the pre-prod regression cycle for OLS CIB — each step is gated, force-markable, and fully logged.</p>
+    </div>
+    @if (state().run; as run) {
+      <div class="rg__runinfo">
+        <span class="rg__run">Run #{{ run.run_id }} · started by {{ run.started_by }} ·
+          <span class="rg__run-st" [class.is-done]="run.status === 'complete'">{{ run.status === 'complete' ? 'Completed' : 'In progress' }}</span>
+        </span>
+        <button type="button" class="rg-iconbtn" (click)="refreshState()" title="Refresh state from the server (e.g. after a dropped connection)" aria-label="Refresh state">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    }
+  </header>
+
+  @if (toast(); as t) {
+    <div class="rg__toast" [class.is-ok]="t.kind === 'ok'" [class.is-err]="t.kind === 'err'" [class.is-info]="t.kind === 'info'" role="status">
+      <span>{{ t.text }}</span>
+      <button type="button" class="rg__toast-x" (click)="toast.set(null)" aria-label="Dismiss">×</button>
+    </div>
+  }
+
+  @if (loading()) {
+    <app-loader variant="skeleton" [rows]="5" />
+  } @else if (!state().run) {
+    @if (lastCompleted()) {
+      <div class="rg-done" role="status">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Regression run <strong>#{{ lastCompleted() }}</strong> completed.</span>
+      </div>
+    }
+    <div class="rg__start">
+      <p>{{ lastCompleted() ? 'Start another regression run when ready.' : 'No active regression run. Start one to begin the workflow.' }}</p>
+      <button type="button" class="rg-btn rg-btn--primary" (click)="startRun()">Start regression run</button>
+    </div>
+  } @else {
+
+    @if (resumed() && state().run?.status !== 'complete') {
+      <div class="rg-resume" role="status">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 8v4l3 2M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div class="rg-resume__msg">
+          <strong>Regression run #{{ state().run?.run_id }} is already in progress.</strong>
+          <span>Started by {{ state().run?.started_by }}@if (state().run?.started_on) { · {{ state().run?.started_on }}}. Resume to open the workflow and continue where it left off, or start a fresh run.</span>
+        </div>
+        <div class="rg-resume__actions">
+          <button type="button" class="rg-btn rg-btn--primary" (click)="resumeRun()">Resume</button>
+          <button type="button" class="rg-btn rg-btn--danger" (click)="startFresh()">Start fresh</button>
+        </div>
+      </div>
+    } @else {
+
+    <!-- ================= Workflow ================= -->
+    <section class="rg__workflow">
+      @for (step of steps; track step.key; let i = $index) {
+        <div class="rg-step" [class.is-locked]="!isEnabled(i)">
+          <div class="rg-step__head">
+            <span class="rg-step__num">{{ i + 1 }}</span>
+            <span class="rg-step__title">{{ step.title }}</span>
+            <span class="rg-badge" [class]="badgeClass(effectiveStatus(step.key))">{{ badgeLabel(effectiveStatus(step.key)) }}</span>
+            <span class="rg-spacer"></span>
+            <button type="button" class="rg-force" [disabled]="!isEnabled(i)" (click)="forceComplete(step)" title="Skip-gate override — logged as a forced completion">
+              <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M13 2L3 14h7l-1 8 10-12h-7z" fill="currentColor"/></svg>
+              <span class="rg-force__label">Force complete</span>
+              <span class="rg-force__opt">optional</span>
+            </button>
+          </div>
+          @if (hasRun(step.key)) {
+            <div class="rg-step__meta">
+              @if (lastRun(step.key)) {
+                <span class="rg-meta"><span class="rg-meta__k">Last run</span> {{ lastRun(step.key) }}</span>
+              }
+              @if (stepMeta(step.key)?.task_completion_time !== undefined && stepMeta(step.key)?.task_completion_time !== null) {
+                <span class="rg-meta"><span class="rg-meta__k">Run time</span> {{ stepMeta(step.key)?.task_completion_time }}s</span>
+              }
+              @if (stepBy(step.key) && !stepMeta(step.key)?.forced_by) {
+                <span class="rg-meta"><span class="rg-meta__k">By</span> {{ stepBy(step.key) }}</span>
+              }
+              @if (stepMeta(step.key)?.forced_by) {
+                <span class="rg-meta rg-meta--forced"><span class="rg-meta__k">Forced by</span> {{ stepMeta(step.key)?.forced_by }}</span>
+              }
+            </div>
+          }
+
+          @if (!isEnabled(i)) {
+            <div class="rg-step__locked">Complete the previous step (or force it) to unlock.</div>
+          } @else {
+            <div class="rg-step__body">
+              @if (isStepRunning(step.key)) {
+                @if (isStepStale(step.key)) {
+                  <div class="rg-stuck">
+                    <div class="rg-stuck__msg">
+                      <strong>This step looks stuck.</strong>
+                      <span>Marked in progress@if (stepBy(step.key)) { by {{ stepBy(step.key) }}} about {{ stepAgeMin(step.key) }} min ago with no result — the server or connection may have dropped. Unlock to clear it (logged), then re-run.</span>
+                    </div>
+                    <button type="button" class="rg-btn rg-btn--danger" (click)="unlockStep(step)">Unlock step</button>
+                  </div>
+                } @else {
+                  <div class="rg-running-note">
+                    <span class="rg-running-note__spin" aria-hidden="true"></span>
+                    <span>Running@if (stepBy(step.key)) { — started by {{ stepBy(step.key) }}}… No one else can run this step until it finishes or errors.</span>
+                  </div>
+                }
+              } @else {
+              @switch (step.key) {
+
+                @case ('refresh_db') {
+                  <p class="rg-hint">Select the databases to refresh, then call the DB-refresh API.</p>
+                  <div class="rg-pick">
+                    <div class="rg-pick__label">Databases</div>
+                    <div class="rg-chips">
+                      @for (d of databases; track d.key) {
+                        <label class="rg-chip" [class.is-on]="refreshDbs().includes(d.key)"><input type="checkbox" [checked]="refreshDbs().includes(d.key)" (change)="toggleRefreshDb(d.key)" />{{ d.label }}</label>
+                      }
+                    </div>
+                  </div>
+                  <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'refresh_db'" (click)="refreshDb()">
+                    {{ busy() === 'refresh_db' ? 'Refreshing…' : 'Refresh DB' }}
+                  </button>
+                }
+
+                @case ('apply_db') {
+                  <div class="rg-row">
+                    <button type="button" class="rg-btn" (click)="loadBranches()">Load release branches</button>
+                    <select [ngModel]="selectedBranch()" (ngModelChange)="selectedBranch.set($event)">
+                      <option value="">Select release/* branch…</option>
+                      @for (b of branches(); track b) { <option [value]="b">{{ b }}</option> }
+                    </select>
+                    <button type="button" class="rg-btn" [disabled]="pulling() || !selectedBranch()" (click)="pullBranch()">
+                      {{ pulling() ? 'Pulling…' : 'Pull' }}
+                    </button>
+                  </div>
+
+                  <!-- Release-branch browser (collapsible) -->
+                  <div class="rg-browser">
+                    <button type="button" class="rg-browser__bar" (click)="toggleBrowser()">
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="rg-chevron" [class.is-open]="browserOpen()" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+                      Release branch browser
+                      @if (repoBranch()) { <span class="rg-browser__branch">{{ repoBranch() }}</span> }
+                    </button>
+                    @if (browserOpen()) {
+                      <div class="rg-browser__body">
+                        @if (!pulled()) {
+                          <p class="rg-browser__empty">Pull a release branch to see its content.</p>
+                        } @else {
+                          <div class="rg-browser__meta">Branch <code>{{ repoBranch() }}</code> checked out to <code>{{ repoWorkdir() || '…' }}</code> — click a file to review it (verify the package exists / has the latest code).</div>
+                          @if (treeLoading()) { <p class="rg-hint">Loading tree…</p> }
+                          @else {
+                            <div class="rg-tree">
+                              @for (n of tree(); track n.path) { <ng-container [ngTemplateOutlet]="treeNode" [ngTemplateOutletContext]="{ $implicit: n, depth: 0 }" /> }
+                            </div>
+                          }
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  @if (chgScripts().length) {
+                    <div class="rg-pick">
+                      <div class="rg-pick__label">Scripts (CHG_*.sql)</div>
+                      <div class="rg-chips">
+                        @for (s of chgScripts(); track s) {
+                          <label class="rg-chip" [class.is-on]="applyScripts().includes(s)"><input type="checkbox" [checked]="applyScripts().includes(s)" (change)="toggleApplyScript(s)" />{{ s }}</label>
+                        }
+                      </div>
+                    </div>
+                    <div class="rg-pick">
+                      <div class="rg-pick__label">Databases</div>
+                      <div class="rg-chips">
+                        @for (d of databases; track d.key) {
+                          <label class="rg-chip" [class.is-on]="applyDbs().includes(d.key)"><input type="checkbox" [checked]="applyDbs().includes(d.key)" (change)="toggleApplyDb(d.key)" />{{ d.label }}</label>
+                        }
+                      </div>
+                    </div>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db'" (click)="runApply()">
+                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes' }}
+                    </button>
+                    @if (applyResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: applyResults() }" /> }
+                  } @else {
+                    <p class="rg-hint">Pull a release branch to list its <code>CHG_*.sql</code> scripts.</p>
+                  }
+                }
+
+                @case ('file_copy') {
+                  <button type="button" class="rg-btn" (click)="loadManifest()">Load copy manifest</button>
+                  @if (manifest().length) {
+                    <div class="rg-table-wrap">
+                      <table class="rg-table">
+                        <thead><tr>
+                          <th class="rg-th-chk"><input type="checkbox" [checked]="selectedItems().length === manifest().length" (change)="toggleAllItems()" /></th>
+                          <th>Source</th><th>Destination</th>
+                        </tr></thead>
+                        <tbody>
+                          @for (it of manifest(); track $index; let i = $index) {
+                            <tr>
+                              <td class="rg-th-chk"><input type="checkbox" [checked]="selectedItems().includes(i)" (change)="toggleItem(i)" /></td>
+                              <td>{{ friendly(it.source) }}@if (it.source.trim().endsWith('*')) { <span class="rg-tag">folder</span> }</td>
+                              <td>{{ friendly(it.destination) }}</td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'file_copy' || !selectedItems().length" (click)="runCopy()">
+                      {{ busy() === 'file_copy' ? 'Copying…' : 'Copy selected (' + selectedItems().length + ')' }}
+                    </button>
+                    @if (copyResults().length) {
+                      <ul class="rg-copylog">
+                        @for (r of copyResults(); track $index) {
+                          <li class="rg-copylog__item" [class.is-err]="!r.ok">
+                            <div class="rg-copylog__head">
+                              <span class="rg-copylog__status" [class.is-ok]="r.ok">{{ r.ok ? 'OK' : 'FAILED' }}</span>
+                              <span class="rg-copylog__path">{{ friendly(r.source) }} <span class="rg-copylog__arr">→</span> {{ friendly(r.destination) }}</span>
+                              @if (r.ok) { <span class="rg-copylog__count">{{ r.count }} file{{ r.count === 1 ? '' : 's' }}</span> }
+                              @else if (r.kind === 'folder' && r.count) { <span class="rg-copylog__count rg-copylog__count--partial">{{ r.count }} copied, then failed</span> }
+                            </div>
+                            @if (!r.ok && r.error) { <div class="rg-copylog__err">{{ r.error }}</div> }
+                            @if (r.ok && r.files?.length) {
+                              <ul class="rg-copylog__files">
+                                @for (f of r.files; track $index) { <li>{{ friendly(f) }}</li> }
+                              </ul>
+                            }
+                          </li>
+                        }
+                      </ul>
+                    }
+                  }
+                }
+
+                @case ('reset') {
+                  @if (scripts().length) {
+                    <div class="rg-row">
+                      <select [ngModel]="resetScript()" (ngModelChange)="resetScript.set($event)">
+                        <option value="">Select reset script…</option>
+                        @for (s of scripts(); track s) { <option [value]="s">{{ s }}</option> }
+                      </select>
+                      <select [ngModel]="resetDb()" (ngModelChange)="resetDb.set($event)">
+                        @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+                      </select>
+                      <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetScript()" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset' }}</button>
+                    </div>
+                    @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
+                  } @else { <p class="rg-hint">Pull a release branch in <strong>Apply DB changes</strong> first to load scripts.</p> }
+                }
+                @case ('trigger') {
+                  @if (scripts().length) {
+                    <p class="rg-hint">Pick the "trigger all" script, or a per-business-line trigger script.</p>
+                    <div class="rg-row">
+                      <select [ngModel]="triggerScript()" (ngModelChange)="triggerScript.set($event)">
+                        <option value="">Select trigger script…</option>
+                        @for (s of scripts(); track s) { <option [value]="s">{{ s }}</option> }
+                      </select>
+                      <select [ngModel]="triggerDb()" (ngModelChange)="triggerDb.set($event)">
+                        @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+                      </select>
+                      <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerScript()" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger' }}</button>
+                    </div>
+                    @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
+                  } @else { <p class="rg-hint">Pull a release branch in <strong>Apply DB changes</strong> first to load scripts.</p> }
+                }
+              }
+              }
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+    @if (allStepsDone()) {
+      <div class="rg-finish" [class.is-done]="state().run?.status === 'complete'">
+        @if (state().run?.status === 'complete') {
+          <div class="rg-finish__msg">
+            <strong>✓ Regression run #{{ state().run?.run_id }} completed.</strong>
+            <span>Closed out and recorded in the activity log below.</span>
+          </div>
+          <button type="button" class="rg-btn" (click)="startRun()">Start new run</button>
+        } @else {
+          <div class="rg-finish__msg">
+            <strong>All steps complete.</strong>
+            <span>Close out this regression run to mark it finished — it's recorded in the activity log.</span>
+          </div>
+          <button type="button" class="rg-btn rg-btn--primary" (click)="completeRun()">Mark run complete</button>
+        }
+      </div>
+    }
+
+    <!-- ================= Monitoring ================= -->
+    <section class="rg__monitor">
+      <div class="rg-subtabs">
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches')">Monitoring Batches</button>
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'activity'" (click)="monitorTab.set('activity'); loadActivity()">Regression Activity</button>
+      </div>
+
+      @if (monitorTab() === 'batches') {
+        <div class="rg-row">
+          <select [ngModel]="monitorDb()" (ngModelChange)="monitorDb.set($event)">
+            @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+          </select>
+          <button type="button" class="rg-btn rg-btn--primary" [disabled]="monitorLoading()" (click)="loadBatches()">{{ monitorLoading() ? 'Loading…' : 'Refresh' }}</button>
+        </div>
+        @if (batchResult(); as br) {
+          <div class="rg-table-wrap">
+            <table class="rg-table">
+              <thead><tr>@for (c of br.columns; track $index) { <th>{{ c }}</th> }</tr></thead>
+              <tbody>@for (row of br.rows; track $index) { <tr>@for (v of row; track $index) { <td>{{ cell(v) }}</td> }</tr> }</tbody>
+            </table>
+          </div>
+        } @else { <p class="rg-hint">Refresh to load batch status.</p> }
+      } @else {
+        <div class="rg-row"><button type="button" class="rg-btn" (click)="loadActivity()">Refresh</button></div>
+        <div class="rg-table-wrap">
+          <table class="rg-table">
+            <thead><tr><th>Step</th><th>Action</th><th>Status</th><th>By</th><th>Started</th><th>Finished</th><th>Dur (s)</th><th>Details</th></tr></thead>
+            <tbody>
+              @for (a of activityRows(); track a.log_id) {
+                <tr>
+                  <td>{{ a.step_key }}</td><td>{{ a.action }}</td>
+                  <td><span class="rg-badge" [class]="badgeClass(a.status)">{{ badgeLabel(a.status) }}</span></td>
+                  <td>{{ a.performed_by }}</td><td>{{ a.started_on }}</td><td>{{ a.finished_on }}</td>
+                  <td>{{ a.task_completion_time }}</td><td class="rg-detail">{{ a.details }}</td>
+                </tr>
+              }
+              @if (!activityRows().length) { <tr><td colspan="8" class="rg-hint">No activity yet.</td></tr> }
+            </tbody>
+          </table>
+        </div>
+      }
+    </section>
+    }
+  }
+
+  <!-- ============ sqlplus console / file viewer (docked, collapsible) ============ -->
+  @if (logContent()) {
+    <div class="rg-dock" [class.is-console]="viewerKind() === 'console'"
+         [class.is-collapsed]="consoleCollapsed()" [class.is-max]="consoleMax()" role="dialog" aria-modal="false">
+      <div class="rg-dock__head">
+        <span class="rg-dock__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <button type="button" class="rg-dock__title" (click)="toggleConsole()" [attr.aria-expanded]="!consoleCollapsed()" title="Collapse / expand">
+          <svg viewBox="0 0 24 24" width="12" height="12" class="rg-chevron" [class.is-open]="!consoleCollapsed()" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>{{ logTitle() }}</span>
+        </button>
+        @if (consoleRunning()) { <span class="rg-dock__live" aria-label="running"><i></i><i></i><i></i></span> }
+        <div class="rg-dock__tools">
+          <button type="button" class="rg-iconbtn" (click)="toggleConsoleMax()" [title]="consoleMax() ? 'Restore' : 'Expand'" aria-label="Toggle size">
+            @if (consoleMax()) {
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M9 9H5V5m0 4l6-6M15 15h4v4m0-4l-6 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            } @else {
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 10V4h6M20 14v6h-6M4 4l6 6M20 20l-6-6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            }
+          </button>
+          <button type="button" class="rg-btn rg-btn--sm" (click)="downloadLog()">Download</button>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeLog()" aria-label="Close">×</button>
+        </div>
+      </div>
+      @if (!consoleCollapsed()) { <pre class="rg-dock__body">{{ logContent() }}@if (consoleRunning()) {<span class="rg-dock__caret"></span>}</pre> }
+    </div>
+  }
+</div>
+
+<!-- reusable result list (Apply / Reset / Trigger) -->
+<ng-template #resultList let-results>
+  <ul class="rg-results">
+    @for (r of results; track $index) {
+      <li [class.is-err]="r.status !== 'complete'">
+        {{ r.script }} · {{ dbLabel(r.db) }} — <strong>{{ r.status }}</strong>
+        <button type="button" class="rg-link" (click)="openLog(r)">View log</button>
+      </li>
+    }
+  </ul>
+</ng-template>
+
+<!-- recursive branch tree node -->
+<ng-template #treeNode let-n let-depth="depth">
+  @if (n.dir) {
+    <button type="button" class="rg-tnode rg-tnode--dir" [style.paddingLeft.px]="10 + depth * 14" (click)="toggleDir(n.path)">
+      <svg viewBox="0 0 24 24" width="12" height="12" class="rg-chevron" [class.is-open]="isExpanded(n.path)" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 24 24" width="14" height="14" class="rg-ico-dir" aria-hidden="true"><path d="M4 6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="currentColor" opacity="0.85"/></svg>
+      <span>{{ n.name }}</span>
+    </button>
+    @if (isExpanded(n.path)) {
+      @for (c of n.children; track c.path) { <ng-container [ngTemplateOutlet]="treeNode" [ngTemplateOutletContext]="{ $implicit: c, depth: depth + 1 }" /> }
+    }
+  } @else {
+    <button type="button" class="rg-tnode rg-tnode--file" [style.paddingLeft.px]="26 + depth * 14" (click)="viewFile(n.path)">
+      <svg viewBox="0 0 24 24" width="13" height="13" class="rg-ico-file" aria-hidden="true"><path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+      <span>{{ n.name }}</span>
+    </button>
+  }
+</ng-template>

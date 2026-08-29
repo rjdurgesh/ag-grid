@@ -77,13 +77,13 @@ export class UserManagementComponent implements OnInit {
 
   readonly toast = signal<Toast | null>(null);
 
+  // Log Analytics + Infra Health are ungated for everyone (RBAC_DESIGN §2), so they are not
+  // grantable here — only the opt-in features appear.
   readonly kinds: { key: GrantKind; label: string }[] = [
     { key: 'full', label: 'Full access (everything)' },
     { key: 'screen', label: 'Screen visibility' },
-    { key: 'server', label: 'Log Analytics — server' },
     { key: 'config_category', label: 'Config Ops — table category' },
     { key: 'config_table', label: 'Config Ops — single table' },
-    { key: 'infra_app', label: 'Infra Health — app' },
     { key: 'service_app', label: 'Service Console — app' },
     { key: 'oracle_db', label: 'Oracle Command Center — database' },
     { key: 'section', label: 'Hide an OCC section' }
@@ -423,6 +423,46 @@ export class UserManagementComponent implements OnInit {
         this.toast.set({ kind: 'info', text: `${o.username} ${disabling ? 'disabled' : 'enabled'}.` });
       },
       error: (e) => this.fail(e, 'Could not update the ops-admin')
+    });
+  }
+
+  /** Grant / revoke User Management (super-admin) for an operator — independent of S-Studio. */
+  async toggleUsers(o: OpsAdmin): Promise<void> {
+    const granting = o.can_users !== 'Y';
+    const ok = await this.confirm.ask({
+      title: granting ? 'Grant User Management' : 'Revoke User Management',
+      message: granting
+        ? `Grant ${o.username} User Management (they can hand out access to any OLS user)?`
+        : `Revoke ${o.username}'s User Management access? (Any S-Studio access is kept.)`,
+      confirmLabel: granting ? 'Grant' : 'Revoke', tone: granting ? 'primary' : 'danger'
+    });
+    if (!ok) { return; }
+    this.svc.ops(granting ? 'users_on' : 'users_off', o.username).subscribe({
+      next: (r) => {
+        this.opsAdmins.set(r.ops_admins ?? []);
+        this.toast.set({ kind: 'info', text: `${o.username} User Management ${granting ? 'granted' : 'revoked'}.` });
+      },
+      error: (e) => this.fail(e, 'Could not update User Management access')
+    });
+  }
+
+  /** Grant / revoke S-Studio (the SQL console) for an operator — independent of User Management. */
+  async toggleSql(o: OpsAdmin): Promise<void> {
+    const granting = o.can_sql !== 'Y';
+    const ok = await this.confirm.ask({
+      title: granting ? 'Grant S-Studio' : 'Revoke S-Studio',
+      message: granting
+        ? `Grant ${o.username} access to S-Studio — the Config Ops console for running raw SQL / DDL on the databases? Assign only to trusted operators.`
+        : `Revoke ${o.username}'s S-Studio access?`,
+      confirmLabel: granting ? 'Grant' : 'Revoke', tone: granting ? 'primary' : 'danger'
+    });
+    if (!ok) { return; }
+    this.svc.ops(granting ? 'sql_on' : 'sql_off', o.username).subscribe({
+      next: (r) => {
+        this.opsAdmins.set(r.ops_admins ?? []);
+        this.toast.set({ kind: 'info', text: `${o.username} S-Studio ${granting ? 'granted' : 'revoked'}.` });
+      },
+      error: (e) => this.fail(e, 'Could not update S-Studio access')
     });
   }
 

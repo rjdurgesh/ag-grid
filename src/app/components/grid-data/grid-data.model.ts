@@ -93,8 +93,15 @@ export interface GridContext {
 export interface RollDataEvent {
   row: Record<string, unknown>;
   tableName: string;
-  from: string;
-  to: string;
+  source: string;            // source (From) COB date
+  targets: string[];         // one or more target (To) COB dates
+}
+
+/** Per-date roll summary returned by the backend. */
+export interface RollResult {
+  source_date: string;
+  source_count: number;
+  targets: { date: string; count: number }[];
 }
 
 /** Marker on draft rows added via the modal's "Add" button. */

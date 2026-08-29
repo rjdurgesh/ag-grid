@@ -72,13 +72,15 @@
               Export Data
             </button>
           </li>
-          @if (modalIsCob() && modalWritable()) {
+          @if (modalWritable()) {
             <li>
               <button cDropdownItem type="button" (click)="uploadData()">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M12 21V9m0 0 4 4m-4-4-4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
                 Upload Data
               </button>
             </li>
+          }
+          @if (modalIsCob() && modalWritable()) {
             <li>
               <button cDropdownItem type="button" (click)="toggleRollPanel()">
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="me-2"><path d="M4 12a8 8 0 1 1 2.5 5.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M4 18v-5h5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -134,17 +136,47 @@
         </div>
         <div class="ols-roll__fields">
           <label class="ols-roll__field">
-            <span>From</span>
+            <span>Source (From)</span>
             <input type="date" class="form-control" [value]="rollFrom()" (change)="onRollFromChange($event)" />
           </label>
           <label class="ols-roll__field">
-            <span>To</span>
+            <span>Target Start</span>
             <input type="date" class="form-control" [value]="rollTo()" (change)="onRollToChange($event)" />
           </label>
+          <label class="ols-roll__field">
+            <span>Target End</span>
+            <input type="date" class="form-control" [value]="rollToEnd()" (change)="onRollToEndChange($event)" />
+          </label>
+          <label class="ols-roll__check">
+            <input type="checkbox" class="form-check-input" [checked]="rollRange()" (change)="onRollRangeChange($event)" />
+            <span>Date Range</span>
+          </label>
         </div>
-        <button cButton color="primary" variant="outline" class="ols-roll__process" (click)="processRoll()">Process</button>
+        @if (rollTargets().length) {
+          <p class="ols-roll__targets">Rolling to <strong>{{ rollTargets().length }}</strong> date(s): {{ rollTargets().join(', ') }}</p>
+        }
+        <button cButton color="primary" variant="outline" class="ols-roll__process" [disabled]="rollBusy()" (click)="processRoll()">{{ rollBusy() ? 'Rolling…' : 'Process' }}</button>
         @if (rollNotice()) {
           <p class="ols-roll__notice">{{ rollNotice() }}</p>
+        }
+        @if (rollResult(); as rr) {
+          <div class="ols-roll__result">
+            <div class="ols-roll__result-head">✓ Rollover completed — {{ rr.targets.length }} target date(s).</div>
+            <div class="ols-roll__result-src">Source <strong>{{ rr.source_date }}</strong> · {{ rr.source_count }} rows</div>
+            <div class="ols-roll__result-scroll">
+              <table class="ols-roll__result-tbl">
+                <thead><tr><th>Target date</th><th>Rows loaded</th></tr></thead>
+                <tbody>
+                  @for (t of rr.targets; track t.date) {
+                    <tr [class.is-warn]="t.count !== rr.source_count">
+                      <td>{{ t.date }}</td>
+                      <td>{{ t.count }} <span class="ols-roll__mark">{{ t.count === rr.source_count ? '✓' : '⚠ differs from source' }}</span></td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
         }
       </div>
     }
@@ -210,3 +242,14 @@
   </c-modal-footer>
 </c-modal>
 }
+
+<!-- CSV Upload & Load dialog (opened from the modal 3-dot → Upload Data) -->
+<app-config-upload
+  [visible]="uploadOpen()"
+  [scope]="scope()"
+  [tableName]="modalTitle()"
+  [columns]="modalContent()?.columns ?? []"
+  [isCob]="modalIsCob()"
+  (closed)="uploadOpen.set(false)"
+  (loaded)="onUploadLoaded($event)"
+/>

@@ -819,6 +819,7 @@
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
+  align-items: flex-end;          /* bottom-align so the checkbox lines up with the date inputs */
   margin-bottom: 14px;
 }
 
@@ -833,11 +834,53 @@
   input { min-width: 190px; }
 }
 
+/* Match the date input height so the checkbox sits centred against the calendar picker, not up top. */
+.ols-roll__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cui-body-color);
+  cursor: pointer;
+
+  input { margin: 0; }
+}
+
 .ols-roll__notice {
   margin: 12px 0 0;
   font-size: 13px;
   color: var(--cui-primary, #4d5dfb);
 }
+.ols-roll__targets {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--cui-secondary-color, #6b7280);
+  word-break: break-word;
+}
+.ols-roll__result {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--cui-success, #2eb85c) 30%, transparent);
+  background: color-mix(in srgb, var(--cui-success, #2eb85c) 8%, transparent);
+}
+.ols-roll__result-head { font-size: 14px; font-weight: 700; color: var(--cui-success, #1e9e3e); }
+.ols-roll__result-src { margin-top: 2px; font-size: 12.5px; color: var(--cui-secondary-color, #6b7280); strong { color: var(--cui-body-color); } }
+.ols-roll__result-scroll { margin-top: 10px; max-height: 260px; overflow-y: auto; border-radius: 8px; }
+.ols-roll__result-tbl {
+  width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid color-mix(in srgb, var(--cui-body-color) 10%, transparent); }
+  thead th {
+    position: sticky; top: 0; z-index: 1;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--cui-secondary-color, #6b7280);
+    background: color-mix(in srgb, var(--cui-success, #2eb85c) 8%, var(--cui-card-bg, var(--cui-body-bg, #fff)));
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.is-warn td { color: var(--cui-warning, #b8860b); }
+}
+.ols-roll__mark { font-size: 11px; opacity: 0.85; }
 
 /* Inline notice (e.g. Upload Data placeholder) */
 .ols-notice {

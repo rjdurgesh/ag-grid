@@ -4,9 +4,12 @@ This guide is the single reference for wiring the OLS Dashboard to your real bac
 where to configure things, every API the app calls, and the exact request/response
 shape each one expects. It is kept up to date as the app evolves.
 
-> TL;DR to go live: edit **`src/environments/environment.ts`** — set `apiBaseUrl`, `appEnv`,
-> and either `useMock: false` (all real) or flip individual screens in `apiMocks` (real one
-> area at a time). Make sure each API returns the documented shape.
+> TL;DR to go live: **nothing to edit per env.** `environment.ts` auto-resolves DEV/STG/PROD from
+> the browser hostname (`ENV_BY_HOST`) — deployed hosts use a same-origin API (`apiBaseUrl:''`, proxied
+> by `ui_server.py`) with `useMock:false`; local dev uses `:8000` + the mock. Build once, deploy the
+> same bundle everywhere. Just keep `ENV_BY_HOST` hostnames + `supportEmail`/`isSsoEnabled` current,
+> and make sure each API returns the documented shape. Backend env = `APP_ENV` per server (DEPLOYMENT.md
+> → "Environments").
 
 ---
 
@@ -15,12 +18,20 @@ shape each one expects. It is kept up to date as the app evolves.
 All app/runtime config lives in this **one** file (not in `api-endpoints.ts`, which is now
 URLs only and reads `apiBaseUrl` from here).
 
-| Setting | Purpose | Change to |
+**Runtime env resolution (one build → DEV/STG/PROD).** `apiBaseUrl`, `appEnv`, `useMock` and
+`apiMocks` are now **derived from the browser hostname** at load time, not hardcoded — the SAME built
+bundle runs in every environment with nothing to swap. Edit `ENV_BY_HOST` (top of `environment.ts`)
+to map your hostnames → env: `abc.dev.com`→DEV, `abc.stg.com`→STG, `abc.group.com`→LIVE (unknown host →
+LIVE). Deployed → `apiBaseUrl:''` (same-origin `/api/...`, proxied by `ui_server.py`) + `useMock:false`
++ `apiMocks:{}`; local (`localhost`) → `:8000` + `useMock:true` + the local `apiMocks`. See DEPLOYMENT.md
+→ "Environments" for the backend (`APP_ENV`) side.
+
+| Setting | Purpose | Notes |
 |---|---|---|
-| `apiBaseUrl` | Root of your backend. Every endpoint is built from it. | Your API host, e.g. `https://ols-api.mybank.net` |
-| `useMock` | Global default: while `true`, the in-app mock answers any endpoint **not listed in `apiMocks`** with canned data. | `false` to hit the real backend for everything unlisted |
-| `apiMocks` | **Per-screen** mock control — a map of API path-prefix → `mock?` (`true` = in-app mock, `false` = real backend). A request matches the **longest** prefix; unlisted paths fall back to `useMock`. Lets you develop/test one screen live while the rest stay mocked (or vice-versa). | e.g. `'/api/oracle_cc': false` (live), `'/api/config': true` (mock) — flip one entry, no code change |
-| `appEnv` | Environment (`DEV` \| `STG` \| `LIVE`). Header pill + sent to env-aware APIs (Config `tables`, Infra `config`). **`LIVE` is sent to the backend as `PROD`** via `apiEnv()`. | The env this instance runs in |
+| `ENV_BY_HOST` | hostname substring → `AppEnv` map that drives everything below. | The one thing to keep current |
+| `apiBaseUrl` | Root of the backend; every endpoint is built from it. | Auto: `''` (same-origin) deployed, `http://localhost:8000` local |
+| `useMock` / `apiMocks` | In-app mock (global + per-screen). | Auto: on locally, off (`{}`) when deployed |
+| `appEnv` | Environment (`DEV` \| `STG` \| `LIVE`). Header pill + sent to env-aware APIs. **`LIVE` → `PROD`** via `apiEnv()`. | Auto: from the hostname |
 | `supportEmail` | Address the error-popup "Email" button reports to. | Your support inbox |
 | `infraHealthRefreshMinutes` / `serviceConsoleRefreshMinutes` | Default auto-refresh cadence (minutes) for the Infrastructure Health / Service Console screens. Must be one of each page's dropdown options (5 / 10 / 15 / 30). | Your preferred default (e.g. `5`) |
 | `username` / `name` | Demo identity for the direct (non-SSO) login / dev mode (real SSO overrides it). | Your dev user |
@@ -148,15 +159,17 @@ reach out to OLS Team"); `hasAnyAccess()` = active AND ≥1 granted screen. **Ba
 | `SALT` | Config Ops only (as granted) | only where granted | opt-in, config-only |
 | none / no grants | → **No-Access** page (contact OLS Team) | | |
 
-A screen becomes visible via a `SCREEN` grant, a `SERVER` grant (→ Log Analytics), or a config grant
-(→ Config Ops). **Infra Health / Service Console are opt-in too now** — grant `SCREEN / infra_health |
-service_console / * / READ`. **Home** is opt-in (visible when the user has ≥1 feature) and **RBAC-filtered**
-(shows only the Infra / Service / Oracle sections the user can access; none → a "tools are in the sidebar" note).
+**Log Analytics + Infrastructure Health are UNGATED defaults** — every active user sees them (all
+servers / all apps; no RBAC). Everything else is opt-in: Config Ops (config grant), Service Console
+(`SCREEN service_console` / `APP`), OCC (`DB` grant). **Home** shows when the user has ≥1 feature and is
+RBAC-filtered. **Two No-Access cases** on `/no-access` (message by `rbac.snapshot().active`): not an active
+OLS user → "You don't have access to OLS (submit a provisioning request)"; active but nothing assigned →
+"No features assigned yet" (rare now — everyone has the two defaults).
 
 **Overrides = grants in `ols_app_access`** — one generic table
 `(username, resource_type, resource_scope, resource_key, access_level, app_env)`. Types:
-`SCREEN` (per-screen write, e.g. OCC kill / Service start-stop), `SERVER` (Log Analytics opt-in),
-`APP` (Infra Health / Service Console per-app), `DB` (OCC per-database + per-DB level),
+`SCREEN` (reveal/write an opt-in screen, e.g. Service Console / OCC), `APP` (Service Console per-app
+— `service_console` scope), `DB` (OCC per-database + per-DB level),
 `TABLE_CATEGORY` + `TABLE` (Config Ops opt-in read + per-table write, category matched on
 `ols_master_table_config.table_category`), `SECTION … DENY` (hide a section, e.g. OCC SQL
 Intelligence). `ACCESS_LEVEL` = `READ`/`WRITE`/`DENY`; per-table wins over category. **To grant, you
@@ -166,11 +179,12 @@ INSERT rows — no code change** (cookbook in [`backend/sql/access_examples.sql`
 (`SERVER`/`APP`/`DB`); `DENY` wins over `*` and trims explicit allow-lists, but never reveals a screen
 alone. Snapshot carries `denied_servers` / `infra.denied_apps` / `service.denied_apps` / `oracle.denied_dbs`.
 
-**Per-screen enforcement:** Log Analytics filters its server list (`serverAllowed`); Config Ops
-shows only granted **sub-screens** (group/cib/retail via `configScopeVisible`) and granted **tables**
-(`configTableAccess`), with the content modal's write buttons gated per-table
-(`grid-data [canWriteRow]`); **Infra Health filters its app panels** per-app (`APP` grants →
-`infraAppAllowed`); Service Console start/stop = `canWrite`; **OCC filters its DB tabs** and gates
+**Per-screen enforcement:** Log Analytics + Infra Health are ungated (all servers/apps shown to every
+active user — `serverAllowed`/`infraAppAllowed` return true for active); Config Ops shows only granted
+**sub-screens** (group/cib/retail via `configScopeVisible` — an ungranted scope like RETAIL is hidden)
+and granted **tables** (`configTableAccess`), with the content modal's write buttons gated per-table
+(`grid-data [canWriteRow]`); Service Console filters app panels (`serviceAppAllowed`) + start/stop =
+`canWrite`; **OCC filters its DB tabs** and gates
 kill/apply **per-DB** (`DB` grants → `dbAllowed` / `dbWritable` — READ tab view-only, WRITE tab
 killable), and sections hide via `*olsIfSection`.
 
@@ -196,6 +210,68 @@ form (`POST /api/access/admin/*`) grants any `ols_app_access` row to any active 
 validated against `ols_users`), revoke = **hard delete** (no audit), and it manages the ops-admin list
 itself (no self-lockout guard). DDL/seed: [`backend/sql/ops_access_setup.sql`](backend/sql/ops_access_setup.sql).
 Full detail: RBAC_DESIGN.md §11.
+
+**S-Studio** (Config Ops → **Config | MISC | S-Studio** tab) is a raw SQL / PL-SQL console for running
+queries, DML, anonymous blocks, and package/procedure deployments against one database. **Doubly
+exclusive**: visible only to an ops-admin with **`ols_ops_access.can_sql='Y'`** (assigned per user from the
+User Management **S-Studio** toggle; snapshot flag `can_sql`, `rbac.canSql()`). DB dropdown = the config
+scope's databases from `db_configs` (prefix-filtered, so `cib` shows batch + reporting; auto-grows).
+SELECT → results grid; DML/DDL/PL-SQL → status; **Oracle errors show in the panel**; **manual commit**
+(include `COMMIT;`); **every run confirms the target DB**. Runs via [`sql_studio_api.py`](backend/sql_studio_api.py)
+→ `database.execute_sql` on a **privileged** connection (`app.state.sql_db_configs`, separate from the
+read-only OCC monitor). Full detail: RBAC_DESIGN.md §12.
+
+**CSV Upload & Load** (Config Ops grid modal → 3-dot → **Upload Data**, gated by per-table write RBAC) loads a
+CSV into the open table. Client: pick file → auto/override **delimiter** → RFC-4180 parse → **strict header
+validation** (name + order; **trailing columns may be omitted → NULL**) → **editable, virtualized AG-Grid
+preview** with per-cell validation (bad cells red; dates must be `YYYY-MM-DD`, fix inline or **Issues only** /
+**Export**) → **Append** (insert only) or **Replace** (delete-then-insert; whole table, or the single COB date).
+The server ([`config_api.py`](backend/config_api.py)) is the authority: validates against the real schema
+(`ALL_TAB_COLUMNS`), reads the **date column from a 1-1 mapping table**, type-casts (explicit `TO_DATE`/native
+bind — never NLS), then `database.config_load_table` does the **atomic** load (per-table lock, `DELETE` not
+`TRUNCATE`, batched `executemany`), **archives the CSV to NAS** (`<stem>_<user>_<token>.csv` + SHA-256) and writes
+a maximal **`ols_upload_audit`** row. DDL: [`sql/upload_setup.sql`](backend/sql/upload_setup.sql); `.env`:
+`CONFIG_UPLOAD_*`, `CONFIG_DATE_MAP_*`. Config Ops is mock-backed today, so this is the first **real Config write
+path** (frontend + mock verified; wire `sql_db_configs` + the mapping table to go live). Full design: UPLOAD_DESIGN.md.
+The same modal's **Roll Data** (COB tables) rolls one **source** date's rows into **one or more target dates**
+(Target Start/End + a **Date Range** toggle → the expanded list; `POST …/roll` → `database.config_roll_dates`
+delete-then-insert copy per date, atomic) and reports a **per-date result** (source date/count + each target
+date + rows, ✓ or ⚠ vs source).
+
+**Regression** (Config Ops → CIB → **Regression** tab, **DEV/STG only**, anyone with CIB Config access)
+drives the pre-prod cycle as a gated, force-markable, fully-audited workflow: Refresh DB (multi-select all 5 DBs)
+→ Apply DB changes (git-pull a `release/*` branch → run `CHG_*.sql` on the chosen DB(s) via **sqlplus**, log +
+Download) → File copy (developer JSON manifest, `*` = recurse) → Reset → Trigger (run a branch `.sql` on one of
+the 3 batch schedulers). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
+`run/complete` audit row, run status → Completed on screen, then Start new run). Apply DB also has
+a collapsible **release-branch browser** (`git/tree` + `git/file`) to walk the pulled branch tree and read any
+CHG/package/proc file on screen — verify a package exists / has the latest code before running (the browser is
+empty until a branch is pulled, then reflects that exact branch). Every sqlplus run (Apply/Reset/Trigger) streams
+**live** into a **collapsible, dockable sqlplus-style console** — output appears line-by-line as it executes
+(`run-sql-stream`, Server-Sent Events; the dev mock animates the same), with collapse / expand / maximize /
+Download. Each step shows its **last-run timestamp + run time**, badges **In progress** while running, blocks
+Apply with a validation popup when no script/DB is picked, and prompts a confirm when re-running an already-complete
+step. File copy shows a per-item log (files copied / failure detail) and writes a **durable per-item audit row**
+(`copy_item`) as each item completes — so a crash / dropped connection mid-copy still records exactly what was
+copied, and the step can be safely re-run (copies overwrite = idempotent). A `*` **folder item is all-or-nothing**:
+if it fails partway (e.g. 450/500) the whole item is errored ("the WHOLE folder must be re-copied") and re-running
+re-copies the entire folder — there is no file-level resume. Because the run + step statuses live in
+Oracle (`run/current`), a **page refresh restores the run** rather than losing it: an in-progress run shows a
+**resume gate** (started-by / when) with **Resume** (opens the workflow) or **Start fresh** (abandons the old run,
+logged) — the steps stay hidden until resumed. A header **Refresh-state** button re-reads the backend after a drop.
+**Concurrency:** each step action first writes a durable `in_progress` marker; the server rejects a second start of
+the same step (409) while it runs, and every action records **who did it** (`performed_by`, shown per step + in the
+log) — so multiple operators can share a run without stepping on each other. A step stuck `in_progress` past
+`REGRESSION_STEP_STALE_MINUTES` (crash between start and result) is flagged **stale** and offers a logged **Unlock**
+(→ error, re-runnable) so the run can't deadlock. Below it, two monitors: **Monitoring Batches** (a
+`database.fetch_batch_monitor` query, scoped to the three batch schedulers — Group / CIB Batch / Retail Batch) and
+**Regression Activity** (the `ols_regression_log` audit). Backend
+[`regression_api.py`](backend/regression_api.py) + `regression_ops.py` (git/sqlplus/copy) + `database.py`;
+tables `sql/regression_setup.sql`; config in `.env` (git repo/auth, `REGRESSION_LOG_DIR`, manifest path).
+**Server prereqs: git + sqlplus.** The sqlplus password is fed over STDIN and **masked** in every log; it is
+resolved server-side — from config, or at runtime from **CyberArk** ([`cyberark.py`](backend/cyberark.py), CCP
+client-cert call by AppID; `CYBERARK_*` in `.env`) — so it is never typed in the UI or visible in the network tab.
+Full detail: memory `regression-screen`.
 
 **Local testing** (`USE_MOCK`/access mocked): flip `devRoles` in
 [`environment.ts`](src/environments/environment.ts) to ADMIN/READ/SALT — the mock

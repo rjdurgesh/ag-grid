@@ -13,11 +13,13 @@ import {
   prettifyHeader,
   RetrieveEvent,
   RollDataEvent,
+  RollResult,
   RowsDeletedEvent,
   RowsUpdatedEvent
 } from '../../components/grid-data/grid-data.model';
 import { ApiDataService } from '../../shared/api-data.service';
 import { API, ConfigScope, apiEnv } from '../../shared/api-endpoints';
+import { environment } from '../../../environments/environment';
 import { previousWeekdayIso } from '../../shared/date-utils';
 import { CellDataType, ColumnMeta, TableContent, TableContentResponse, TabularData } from '../../shared/models';
 
@@ -175,11 +177,28 @@ export abstract class ConfigScopeBase implements OnInit {
   readonly canWriteRow = (row: Record<string, unknown>): boolean =>
     this.rbac.canWriteTable(this.scope, String(row[this.tableNameKey] ?? ''), String(row[this.categoryKey] ?? ''));
 
-  /** In-page tab: config grid, MISC activity, or the S-Studio SQL console. */
-  readonly activeTab = signal<'config' | 'misc' | 'sstudio'>('config');
+  /** In-page tab: config grid, MISC activity, S-Studio, or the Regression workflow. */
+  readonly activeTab = signal<'config' | 'misc' | 'sstudio' | 'regression'>('config');
+
+  /** Brief entrance loader on tab switch, so MISC / S-Studio / Regression match the config page's
+   *  loading style (the config grid has its own loader, so it's excluded). */
+  readonly tabLoading = signal(false);
+  private tabLoadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  selectTab(tab: 'config' | 'misc' | 'sstudio' | 'regression'): void {
+    if (this.activeTab() === tab) { return; }
+    this.activeTab.set(tab);
+    if (this.tabLoadTimer) { clearTimeout(this.tabLoadTimer); this.tabLoadTimer = null; }
+    if (tab === 'config') { this.tabLoading.set(false); return; }
+    this.tabLoading.set(true);
+    this.tabLoadTimer = setTimeout(() => { this.tabLoading.set(false); this.tabLoadTimer = null; }, 450);
+  }
 
   /** S-Studio tab visible ONLY for authorised operators (`ols_ops_access.can_sql`). */
   readonly canSql = computed(() => this.rbac.canSql());
+
+  /** Regression tab visible only in DEV/STG (rendered only on the CIB scope screen). */
+  readonly showRegression = computed(() => environment.appEnv === 'DEV' || environment.appEnv === 'STG');
 
   /** The config scope, exposed for the S-Studio child (`[scope]`). */
   get scopeKey(): ConfigScope {
@@ -389,23 +408,33 @@ export abstract class ConfigScopeBase implements OnInit {
    * CIB / RETAIL → `OLS`).
    */
   onRollData(event: RollDataEvent, grid: GridDataComponent): void {
-    grid.setRollNotice('Processing roll…');
     this.api
-      .post<{ status?: string; message?: string; rolledRows?: number }>(API.config.rollData(this.scope), {
+      .post<RollResult & { status?: string }>(API.config.rollData(this.scope), {
         rolled_by: this.actor,
         tablespace: this.scope === 'group' ? 'OLS_RPT32' : 'OLS',
         table_name: event.tableName,
-        from: event.from,
-        to: event.to
+        source_date: event.source,
+        target_dates: event.targets
       })
       .subscribe({
-        // The API returns { status, message } — show `message` as plain text.
-        // Coerce defensively so a missing/odd body never renders as "[object Object]".
         next: (res) => {
-          const msg = typeof res?.message === 'string' && res.message.trim() ? res.message : null;
-          grid.setRollNotice(msg ?? `Rolled ${event.tableName} (${res?.rolledRows ?? 0} rows).`);
+          if (res && Array.isArray(res.targets)) {
+            grid.setRollResult(res);
+          } else {
+            grid.setRollNotice('Roll completed.');
+          }
         },
-        error: () => grid.setRollNotice('Roll failed. Please try again.')
+        error: (err) => {
+          const e = err as { error?: { detail?: string; details?: string; message?: string } | string; message?: string; statusText?: string };
+          const b = e?.error;
+          const msg =
+            (typeof b === 'string' && b) ||
+            (typeof b === 'object' && (b?.detail || b?.details || b?.message)) ||
+            e?.message || e?.statusText || 'The roll could not be completed.';
+          grid.setRollNotice('Roll failed — see the error details.');
+          // Rich error dialog with Copy + Email-to-OLS-dev (environment.supportEmail), same as insert/update/delete.
+          this.errorReport.show({ title: 'Rollover failed', message: String(msg), userId: this.actor });
+        }
       });
   }
 }

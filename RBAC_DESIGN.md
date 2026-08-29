@@ -25,18 +25,26 @@ then READ, then SALT):
 | **READ** | **only screens it's granted** | only where a grant says so | **opt-in** |
 | **SALT** | **Config Ops only** (whatever config it's granted) | only where granted | opt-in, config-only |
 
-**Everything is opt-in.** A user sees a screen ONLY if a grant touches it — there is **no
-"default read-all"**. A valid login (active in `ols_users`) with **no grants** sees nothing but a
-friendly **"No features assigned — reach out to the OLS Team"** page (`/no-access`, wired via
-`RbacService.hasAnyAccess()` = active AND ≥1 granted screen).
+**Two default screens for everyone; the rest opt-in.** Every **active** user (in `ols_users`,
+`LGCL_DEL_FLG='N'`) sees **Log Analytics** and **Infrastructure Health** by default — these two are
+**ungated** (no RBAC, all servers / all apps shown). Everything else (Config Ops, Service Console,
+Oracle Command Center) is opt-in: visible ONLY if a grant touches it — there is no "default read-all"
+for those.
+
+**Two No-Access cases** (both share `/no-access`, which shows the right message via
+`RbacService.snapshot().active`):
+1. **Not provisioned** — the UID is not an active user in `ols_users` (gate 1 fail) →
+   *"You don't have access to OLS — submit a provisioning request."*
+2. **Signed in, no features** — active but nothing assigned. With the two default screens above this
+   effectively never happens for an active user, but the message *"No features assigned yet — reach
+   out to the OLS Team"* remains as a fallback.
 
 - **ADMIN** — `IS_ADMIN='Y'` in `ols_users` → full access, grants ignored.
-- **READ** — sees exactly the screens granted (a `SCREEN` grant, a `SERVER` grant → Log Analytics,
-  or a config grant → Config Ops). **Infra Health and Service Console are now opt-in too** — grant
-  `SCREEN / infra_health / * / READ` (or `service_console`) to reveal them. Home appears whenever the
-  user has ≥1 feature, and shows only the sections they can access (RBAC on Home).
-- **SALT** — Config-Ops-only persona: even a stray non-config grant is ignored; it sees only the
-  config scopes/tables granted to it.
+- **READ** — Log Analytics + Infra Health by default; plus exactly the opt-in screens granted (a
+  `SCREEN` grant, or a config grant → Config Ops, a `DB` grant → OCC). Home appears whenever the user
+  has ≥1 feature and shows only the sections they can access (RBAC on Home).
+- **SALT** — Config-Ops-only persona (plus the two default screens): stray non-config grants ignored;
+  sees only the config scopes/tables granted to it.
 
 **How a screen becomes visible** (READ/SALT): a `SCREEN` grant for it · a `SERVER` grant (→ Log
 Analytics) · a `TABLE`/`TABLE_CATEGORY`/`SCREEN` grant in a `config_ops:<scope>` (→ Config Ops).
@@ -94,9 +102,9 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
 | Screen | Visible when… | Write | Resource control |
 |---|---|---|---|
 | **Home** | the user has ≥1 feature | — | RBAC-filtered: shows only the Infra / Service / Oracle sections the user can access; nothing → a "your tools are in the sidebar" note |
-| **Log Analytics** | a `SERVER` grant exists | (read-only screen) | **Servers opt-in** — user sees only granted `SERVER` rows |
-| **Config Ops** (group/cib/retail) | a config grant exists in that scope | per-**table** (`TABLE`/`TABLE_CATEGORY` = `WRITE`) → the content modal's add/edit/delete/duplicate | **Tables opt-in** — category grant + per-table overrides |
-| **Infra Health** | an `APP` grant (or `SCREEN / infra_health` = all apps) | — | **Apps opt-in** — user sees only granted `APP` rows (OLS_GROUP / OLS_CIB / …) |
+| **Log Analytics** | **always (ungated)** — every active user | (read-only screen) | **No RBAC** — all servers shown to everyone |
+| **Config Ops** (group/cib/retail) | a config grant exists in that scope | per-**table** (`TABLE`/`TABLE_CATEGORY` = `WRITE`) → the content modal's add/edit/delete/duplicate | **Tables opt-in** — category grant + per-table overrides. A scope with no grant (e.g. RETAIL) is fully hidden |
+| **Infra Health** | **always (ungated)** — every active user | — | **No RBAC** — all apps shown to everyone |
 | **Service Console** | a `SCREEN` or `APP` grant | `SCREEN … WRITE` → start/stop buttons | **Apps opt-in** — an `APP / service_console` grant limits which apps' services show (`SCREEN` grant = all apps) |
 | **Oracle Command Center** | a `DB` grant (or `SCREEN / oracle_command_center` = all DBs) | **per-DB** — kill/apply on a DB needs `DB … WRITE` for that DB | **DBs opt-in + per-DB level** (READ tab = view-only, WRITE tab = killable). **Sections**: `SECTION … DENY` hides a panel — scope `oracle_command_center` = every DB, `oracle_command_center:<db>` = that DB only. Section keys: space / top / topidx / idxhealth / locks / blocking / temp / sessions / sql_intelligence |
 
@@ -230,10 +238,12 @@ for the ops-admin gate (`is_ops_admin`), so User Management is reachable.
 A dedicated **Administration → User Management** screen lets an *ops-admin* grant/revoke any
 `ols_app_access` row for any active OLS user, and manage the ops-admin list itself — no SQL needed.
 
-**Super-exclusive gate — `ols_ops_access`.** A third, deliberately tiny table (`username`,
-`is_active`) is the ONLY thing that reveals User Management. A UID in it (active) sees the screen;
-**everyone else — including full `IS_ADMIN` users — does not.** It is independent of the base role.
-The snapshot carries `is_ops_admin`; `RbacService.canView('user_management')` and `opsAdminGuard`
+**Super-exclusive gate — `ols_ops_access`.** A third, deliberately tiny table of *privileged
+operators* (`username`, `is_active`, **`can_users`**, **`can_sql`**) is the ONLY thing that reveals
+these features. **User Management** shows only when the row is active with **`can_users='Y'`**;
+**everyone else — including full `IS_ADMIN` users — does not.** `can_users` and `can_sql` (S-Studio,
+§12) are **independent** — an operator can have either alone (e.g. S-Studio without super-admin). It
+is independent of the base role. The snapshot carries `is_ops_admin`; `RbacService.canView('user_management')` and `opsAdminGuard`
 (NOT the normal `rbacGuard`) both read it. DDL + bootstrap seed: `backend/sql/ops_access_setup.sql`.
 Bootstrap by SQL once (chicken-and-egg is intentional); after that the screen can add more ops-admins.
 
@@ -270,3 +280,41 @@ Code: data `backend/database.py` (`fetch_is_ops_admin`/`fetch_ops_admins`/`fetch
 API `backend/access_api.py` (`build_catalogue` + the `/admin/*` routes); UI
 `src/app/views/user_management/*` + `auth/ops-admin.guard.ts` + `UserManagementService`. Full grant
 patterns (the SQL equivalents of every form action) remain in `backend/sql/access_examples.sql`.
+
+## 12. S-Studio — the Config Ops SQL console
+
+A raw SQL / PL-SQL worksheet inside Config Ops (a third in-page tab **Config | MISC | S-Studio** on
+each scope screen). An operator can run any query, DML, anonymous block, or deploy a
+package/procedure/function against ONE database.
+
+**Exclusive gate — `ols_ops_access.can_sql`.** S-Studio is visible only to an operator whose
+`can_sql='Y'`. This is **independent of User Management (`can_users`)** — you can grant S-Studio
+**without** making the person a super-admin (and vice-versa). Assign it from the User Management
+"Who can manage access" panel (the **S-Studio** toggle → `/admin/ops` `sql_on`/`sql_off`) or by SQL.
+Snapshot flag `can_sql`; `RbacService.canSql()`; the tab is gated by `canSql()` and the execute
+endpoint re-checks it server-side.
+Because S-Studio lives *inside* a config scope screen, an operator reaches it only on the scopes they
+can already see — i.e. `can_sql` **plus** a config grant in that scope. (This keeps scope visibility
+strictly grant-driven — a scope with no grant, e.g. RETAIL, stays hidden even for an S-Studio operator.)
+
+**DB dropdown** — the databases in the current config scope, from `db_configs` filtered by key prefix
+(`group`→[group], `cib`→[cib_batch, cib_reporting], …). A new DB (e.g. `group_reporting`) appears
+automatically — no code change. Same keys OCC passes.
+
+**Execution** (`POST /api/sql_studio/execute` → `database.execute_sql`):
+- SELECT → columns + rows (capped at `SQL_STUDIO_MAX_ROWS`, default 1000).
+- DML/DDL/PL-SQL/deploy → a status line; **Oracle errors (ORA-xxxxx) are returned as text and shown in
+  the panel** (not a generic popup).
+- **Manual commit** — the connection has autocommit OFF and is closed after each run, so uncommitted
+  DML rolls back; include `COMMIT;` in your script to persist (DDL auto-commits in Oracle regardless).
+- **Every run asks for confirmation**, showing the target database.
+
+**Security (mandatory).** S-Studio runs writes/DDL, so it MUST use a **privileged connection, SEPARATE
+from the read-only OCC monitor** — wire `app.state.sql_db_configs` (`{scope_key: privileged_conn}`); if
+left empty in prod it falls back to `db_configs` and logs a warning. The execute endpoint re-checks
+`can_sql` from the token server-side (UI hiding is not the gate). No auto-commit; `SQL_STUDIO_MAX_ROWS`
+caps result size. DDL to add the column: `ops_access_setup.sql` (`can_sql CHAR(1) DEFAULT 'N'`).
+
+Code: `backend/sql_studio_api.py` (`/databases`, `/execute`, `can_sql` gate) + `database.execute_sql`
+(+ `fetch_can_sql` / `ops_admin_set_sql`); UI `src/app/views/config_ops_console/sql_studio/*`, the
+`S-Studio` tab in each `config_ols_*` screen, `canSql` in `config-scope.base.ts` and `rbac.service.ts`.

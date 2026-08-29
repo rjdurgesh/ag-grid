@@ -32,9 +32,11 @@ import {
 } from '@coreui/angular';
 
 import { LoaderComponent } from '../loader/loader.component';
+import { ConfigUploadComponent } from './upload/config-upload.component';
 
 import { previousWeekdayIso } from '../../shared/date-utils';
-import { CellDataType, TableContent } from '../../shared/models';
+import { ConfigScope } from '../../shared/api-endpoints';
+import { CellDataType, TableContent, UploadResult } from '../../shared/models';
 import { ConfirmService } from '../confirm/confirm.service';
 import { DetailRowComponent } from './cell-renderers/detail-row.component';
 import { RefreshHeaderComp, actionsRenderer, arrowRenderer, eyeRenderer } from './grid-cell-renderers';
@@ -53,6 +55,7 @@ import {
   ROW_ID,
   RetrieveEvent,
   RollDataEvent,
+  RollResult,
   RowUpdate,
   RowsDeletedEvent,
   RowsUpdatedEvent,
@@ -65,6 +68,23 @@ const DEFAULT_MODAL_ACTIONS: GridAction[] = [
   { id: 'duplicate', label: 'Duplicate', color: 'secondary' },
   { id: 'delete', label: 'Delete', color: 'danger' }
 ];
+
+/** Every calendar date from `start` to `end` inclusive as `YYYY-MM-DD` (capped at 366). Local-time
+ *  formatting (no `toISOString`) so a timezone offset never shifts the date by a day. */
+function expandDates(start: string, end: string): string[] {
+  if (!start) { return []; }
+  const fmt = (d: Date): string =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let s = new Date(`${start}T00:00:00`);
+  let e = new Date(`${end || start}T00:00:00`);
+  if (isNaN(s.getTime()) || isNaN(e.getTime())) { return [start]; }
+  if (e < s) { [s, e] = [e, s]; }
+  const out: string[] = [];
+  for (const d = new Date(s); d <= e && out.length < 366; d.setDate(d.getDate() + 1)) {
+    out.push(fmt(d));
+  }
+  return out;
+}
 
 /** Serialise table content to RFC-4180 CSV (quotes doubled, fields escaped). */
 function toCsv(content: TableContent): string {
@@ -103,7 +123,8 @@ function toCsv(content: TableContent): string {
     DropdownToggleDirective,
     DropdownMenuDirective,
     DropdownItemDirective,
-    LoaderComponent
+    LoaderComponent,
+    ConfigUploadComponent
   ],
   host: { '[attr.data-ag-theme-mode]': 'themeMode()' }
 })
@@ -140,6 +161,8 @@ export class GridDataComponent {
   readonly getExpand = input<(row: Record<string, unknown>) => Observable<TableContent>>();
   /** Optional stable id field (falls back to row index). */
   readonly idField = input<string>();
+  /** Config scope (group/cib/retail) — passed to the CSV upload dialog. */
+  readonly scope = input<ConfigScope>('cib');
   /** Row field used for the modal title + as the table name in API payloads. */
   readonly titleField = input('table_name');
   /** Row field holding the DB row identifier (Oracle rowid) for update/delete. */
@@ -241,11 +264,25 @@ export class GridDataComponent {
 
   // --- Roll Data panel ------------------------------------------------------
   readonly rollOpen = signal(false);
-  readonly rollFrom = signal('');
-  readonly rollTo = signal('');
+  readonly rollFrom = signal('');       // source (From) date
+  readonly rollTo = signal('');         // target start date
+  readonly rollToEnd = signal('');      // target end date (for a range / 2 discrete dates)
+  readonly rollRange = signal(false);   // expand Target Start..End to every date in between
+  readonly rollBusy = signal(false);
+  readonly rollResult = signal<RollResult | null>(null);
   readonly rollNotice = signal<string | null>(null);
-  /** Placeholder notice for the not-yet-built Upload Data feature. */
+  /** Target (To) dates: the range expanded, or the discrete start/end (deduped, sorted). */
+  readonly rollTargets = computed(() => {
+    const s = this.rollTo();
+    const e = this.rollToEnd();
+    if (!s) { return []; }
+    if (this.rollRange()) { return expandDates(s, e || s); }
+    return [...new Set([s, ...(e && e !== s ? [e] : [])])].sort();
+  });
+  /** Notice shown after a CSV load (success/info). */
   readonly uploadNotice = signal<string | null>(null);
+  /** The CSV Upload & Load dialog is open. */
+  readonly uploadOpen = signal(false);
 
   /** Resolve CoreUI colour mode → ag-grid theme mode. */
   readonly themeMode = computed<'light' | 'dark'>(() => {
@@ -653,43 +690,51 @@ export class GridDataComponent {
     URL.revokeObjectURL(url);
   }
 
-  /** Upload Data is a placeholder for now. */
+  /** Open the CSV Upload & Load dialog for the table currently open in the modal. */
   uploadData(): void {
     this.rollOpen.set(false);
-    this.uploadNotice.set('Upload Data is under development — this feature is coming soon.');
+    this.uploadNotice.set(null);
+    this.uploadOpen.set(true);
+  }
+
+  /** A load finished — refresh the modal grid so the new data shows, and notice it. */
+  onUploadLoaded(result: UploadResult): void {
+    this.uploadOpen.set(false);
+    const replaced = result.rows_deleted ? `, replaced ${result.rows_deleted}` : '';
+    this.uploadNotice.set(`Loaded ${result.rows_loaded} row(s)${replaced} into ${this.modalTitle()}.`);
+    const row = this.modalRow();
+    if (row) { this.loadModalContent(row); }
   }
 
   toggleRollPanel(): void {
     this.uploadNotice.set(null);
     this.rollNotice.set(null);
+    this.rollResult.set(null);
     this.rollOpen.update((open) => !open);
   }
 
-  onRollFromChange(event: Event): void {
-    this.rollFrom.set((event.target as HTMLInputElement).value);
-  }
+  onRollFromChange(event: Event): void { this.rollFrom.set((event.target as HTMLInputElement).value); }
+  onRollToChange(event: Event): void { this.rollTo.set((event.target as HTMLInputElement).value); }
+  onRollToEndChange(event: Event): void { this.rollToEnd.set((event.target as HTMLInputElement).value); }
+  onRollRangeChange(event: Event): void { this.rollRange.set((event.target as HTMLInputElement).checked); }
 
-  onRollToChange(event: Event): void {
-    this.rollTo.set((event.target as HTMLInputElement).value);
-  }
-
-  /** Fire the roll request; the host view performs the API call. */
+  /** Fire the roll request (source date → one or more target dates); the host performs the API call. */
   processRoll(): void {
     const row = this.modalRow();
-    const from = this.rollFrom();
-    const to = this.rollTo();
-    if (!row || !from || !to) {
-      this.rollNotice.set('Please choose both a From and a To date.');
-      return;
-    }
+    const source = this.rollFrom();
+    const targets = this.rollTargets().filter((d) => d !== source);   // rolling onto the source is a no-op
+    if (!row || !source) { this.rollNotice.set('Choose a source (From) date.'); return; }
+    if (!targets.length) { this.rollNotice.set('Choose at least one target (To) date different from the source.'); return; }
     this.rollNotice.set(null);
-    this.rollData.emit({ row, tableName: this.modalTitle(), from, to });
+    this.rollResult.set(null);
+    this.rollBusy.set(true);
+    this.rollData.emit({ row, tableName: this.modalTitle(), source, targets });
   }
 
-  /** Called by the host to surface the roll result. */
-  setRollNotice(message: string): void {
-    this.rollNotice.set(message);
-  }
+  /** Host surfaces the structured roll result. */
+  setRollResult(result: RollResult): void { this.rollBusy.set(false); this.rollNotice.set(null); this.rollResult.set(result); }
+  /** Host surfaces a status/error message. */
+  setRollNotice(message: string): void { this.rollBusy.set(false); this.rollNotice.set(message); }
 
   // --- Retrieve (date filter) ----------------------------------------------
   onRetrieveStartChange(event: Event): void {

@@ -40,6 +40,8 @@ export interface AppEnvironment {
    * (ADMIN + OMT-TECHNICAL/OMT-BOTH → can kill / start / stop; else view-only).
    */
   devRoles: { is_admin: boolean; is_read: boolean; is_salt: boolean; label?: string };
+  /** Dev-only access-scenario override for on-screen validation (mock mode). '' → use devRoles. */
+  devScenario: string;
   /**
    * Per-screen mock control — the flexible alternative to the single global switch. Maps each
    * screen's API path-prefix to whether that screen is MOCKED (`true` → in-app dummy data) or
@@ -51,12 +53,66 @@ export interface AppEnvironment {
   apiMocks: Record<string, boolean>;
 }
 
+// ---------------------------------------------------------------------------
+// Runtime environment resolution — ONE build runs in DEV / STG / PROD.
+//
+// The app decides which environment it is from the BROWSER HOSTNAME, so the SAME built bundle
+// deploys to all three with NO per-env build and NOTHING to swap. The API is same-origin:
+// `ui_server.py` serves the UI and proxies `/api/*` to that env's backend, so the app just calls
+// `/api/...` (no cross-origin URL to configure). Local dev (`ng serve` on localhost) is the only
+// special case — it talks to the FastAPI backend on :8000 and uses the in-app mock.
+//
+//   ►► EDIT `ENV_BY_HOST` below with your real hostnames. ◄◄
+// ---------------------------------------------------------------------------
+const HOST = (typeof window !== 'undefined' && window.location ? window.location.hostname : '').toLowerCase();
+const IS_LOCAL = HOST === 'localhost' || HOST === '127.0.0.1' || HOST === '';
+
+/** hostname substring → environment (first match wins; unknown host → PROD). Substring match so
+ *  `www.`, bare domain and any sub-domain all resolve. */
+const ENV_BY_HOST: ReadonlyArray<readonly [string, AppEnv]> = [
+  ['abc.dev.com', 'DEV'],
+  ['abc.stg.com', 'STG'],
+  ['abc.group.com', 'LIVE'],   // production
+];
+
+/**
+ * BACKUP override — force the environment regardless of hostname. Use only when a host can't be
+ * matched by `ENV_BY_HOST` (normally leave empty). Two ways, both optional:
+ *   1. Set `FORCE_ENV` to 'DEV' | 'STG' | 'LIVE' (baked into this build — makes it env-specific).
+ *   2. Have the deployment drop `<script>window.__OLS_ENV__='STG'</script>` into the served
+ *      `index.html` — no rebuild, keeps one bundle. This wins over `FORCE_ENV`, which wins over
+ *      hostname detection.
+ */
+const FORCE_ENV: '' | AppEnv = '';
+
+function forcedEnv(): AppEnv | '' {
+  const injected = (typeof window !== 'undefined'
+    ? (window as unknown as { __OLS_ENV__?: string }).__OLS_ENV__ : '') || '';
+  const v = String(injected || FORCE_ENV || '').toUpperCase();
+  return (v === 'DEV' || v === 'STG' || v === 'LIVE') ? (v as AppEnv) : '';
+}
+
+function detectEnv(host: string): AppEnv {
+  for (const [match, env] of ENV_BY_HOST) {
+    if (host.includes(match)) {
+      return env;
+    }
+  }
+  return 'LIVE';                // unknown host → assume PROD (safest: real backend, no mock)
+}
+
+// Priority: explicit override → localhost (dev) → hostname detection.
+const RESOLVED_ENV: AppEnv = forcedEnv() || (IS_LOCAL ? 'DEV' : detectEnv(HOST));
+/** Deployed → '' = same-origin (ui_server proxies /api to this env's backend). Local → :8000. */
+const RESOLVED_API_BASE = IS_LOCAL ? 'http://localhost:8000' : '';
+
 export const environment: AppEnvironment = {
-  production: false,
-  useMock: true,
-  // Points at the FastAPI backend (backend/). Change for your host.
-  apiBaseUrl: 'http://localhost:8000',
-  appEnv: 'DEV',
+  production: !IS_LOCAL,
+  // Mock ONLY in local dev; every deployed env hits the real backend (same-origin via ui_server).
+  useMock: IS_LOCAL,
+  // Same-origin when deployed ('' → calls go to /api/… which ui_server proxies); :8000 locally.
+  apiBaseUrl: RESOLVED_API_BASE,
+  appEnv: RESOLVED_ENV,
   supportEmail: 'abc@gmail.com',
   // Auto-refresh cadence (minutes) for the two monitoring screens. Must be one of the
   // dropdown options offered on each page (5 / 10 / 15 / 30).
@@ -67,14 +123,24 @@ export const environment: AppEnvironment = {
   name: 'Alex Morgan',
   isSsoEnabled: false,
   devRoles: { is_admin: true, is_read: false, is_salt: false, label: 'OMT-BOTH' },
-  // Per-screen mock switches — override the global `useMock` above for that screen's API
-  // prefix. false = hit the real FastAPI backend; true = in-app mock. Anything not listed
-  // here falls back to `useMock`. Flip a single screen to develop/test it in isolation.
-  apiMocks: {
+  /**
+   * Dev-only: force a specific ACCESS SCENARIO so you can validate on screen exactly what each kind
+   * of user sees (mock mode only). Empty '' → use `devRoles` as before. You can also switch WITHOUT
+   * rebuilding by running in the browser console:
+   *   localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
+   *   localStorage.removeItem('ols.devScenario'); location.reload();   // back to devRoles
+   * Scenarios (see mock-api.interceptor DEV_SCENARIOS): 'admin' | 'defaults_only' | 'not_provisioned'
+   * | 'config_group_cib' | 'occ_group_write' | 'service_console' | 'ops_admin' | 'sql_studio'.
+   */
+  devScenario: '' as string,
+  // Per-screen mock switches — LOCAL DEV ONLY (deployed envs never mock, so this is {} there).
+  // Override the global `useMock` for that screen's API prefix: false = hit the real FastAPI
+  // backend on :8000; true = in-app mock. Flip a single screen to develop/test it in isolation.
+  apiMocks: IS_LOCAL ? {
     '/api/log/':            false, // Log Analytics Hub       → live backend
     '/api/infra_health':    false, // Infrastructure Health   → live backend
     '/api/service_console': false, // Service Console         → live backend
     '/api/oracle_cc':       false, // Oracle Command Center   → live backend
     '/api/config':          true,  // Config Ops Console      → in-app mock
-  },
+  } : {},
 };

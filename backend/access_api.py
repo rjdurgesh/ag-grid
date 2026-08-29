@@ -62,9 +62,9 @@ _CONFIG_PREFIX = "config_ops:"
 # Static registries for the resources a new screen/section still registers once (see §3 of the
 # design). Data-driven lists (servers from ols_server_log_config, OCC DBs from db_configs) are
 # merged in at request time by build_catalogue(); config tables stay category-driven + free-text.
+# Log Analytics + Infrastructure Health are visible to everyone (ungated), so they are NOT grantable
+# here. Only the opt-in screens appear as grantable "screen visibility".
 SCREEN_CATALOGUE = [
-    {"key": "log_analytics", "label": "Log Analytics", "write_capable": False},
-    {"key": "infra_health", "label": "Infrastructure Health", "write_capable": False},
     {"key": "service_console", "label": "Service Console", "write_capable": True},
     {"key": "oracle_command_center", "label": "Oracle Command Center", "write_capable": True},
 ]
@@ -233,7 +233,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         "username": username, "display_name": _display_name(identity),
         "email": (identity.get("emailid") or "").strip(),
         "is_ops_admin": bool(is_ops_admin),
-        "can_sql": bool(can_sql and is_ops_admin),
+        "can_sql": bool(can_sql),          # independent of is_ops_admin — S-Studio can be granted alone
     }
 
     # ADMIN: everything, grants ignored.
@@ -409,6 +409,18 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         oracle_dbs.clear(); all_dbs = False; denied_dbs.clear()
         denied_servers.clear()
 
+    # Log Analytics + Infrastructure Health are visible to EVERY active user — no RBAC (see
+    # RBAC_DESIGN §2). All servers / all infra apps show; SERVER and APP/infra_health grants are
+    # ignored (kept only for backward compatibility). This runs for all roles incl. SALT.
+    granted_screens.add("log_analytics")
+    granted_screens.add("infra_health")
+    all_servers = True
+    all_infra_apps = True
+    servers = []
+    infra_apps = set()
+    denied_servers.clear()
+    denied_infra_apps.clear()
+
     screens = sorted(granted_screens)
     if config_scopes or config_all:
         screens.append("config_ops_console")
@@ -455,7 +467,8 @@ def access_me(request: Request, body: AccessQuery) -> dict:
         active = _is_active(identity)
         grants = database.fetch_user_grants(cfg, body.username, body.app_env) if active else []
         is_ops = database.fetch_is_ops_admin(cfg, body.username) if active else False
-        can_sql = database.fetch_can_sql(cfg, body.username) if is_ops else False
+        # can_sql (S-Studio) is independent of is_ops_admin (User Management) — fetch it on its own.
+        can_sql = database.fetch_can_sql(cfg, body.username) if active else False
         return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, can_sql=can_sql)
     except Exception:
         logger.exception("access/me failed for %s", body.username)
@@ -625,14 +638,14 @@ def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
 
 @router.post("/admin/ops")
 def admin_ops(request: Request, body: OpsAdminBody) -> dict:
-    """Manage the ops-admin gate itself (`ols_ops_access`): action = list | add | disable | enable |
-    sql_on | sql_off | remove. `add` requires an active OLS user; `disable`/`enable` flip is_active
-    (the "edit" action); `sql_on`/`sql_off` grant/revoke S-Studio (`can_sql`); `remove` hard-deletes.
-    No self-lockout guard (you can disable/remove your own UID)."""
+    """Manage the privileged-operators table (`ols_ops_access`): action = list | add | disable |
+    enable | users_on | users_off | sql_on | sql_off | remove. `add` requires an active OLS user;
+    `disable`/`enable` flip is_active; `users_on`/`users_off` grant/revoke User Management (`can_users`);
+    `sql_on`/`sql_off` grant/revoke S-Studio (`can_sql`); `remove` hard-deletes. No self-lockout guard."""
     cfg = _require_ops_admin(request, body.caller)
     action = (body.action or "").strip().lower()
     if ACCESS_USE_DUMMY:
-        row = {"username": body.caller, "is_active": "Y", "can_sql": "Y"}
+        row = {"username": body.caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y"}
         return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
     try:
         if action == "list":
@@ -652,6 +665,10 @@ def admin_ops(request: Request, body: OpsAdminBody) -> dict:
             database.ops_admin_set_sql(cfg, body.uid, True)
         elif action == "sql_off":
             database.ops_admin_set_sql(cfg, body.uid, False)
+        elif action == "users_on":
+            database.ops_admin_set_users(cfg, body.uid, True)
+        elif action == "users_off":
+            database.ops_admin_set_users(cfg, body.uid, False)
         elif action == "remove":
             database.ops_admin_delete(cfg, body.uid)
         else:

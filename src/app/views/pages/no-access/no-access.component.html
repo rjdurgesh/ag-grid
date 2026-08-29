@@ -6,12 +6,24 @@
             <path d="M5.6 5.6l12.8 12.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
           </svg>
         </div>
-        <h1 class="na__title">No features assigned yet</h1>
-        <p class="na__text">
-          You're signed in successfully — but no features have been assigned to your account for this
-          application. Please reach out to the <strong>OLS Team</strong> to get the access you need,
-          and you'll be good to go.
-        </p>
+
+        @if (notProvisioned()) {
+          <!-- Gate 1: the UID is not an active OLS user -->
+          <h1 class="na__title">You don't have access to OLS</h1>
+          <p class="na__text">
+            Your account isn't provisioned for the OLS Dashboard. Please submit the appropriate
+            provisioning request to the <strong>OLS Team</strong> to get access, and you'll be good to go.
+          </p>
+        } @else {
+          <!-- Active OLS user, but no features assigned -->
+          <h1 class="na__title">No features assigned yet</h1>
+          <p class="na__text">
+            You're signed in successfully — but no features have been assigned to your account for this
+            application. Please reach out to the <strong>OLS Team</strong> to get the access you need,
+            and you'll be good to go.
+          </p>
+        }
+
         <p class="na__contact">
           <a class="na__mail" [href]="'mailto:' + supportEmail + '?subject=OLS%20Dashboard%20-%20request%20access'">{{ supportEmail }}</a>
         </p>

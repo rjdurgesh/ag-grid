@@ -7,7 +7,7 @@
         <select id="sst-db" [ngModel]="selectedDb()" (ngModelChange)="selectedDb.set($event)"
                 [disabled]="loadingDbs() || !databases().length">
           @if (loadingDbs()) { <option>Loading…</option> }
-          @for (d of databases(); track d.key) { <option [value]="d.key">{{ d.label }} ({{ d.key }})</option> }
+          @for (d of databases(); track d.key) { <option [value]="d.key">{{ d.label }}</option> }
         </select>
       </div>
     </div>

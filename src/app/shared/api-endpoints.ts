@@ -82,6 +82,29 @@ export const API = {
     }
   },
   /**
+   * Regression screen (CIB, DEV/STG only). All POST; `caller` re-checked server-side. See regression_api.py.
+   */
+  regression: {
+    runCurrent: `${API_BASE_URL}/api/regression/run/current`,
+    runStart: `${API_BASE_URL}/api/regression/run/start`,
+    runComplete: `${API_BASE_URL}/api/regression/run/complete`,
+    stepMark: `${API_BASE_URL}/api/regression/step/mark`,
+    stepUnlock: `${API_BASE_URL}/api/regression/step/unlock`,
+    refreshDb: `${API_BASE_URL}/api/regression/refresh-db`,
+    gitBranches: `${API_BASE_URL}/api/regression/git/branches`,
+    gitPull: `${API_BASE_URL}/api/regression/git/pull`,
+    gitScripts: `${API_BASE_URL}/api/regression/git/scripts`,
+    gitTree: `${API_BASE_URL}/api/regression/git/tree`,
+    gitFile: `${API_BASE_URL}/api/regression/git/file`,
+    runSql: `${API_BASE_URL}/api/regression/run-sql`,
+    runSqlStream: `${API_BASE_URL}/api/regression/run-sql-stream`,
+    logRead: `${API_BASE_URL}/api/regression/log/read`,
+    fileCopyManifest: `${API_BASE_URL}/api/regression/file-copy/manifest`,
+    fileCopyRun: `${API_BASE_URL}/api/regression/file-copy/run`,
+    batchMonitor: `${API_BASE_URL}/api/regression/batch-monitor`,
+    activity: `${API_BASE_URL}/api/regression/activity`
+  },
+  /**
    * S-Studio — the Config Ops SQL console (ops-admins with `can_sql` only). See sql_studio_api.py.
    */
   sqlStudio: {
@@ -181,7 +204,14 @@ export const API = {
      * Returns `{ deleted: N }`.
      */
     deleteRows: (scope: ConfigScope, table: string) =>
-      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`
+      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`,
+    /**
+     * CSV UPLOAD & LOAD. Body = `{ caller, mode, delimiter, original_filename, file_content }`.
+     * Append = insert only; Replace = delete-then-insert (whole table, or by the single COB date).
+     * See UPLOAD_DESIGN.md.
+     */
+    upload: (scope: ConfigScope, table: string) =>
+      `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/upload`
   },
   infra: {
     // --- Infrastructure Health (new contract) -------------------------------
