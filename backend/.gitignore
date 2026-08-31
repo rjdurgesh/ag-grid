@@ -7,3 +7,7 @@ venv/
 
 # Local env overrides (secrets, DB creds) — never commit.
 .env
+
+# Per-server feature config (paths/URLs per environment) — commit only the *.example.json templates.
+config/*.json
+!config/*.example.json

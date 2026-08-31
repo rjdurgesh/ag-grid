@@ -160,17 +160,43 @@
           <p class="ols-roll__notice">{{ rollNotice() }}</p>
         }
         @if (rollResult(); as rr) {
-          <div class="ols-roll__result">
-            <div class="ols-roll__result-head">✓ Rollover completed — {{ rr.targets.length }} target date(s).</div>
-            <div class="ols-roll__result-src">Source <strong>{{ rr.source_date }}</strong> · {{ rr.source_count }} rows</div>
+          <div class="ols-roll__result" [class.has-fail]="rollFailed() > 0 || rollWarned() > 0">
+            @if (rollFailed() > 0) {
+              <div class="ols-roll__result-head is-fail">
+                ⚠ Rollover finished — {{ rr.targets.length - rollFailed() }} of {{ rr.targets.length }} target date(s) rolled,
+                {{ rollFailed() }} failed{{ rollWarned() > 0 ? ', ' + rollWarned() + ' with an unexpected row count' : '' }}.
+                Fix the cause and re-run the failed date(s), or reach out to the OLS dev team.
+              </div>
+            } @else if (rollWarned() > 0) {
+              <div class="ols-roll__result-head is-fail">
+                ⚠ Rollover completed — {{ rr.targets.length }} target date(s), but {{ rollWarned() }} have a row count that
+                differs from the source ({{ rr.source_count }} rows). Review the flagged date(s) below.
+              </div>
+            } @else {
+              <div class="ols-roll__result-head">✓ Rollover completed — {{ rr.targets.length }} target date(s).</div>
+            }
+            <div class="ols-roll__result-src">Source <strong>{{ rr.source_date }}</strong>@if (rr.source_count != null) { · {{ rr.source_count }} rows}</div>
             <div class="ols-roll__result-scroll">
               <table class="ols-roll__result-tbl">
-                <thead><tr><th>Target date</th><th>Rows loaded</th></tr></thead>
+                <thead><tr><th>Target date</th><th>Result</th></tr></thead>
                 <tbody>
                   @for (t of rr.targets; track t.date) {
-                    <tr [class.is-warn]="t.count !== rr.source_count">
+                    <tr [class.is-fail]="t.status === 'failed'" [class.is-warn]="rollCountMismatch(t)">
                       <td>{{ t.date }}</td>
-                      <td>{{ t.count }} <span class="ols-roll__mark">{{ t.count === rr.source_count ? '✓' : '⚠ differs from source' }}</span></td>
+                      @if (t.status === 'failed') {
+                        <td>
+                          <span class="ols-roll__mark ols-roll__mark--fail">✗ failed</span>
+                          @if (t.error) {
+                            — <button type="button" class="ols-roll__errlink" (click)="showRollError(t)"
+                                      title="Show the full error">{{ rollErrorSummary(t.error) }}</button>
+                          }
+                        </td>
+                      } @else {
+                        <td>
+                          @if (t.count != null) { {{ t.count }} rows }
+                          <span class="ols-roll__mark">{{ rollCountMismatch(t) ? '⚠ differs from source' : '✓ rolled' }}</span>
+                        </td>
+                      }
                     </tr>
                   }
                 </tbody>
@@ -247,6 +273,7 @@
 <app-config-upload
   [visible]="uploadOpen()"
   [scope]="scope()"
+  [dbSource]="modalDbSource()"
   [tableName]="modalTitle()"
   [columns]="modalContent()?.columns ?? []"
   [isCob]="modalIsCob()"

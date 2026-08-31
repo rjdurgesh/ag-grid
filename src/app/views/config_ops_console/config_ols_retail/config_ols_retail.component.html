@@ -11,6 +11,11 @@
         S-Studio
       </button>
     }
+    @if (showRegression()) {
+      <button type="button" class="scope-tab scope-tab--sql" [class.scope-tab--active]="activeTab() === 'regression'" (click)="selectTab('regression')" role="tab">
+        Regression
+      </button>
+    }
   </div>
 
   @if (activeTab() === 'config') {
@@ -43,6 +48,8 @@
     <app-loader variant="skeleton" [rows]="6" />
   } @else if (activeTab() === 'sstudio' && canSql()) {
     <app-sql-studio [scope]="scopeKey" />
+  } @else if (activeTab() === 'regression' && showRegression()) {
+    <app-ols-retail-regression />
   } @else {
     <div class="ols-card scope-misc">
       <h3 class="scope-misc__title">MISC Activity</h3>

@@ -3,14 +3,10 @@
 Kept SEPARATE from ``database.py`` (which holds SQL only): these are subprocess / filesystem
 operations. The API layer (``regression_api.py``) orchestrates them and writes the audit log.
 
-Config (backend ``.env`` / env vars):
-  REGRESSION_LOG_DIR       base dir for run logs   (e.g. D:\\ols\\regression\\logs)
-  REGRESSION_GIT_URL       release repo URL        (https://host/group/repo.git)
-  REGRESSION_GIT_AUTH      token/PAT injected into the https URL (kept server-side)
-  REGRESSION_GIT_WORKDIR   local checkout dir      (e.g. D:\\ols\\regression\\work)
-  REGRESSION_BRANCH_PREFIX release-branch filter   (default 'release/')
-  REGRESSION_SQL_SUBDIR    sub-path of the repo holding the .sql scripts (default '')
-  REGRESSION_SQLPLUS_TIMEOUT / _GIT_TIMEOUT   seconds (defaults 3600 / 120)
+Every function takes a per-scope ``cfg`` dict (from ``config_loader.regression_scope_config(scope)``)
+so cib / retail / group can each point at their OWN git repo, work dir, log dir and NAS feed path. The
+cfg keys used here: ``git_url``, ``git_auth`` (secret token, from .env), ``git_workdir``,
+``branch_prefix``, ``sql_subdir``, ``log_dir``, ``sqlplus_timeout``, ``git_timeout``.
 
 SECURITY: the git token stays server-side (never sent to the UI). The DB password is fed to sqlplus
 over STDIN (never on the command line). Only DEV/STG use this screen.
@@ -30,75 +26,73 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-LOG_DIR = os.getenv("REGRESSION_LOG_DIR", "")
-GIT_URL = os.getenv("REGRESSION_GIT_URL", "")
-GIT_AUTH = os.getenv("REGRESSION_GIT_AUTH", "")
-GIT_WORKDIR = os.getenv("REGRESSION_GIT_WORKDIR", "")
-BRANCH_PREFIX = os.getenv("REGRESSION_BRANCH_PREFIX", "release/")
-SQL_SUBDIR = os.getenv("REGRESSION_SQL_SUBDIR", "")
-SQLPLUS_TIMEOUT = int(os.getenv("REGRESSION_SQLPLUS_TIMEOUT", "3600"))
-GIT_TIMEOUT = int(os.getenv("REGRESSION_GIT_TIMEOUT", "120"))
-
 
 # --- git --------------------------------------------------------------------
 
-def _auth_url() -> str:
-    if not GIT_URL:
-        raise RuntimeError("REGRESSION_GIT_URL is not configured.")
-    if GIT_AUTH and GIT_URL.startswith("https://"):
-        return GIT_URL.replace("https://", f"https://{GIT_AUTH}@", 1)
-    return GIT_URL
+def _auth_url(cfg: dict) -> str:
+    url = cfg.get("git_url", "")
+    if not url:
+        raise RuntimeError("git_url is not configured for this scope (config/regression.json or REGRESSION_GIT_URL).")
+    auth = cfg.get("git_auth", "")
+    if auth and url.startswith("https://"):
+        return url.replace("https://", f"https://{auth}@", 1)
+    return url
 
 
-def list_release_branches() -> list[str]:
-    """Remote branches whose name starts with REGRESSION_BRANCH_PREFIX (e.g. release/*)."""
-    out = subprocess.run(["git", "ls-remote", "--heads", _auth_url()],
-                         capture_output=True, text=True, timeout=GIT_TIMEOUT)
+def list_release_branches(cfg: dict) -> list[str]:
+    """Remote branches whose name starts with the scope's branch prefix (e.g. release/*)."""
+    prefix = cfg.get("branch_prefix", "release/")
+    out = subprocess.run(["git", "ls-remote", "--heads", _auth_url(cfg)],
+                         capture_output=True, text=True, timeout=cfg.get("git_timeout", 120))
     if out.returncode != 0:
         raise RuntimeError(f"git ls-remote failed: {out.stderr.strip()[:400]}")
     names = []
     for line in out.stdout.splitlines():
         ref = line.split("\t")[-1].strip()
         name = ref.replace("refs/heads/", "")
-        if name.startswith(BRANCH_PREFIX):
+        if name.startswith(prefix):
             names.append(name)
     return sorted(names)
 
 
-def git_pull_branch(branch: str) -> str:
-    """Checkout/refresh `branch` into REGRESSION_GIT_WORKDIR. Returns the working dir."""
-    if not branch.startswith(BRANCH_PREFIX):
-        raise RuntimeError(f"Only {BRANCH_PREFIX}* branches may be pulled.")
-    if not GIT_WORKDIR:
-        raise RuntimeError("REGRESSION_GIT_WORKDIR is not configured.")
-    wd = Path(GIT_WORKDIR)
+def git_pull_branch(cfg: dict, branch: str) -> str:
+    """Checkout/refresh `branch` into the scope's work dir. Returns the working dir."""
+    prefix = cfg.get("branch_prefix", "release/")
+    workdir = cfg.get("git_workdir", "")
+    timeout = cfg.get("git_timeout", 120)
+    if not branch.startswith(prefix):
+        raise RuntimeError(f"Only {prefix}* branches may be pulled.")
+    if not workdir:
+        raise RuntimeError("git_workdir is not configured for this scope.")
+    wd = Path(workdir)
     if (wd / ".git").is_dir():
         for args in (["fetch", "origin", branch], ["checkout", branch],
                      ["reset", "--hard", f"origin/{branch}"]):
-            r = subprocess.run(["git", "-C", str(wd), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+            r = subprocess.run(["git", "-C", str(wd), *args], capture_output=True, text=True, timeout=timeout)
             if r.returncode != 0:
                 raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()[:400]}")
     else:
         wd.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["git", "clone", "--branch", branch, "--depth", "1", _auth_url(), str(wd)],
-                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        r = subprocess.run(["git", "clone", "--branch", branch, "--depth", "1", _auth_url(cfg), str(wd)],
+                           capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             raise RuntimeError(f"git clone failed: {r.stderr.strip()[:400]}")
     return str(wd)
 
 
-def list_branch_scripts() -> list[str]:
+def list_branch_scripts(cfg: dict) -> list[str]:
     """.sql files under the checked-out branch's SQL dir (repo-relative paths)."""
-    wd = Path(GIT_WORKDIR)
-    root = wd / SQL_SUBDIR if SQL_SUBDIR else wd
+    wd = Path(cfg.get("git_workdir", ""))
+    sub = cfg.get("sql_subdir", "")
+    root = wd / sub if sub else wd
     if not root.is_dir():
         return []
     return sorted(str(p.relative_to(wd)).replace("\\", "/") for p in root.rglob("*.sql"))
 
 
-def _script_abspath(rel: str) -> Path:
+def _script_abspath(cfg: dict, rel: str) -> Path:
     """Resolve a repo-relative script path, jailed to the work dir."""
-    wd = Path(GIT_WORKDIR).resolve()
+    wd = Path(cfg.get("git_workdir", "")).resolve()
     p = (wd / rel).resolve()
     if not str(p).startswith(str(wd)):
         raise RuntimeError("Script path escapes the work dir.")
@@ -107,21 +101,21 @@ def _script_abspath(rel: str) -> Path:
     return p
 
 
-def repo_info() -> dict:
+def repo_info(cfg: dict) -> dict:
     """The work dir path + the currently checked-out branch (for the browser header)."""
-    wd = Path(GIT_WORKDIR)
+    wd = Path(cfg.get("git_workdir", ""))
     branch = ""
     if (wd / ".git").is_dir():
         r = subprocess.run(["git", "-C", str(wd), "rev-parse", "--abbrev-ref", "HEAD"],
-                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                           capture_output=True, text=True, timeout=cfg.get("git_timeout", 120))
         branch = r.stdout.strip()
     return {"workdir": str(wd), "branch": branch}
 
 
-def list_repo_tree() -> list[str]:
+def list_repo_tree(cfg: dict) -> list[str]:
     """Every file in the pulled branch (repo-relative posix paths), so the UI can browse it and
     verify that referenced packages/procs exist. Excludes the .git dir."""
-    wd = Path(GIT_WORKDIR)
+    wd = Path(cfg.get("git_workdir", ""))
     if not wd.is_dir():
         return []
     return sorted(
@@ -130,9 +124,9 @@ def list_repo_tree() -> list[str]:
     )
 
 
-def read_repo_file(rel: str, max_chars: int = 400_000) -> str:
+def read_repo_file(cfg: dict, rel: str, max_chars: int = 400_000) -> str:
     """Read any file from the pulled branch (jailed to the work dir) — e.g. a CHG or a .pck package."""
-    wd = Path(GIT_WORKDIR).resolve()
+    wd = Path(cfg.get("git_workdir", "")).resolve()
     p = (wd / rel).resolve()
     if not str(p).startswith(str(wd)) or not p.is_file():
         raise RuntimeError("File not found in the pulled branch.")
@@ -173,7 +167,7 @@ def _resolve_password(db_config: dict) -> str:
         raise RuntimeError(f"Could not retrieve the DB password from CyberArk: {exc}") from exc
 
 
-def _build_sqlplus(db_config: Any, db_key: str, script_rel: str):
+def _build_sqlplus(cfg: dict, db_config: Any, db_key: str, script_rel: str):
     """Validate the connection, resolve the (never-logged) password, and build the standardized
     sqlplus command block + log path. Returns (commands, log_file, pwd). Shared by run + stream.
 
@@ -182,15 +176,16 @@ def _build_sqlplus(db_config: Any, db_key: str, script_rel: str):
     after the connect + spool, so the script's statements are visible but the connect is not."""
     if not isinstance(db_config, dict) or not (db_config.get("user") and (db_config.get("dsn") or db_config.get("connect_string"))):
         raise RuntimeError(f"No privileged connection for '{db_key}' (wire app.state.sql_db_configs).")
-    if not LOG_DIR:
-        raise RuntimeError("REGRESSION_LOG_DIR is not configured.")
+    log_dir_cfg = cfg.get("log_dir", "")
+    if not log_dir_cfg:
+        raise RuntimeError("log_dir is not configured for this scope.")
     user = db_config["user"]
     pwd = _resolve_password(db_config)
     dsn = db_config.get("dsn") or db_config.get("connect_string")
-    script = _script_abspath(script_rel)
+    script = _script_abspath(cfg, script_rel)
 
     day = datetime.now().strftime("%Y%m%d")
-    log_dir = Path(LOG_DIR) / day
+    log_dir = Path(log_dir_cfg) / day
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{script.stem}__{db_key}.log"
 
@@ -209,13 +204,13 @@ def _build_sqlplus(db_config: Any, db_key: str, script_rel: str):
     return commands, log_file, pwd
 
 
-def run_sqlplus(db_config: Any, db_key: str, script_rel: str) -> dict:
-    """Run one .sql via sqlplus against `db_config`, spooling to the standardized log dir.
+def run_sqlplus(cfg: dict, db_config: Any, db_key: str, script_rel: str) -> dict:
+    """Run one .sql via sqlplus against `db_config`, spooling to the scope's log dir.
     Returns {status, log_file, tail, rows_hint}. Password is fed over STDIN, never the cmd line."""
-    commands, log_file, pwd = _build_sqlplus(db_config, db_key, script_rel)
+    commands, log_file, pwd = _build_sqlplus(cfg, db_config, db_key, script_rel)
     try:
         proc = subprocess.run(["sqlplus", "-s", "/nolog"], input=commands,
-                              capture_output=True, text=True, timeout=SQLPLUS_TIMEOUT)
+                              capture_output=True, text=True, timeout=cfg.get("sqlplus_timeout", 3600))
     except FileNotFoundError as exc:
         raise RuntimeError("sqlplus not found on the server (install Instant Client + sqlplus).") from exc
 
@@ -241,11 +236,11 @@ def run_sqlplus(db_config: Any, db_key: str, script_rel: str) -> dict:
     return {"status": status, "log_file": str(log_file), "tail": body[-8000:], "db": db_key, "script": script_rel}
 
 
-def run_sqlplus_stream(db_config: Any, db_key: str, script_rel: str):
+def run_sqlplus_stream(cfg: dict, db_config: Any, db_key: str, script_rel: str):
     """GENERATOR variant of run_sqlplus for the LIVE console: yields sqlplus output line-by-line as
     it prints. Yields {"type":"line","text":...} per line, then one final
     {"type":"done","status":...,"log_file":...}. Password is masked on every line + in the log."""
-    commands, log_file, pwd = _build_sqlplus(db_config, db_key, script_rel)
+    commands, log_file, pwd = _build_sqlplus(cfg, db_config, db_key, script_rel)
     try:
         proc = subprocess.Popen(["sqlplus", "-s", "/nolog"], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -264,7 +259,7 @@ def run_sqlplus_stream(db_config: Any, db_key: str, script_rel: str):
                 if "ORA-" in line or "SP2-" in line:
                     saw_err = True
                 yield {"type": "line", "text": line}
-        proc.wait(timeout=SQLPLUS_TIMEOUT)
+        proc.wait(timeout=cfg.get("sqlplus_timeout", 3600))
     finally:
         try:
             if proc.stdout:
@@ -285,9 +280,9 @@ def run_sqlplus_stream(db_config: Any, db_key: str, script_rel: str):
     yield {"type": "done", "status": status, "log_file": str(log_file)}
 
 
-def read_log(log_file: str, max_chars: int = 200_000) -> str:
-    """Read a log file (jailed to REGRESSION_LOG_DIR)."""
-    base = Path(LOG_DIR).resolve()
+def read_log(cfg: dict, log_file: str, max_chars: int = 200_000) -> str:
+    """Read a log file (jailed to the scope's log dir)."""
+    base = Path(cfg.get("log_dir", "")).resolve()
     p = Path(log_file).resolve()
     if not str(p).startswith(str(base)) or not p.is_file():
         raise RuntimeError("Log file not found.")

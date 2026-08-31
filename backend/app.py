@@ -23,6 +23,7 @@ from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
 from regression_api import router as regression_router
 from config_api import router as config_router
+from docs_api import router as docs_router
 from service_console_api import router as service_console_router
 from sql_studio_api import router as sql_studio_router
 from system_api import router as system_router
@@ -118,6 +119,7 @@ app.include_router(oracle_cc_router)
 app.include_router(sql_studio_router)
 app.include_router(regression_router)
 app.include_router(config_router)
+app.include_router(docs_router)
 
 
 @app.get("/health", tags=["meta"])

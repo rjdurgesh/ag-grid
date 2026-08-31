@@ -16,7 +16,7 @@ import { olsGridTheme, olsGridThemeDark } from '../grid-data.model';
 
 /** Audit/system columns the load sets itself — excluded from the expected file header (mirrors the server). */
 const AUDIT_COLS = new Set(['INSERTED_BY', 'INSERTED_DATE', 'INSERTED_ON', 'UPDATED_BY', 'UPDATED_DATE', 'UPDATED_ON']);
-/** Known date-partition column names (the server's mapping table is authoritative). */
+/** Known date-partition column names (the server's ols_util.get_date_column is authoritative). */
 const DATE_COL_NAMES = new Set(['COB_DT', 'REPORTING_DT']);
 
 interface GridRow { __id: number; __err: Record<string, string>; [field: string]: unknown; }
@@ -25,7 +25,7 @@ interface GridRow { __id: number; __err: Record<string, string>; [field: string]
  * Config Ops CSV **Upload & Load** dialog (opened from the grid modal's 3-dot → Upload Data).
  * Pick file → auto/override delimiter → parse → strict header validation → editable, virtualized
  * preview with per-cell validation + a rejected/issues view → Append/Replace → load (server is the
- * authority, atomic). See UPLOAD_DESIGN.md.
+ * authority, atomic). See GUIDE.md (Config Ops — CSV Upload & Load).
  */
 @Component({
   selector: 'app-config-upload',
@@ -38,10 +38,13 @@ export class ConfigUploadComponent {
   private readonly svc = inject(ConfigUploadService);
   private readonly confirm = inject(ConfirmService);
   private readonly colorMode = inject(ColorModeService);
+  private readonly errorReport = inject(ErrorReportService);
+  private readonly rbac = inject(RbacService);
 
   // --- inputs (from the grid modal) -----------------------------------------
   readonly visible = input(false);
   readonly scope = input<ConfigScope>('cib');
+  readonly dbSource = input('');          // the table's physical DB (ols_cib_batch | ols_cib_reporting | …)
   readonly tableName = input('');
   readonly columns = input<ColumnMeta[]>([]);
   readonly isCob = input(false);
@@ -241,7 +244,7 @@ export class ConfigUploadComponent {
 
     this.loading.set(true);
     this.svc.upload(this.scope(), this.tableName(), {
-      mode: this.mode(), delimiter: this.usedDelimiter(),
+      mode: this.mode(), delimiter: this.usedDelimiter(), db_source: this.dbSource(),
       original_filename: this.fileName() || 'upload.csv', file_content: csv
     }).subscribe({
       next: (resp) => {
@@ -254,7 +257,18 @@ export class ConfigUploadComponent {
         this.resultMsg.set({ ok: true, text: `Loaded ${r?.rows_loaded ?? 0} row(s)${r?.rows_deleted ? `, replaced ${r.rows_deleted}` : ''}.` });
         if (r) { this.loaded.emit(r); }
       },
-      error: (e) => { this.loading.set(false); this.resultMsg.set({ ok: false, text: (e?.error?.detail || e?.message || 'Load failed.') }); }
+      error: (e) => {
+        this.loading.set(false);
+        const err = e as { error?: { detail?: string; details?: string; message?: string } | string; message?: string; statusText?: string };
+        const b = err?.error;
+        const msg =
+          (typeof b === 'string' && b) ||
+          (typeof b === 'object' && (b?.detail || b?.details || b?.message)) ||
+          err?.message || err?.statusText || 'The load could not be completed.';
+        this.resultMsg.set({ ok: false, text: 'Load failed — see the error details.' });
+        // Full DB error (e.g. ORA-14400 partition does not exist) in the rich dialog with Copy + Email-to-dev.
+        this.errorReport.show({ title: 'Upload failed', message: String(msg), userId: this.rbac.snapshot().username || environment.username });
+      }
     });
   }
 

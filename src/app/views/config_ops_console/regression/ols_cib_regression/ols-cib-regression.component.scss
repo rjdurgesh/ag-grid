@@ -145,6 +145,14 @@
 
 /* ---- controls ---- */
 .rg-row { display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
+.rg-row--between { justify-content: space-between; }
+.rg-row--tools { justify-content: flex-end; gap: 0.6rem; }   // Last-refreshed label sits just left of the refresh icon
+.rg-meta-line { margin: 0.5rem 0 0.4rem; font-size: 0.78rem; color: var(--cui-secondary-color, #6b7280); }
+.rg-grid { display: block; width: 100%; height: 460px; }
+.rg-refreshed { font-size: 0.78rem; color: var(--cui-secondary-color, #6b7280); font-variant-numeric: tabular-nums; }
+:host ::ng-deep .rg-cell--ok   { color: var(--cui-success, #1e9e3e); font-weight: 600; }
+:host ::ng-deep .rg-cell--err  { color: var(--cui-danger, #e55353); font-weight: 600; }
+:host ::ng-deep .rg-cell--warn { color: var(--cui-warning, #b8860b); font-weight: 600; }
 .rg-hint { margin: 0; font-size: 0.82rem; color: var(--cui-secondary-color, #6b7280); code { background: var(--cui-tertiary-bg, #eef0f2); padding: 0.05rem 0.35rem; border-radius: 5px; font-size: 0.9em; } }
 
 .rg select {

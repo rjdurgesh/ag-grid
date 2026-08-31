@@ -1,0 +1,8 @@
+{
+  "_comment": "Config Ops CSV Upload & Load config. Copy to config_ops.json (gitignored, per server). Any key left out falls back to the legacy CONFIG_UPLOAD_* .env var, then to a built-in default. The date column comes from the DB function ols_util.get_date_column(<table>) — no key needed. archive_dir is the NAS dir where each loaded CSV is archived.",
+  "archive_dir": "\\\\nas\\ols\\config_uploads",
+  "max_rows": 200000,
+  "max_mb": 50,
+  "batch_size": 5000,
+  "audit_columns": ["INSERTED_BY", "INSERTED_DATE", "INSERTED_ON", "UPDATED_BY", "UPDATED_DATE", "UPDATED_ON"]
+}

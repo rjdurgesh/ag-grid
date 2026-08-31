@@ -113,6 +113,17 @@ export const API = {
     /** `{ caller, db, sql }` → run the statement/script → `{ result: SqlResult }`. */
     execute: `${API_BASE_URL}/api/sql_studio/execute`
   },
+  /**
+   * Documentation Center — catalogue of wiki links + local markdown docs, plus one doc's content.
+   * Both POST (caller/username in the body, out of the URL). The server RBAC-filters technical docs.
+   * See docs_api.py / DOCS_DESIGN.md.
+   */
+  docs: {
+    /** `{ caller, app_env }` → `{ status, entries: DocEntry[] }` (already audience-filtered). */
+    catalog: `${API_BASE_URL}/api/docs/catalog`,
+    /** `{ caller, id }` → `{ status, doc: DocContent }` (raw markdown; RBAC re-checked). */
+    content: `${API_BASE_URL}/api/docs/content`
+  },
   system: {
     /** One-shot memory snapshot → `MemoryStats`. */
     memory: `${API_BASE_URL}/api/system/memory`,
@@ -174,7 +185,8 @@ export const API = {
      * `{ cols, rows }`. The nested detail grid renders whatever comes back as-is.
      */
     columnRetrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/columnretrieve`,
-    /** Roll (COB) data for a table over a date range. POST { table_name, from, to }. */
+    /** Roll (COB) data for a table. POST { rolled_by, table_name, db_source, source_date, target_dates,
+     *  tablespace }. `db_source` (the row's physical DB, e.g. ols_cib_reporting) routes the op. */
     rollData: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/roll`,
     /**
      * Table content (eye-click). POST
@@ -206,9 +218,10 @@ export const API = {
     deleteRows: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`,
     /**
-     * CSV UPLOAD & LOAD. Body = `{ caller, mode, delimiter, original_filename, file_content }`.
+     * CSV UPLOAD & LOAD. Body = `{ caller, mode, delimiter, original_filename, file_content, db_source }`.
+     * `db_source` (the row's physical DB, e.g. ols_cib_reporting) routes the load to the right DB.
      * Append = insert only; Replace = delete-then-insert (whole table, or by the single COB date).
-     * See UPLOAD_DESIGN.md.
+     * See GUIDE.md (Config Ops — CSV Upload & Load).
      */
     upload: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/upload`

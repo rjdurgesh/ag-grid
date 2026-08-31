@@ -1,0 +1,20 @@
+{
+  "_comment": "Oracle Command Center config. Copy to occ.json (gitignored, per server). Any key left out falls back to the legacy ORACLE_CC_* / SQLI_* .env var, then to a built-in default. use_dummy: true serves canned data; false runs the real *_real SQL.",
+  "use_dummy": true,
+  "schema": "OLS",
+  "warn_pct": 85,
+  "crit_pct": 90,
+  "top_child_limit": 10,
+  "temp_warn_mb": 1024,
+  "temp_crit_mb": 5120,
+  "force_down": [],
+  "sqli": {
+    "use_dummy": true,
+    "history_days": 5,
+    "allow_apply": true,
+    "misestimate_min_rows": 1000,
+    "misestimate_warn": 10,
+    "misestimate_crit": 100,
+    "stats_stale_days": 7
+  }
+}

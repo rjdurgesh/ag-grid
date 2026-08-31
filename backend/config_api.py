@@ -1,4 +1,4 @@
-"""Config Ops — CSV Upload & Load API (see UPLOAD_DESIGN.md).
+"""Config Ops — CSV Upload & Load API (see GUIDE.md §4, "Config Ops — CSV Upload & Load").
 
 The FIRST real Config-write path (the rest of Config Ops is mocked today). Validates the uploaded CSV
 against the table's real schema (data dictionary), type-casts every cell, then loads it **atomically**
@@ -15,6 +15,7 @@ import csv
 import hashlib
 import io
 import os
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -33,14 +34,18 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/config", tags=["config-upload"])
 
+# Upload settings come from config/config_ops.json (per server), falling back to CONFIG_UPLOAD_* .env
+# vars, then defaults. CONFIG_USE_DUMMY reuses the shared ACCESS_USE_DUMMY flag (stays in .env).
+import config_loader
+_CFG = config_loader.config_ops_config()
+
 CONFIG_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
-ARCHIVE_DIR = os.getenv("CONFIG_UPLOAD_ARCHIVE_DIR", "")
-MAX_ROWS = int(os.getenv("CONFIG_UPLOAD_MAX_ROWS", "200000") or "200000")
-MAX_MB = int(os.getenv("CONFIG_UPLOAD_MAX_MB", "50") or "50")
-BATCH_SIZE = int(os.getenv("CONFIG_UPLOAD_BATCH_SIZE", "5000") or "5000")
+ARCHIVE_DIR = _CFG["archive_dir"]
+MAX_ROWS = _CFG["max_rows"]
+MAX_MB = _CFG["max_mb"]
+BATCH_SIZE = _CFG["batch_size"]
 # System/audit columns the load sets itself — never expected in the file.
-AUDIT_COLUMNS = {c.strip().upper() for c in os.getenv(
-    "CONFIG_UPLOAD_AUDIT_COLUMNS", "INSERTED_BY,INSERTED_DATE,INSERTED_ON,UPDATED_BY,UPDATED_DATE,UPDATED_ON").split(",") if c.strip()}
+AUDIT_COLUMNS = {str(c).strip().upper() for c in _CFG["audit_columns"] if str(c).strip()}
 
 
 class UploadBody(BaseModel):
@@ -49,6 +54,7 @@ class UploadBody(BaseModel):
     delimiter: str = ","
     original_filename: str = "upload.csv"
     file_content: str               # the reviewed/edited CSV (header + valid rows)
+    db_source: str = ""             # the table's physical DB (ols_cib_batch | ols_cib_reporting | …)
 
 
 class RollBody(BaseModel):
@@ -57,6 +63,7 @@ class RollBody(BaseModel):
     source_date: str                # YYYY-MM-DD
     target_dates: list[str]         # one or more YYYY-MM-DD
     tablespace: str | None = None
+    db_source: str = ""             # the table's physical DB (ols_cib_batch | ols_cib_reporting | …)
 
 
 class CellError(Exception):
@@ -84,12 +91,23 @@ def _require_config_write(request: Request, caller: str, scope: str):
     return cfg
 
 
-def _scope_db(request: Request, scope: str):
-    """Privileged connection for a config scope (never the read-only monitor db_configs)."""
+_DB_SOURCE_RE = re.compile(r"^ols_[a-z0-9_]+$")
+
+
+def _source_db(request: Request, db_source: str, scope: str):
+    """Privileged connection for the table's PHYSICAL DB (``db_source`` = an app.py connection key like
+    ``ols_cib_batch`` / ``ols_cib_reporting``), never the read-only monitor. A table's config lives in
+    the scope's batch DB but the table itself can be in the batch OR reporting DB — ``db_source`` (from
+    the catalogue row) routes the op to the right one. Guarded so a scope can only touch its own DBs."""
+    key = (db_source or "").strip().lower()
+    if not key or not _DB_SOURCE_RE.match(key):
+        raise HTTPException(status_code=400, detail="A valid db_source is required (e.g. ols_cib_batch).")
+    if not (key == f"ols_{scope.lower()}" or key.startswith(f"ols_{scope.lower()}_")):
+        raise HTTPException(status_code=403, detail=f"db_source '{db_source}' does not belong to scope '{scope}'.")
     cfgs = getattr(request.app.state, "sql_db_configs", None) or getattr(request.app.state, "db_configs", {})
-    cfg = cfgs.get(scope)
+    cfg = cfgs.get(key)
     if cfg is None:
-        raise HTTPException(status_code=503, detail=f"Config DB for scope '{scope}' is not reachable.")
+        raise HTTPException(status_code=503, detail=f"Config DB '{db_source}' is not reachable.")
     return cfg
 
 
@@ -188,15 +206,12 @@ def config_roll(scope: str, request: Request, body: RollBody) -> dict:
         raise HTTPException(status_code=400, detail="Provide at least one target date different from the source.")
     if CONFIG_USE_DUMMY:
         return {"status": "success", "source_date": body.source_date, "source_count": 0,
-                "targets": [{"date": d, "count": 0} for d in body.target_dates]}
-    dbcfg = _scope_db(request, scope)
-    date_col = database.config_date_column(dbcfg, body.table_name)
-    if not date_col:
-        raise HTTPException(status_code=400, detail=f"'{body.table_name}' is not a date-partitioned table.")
+                "targets": [{"date": d, "status": "success", "count": 0} for d in body.target_dates]}
+    dbcfg = _source_db(request, body.db_source, scope)
     try:
-        result = database.config_roll_dates(dbcfg, table=body.table_name, date_col=date_col,
-                                            source_date=src, target_dates=targets, roller=body.rolled_by,
-                                            audit_cols=AUDIT_COLUMNS)
+        result = database.config_roll_dates(dbcfg, table=body.table_name, source_date=src,
+                                            target_dates=targets, uid=body.rolled_by,
+                                            tablespace=body.tablespace)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "success", **result}
@@ -217,7 +232,7 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
             "load_id": 0, "mode": body.mode, "rows_loaded": len(data_rows), "rows_deleted": 0,
             "rows_rejected": 0, "cob_dt": None, "archived": "(dummy)"}}
 
-    dbcfg = _scope_db(request, scope)
+    dbcfg = _source_db(request, body.db_source, scope)
     started = datetime.now()
     columns = database.config_table_columns(dbcfg, table)
     if not columns:
@@ -253,6 +268,17 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
                                 detail=f"The file has {len(dates)} distinct {date_col} values. Upload one date per file.")
         cob_dt = next(iter(dates)) if dates else None
 
+    # Detect-and-report: if the table is RANGE-partitioned on the date column and the partition for this
+    # date doesn't exist yet (e.g. a future COB date), stop BEFORE loading with a clear message — no DDL.
+    if date_col and cob_dt is not None:
+        part = database.config_partition_status(dbcfg, table, date_col, cob_dt)
+        if part.get("covered") is False:
+            last = part.get("last_high")
+            raise HTTPException(status_code=409, detail=(
+                f"The partition for {date_col} = {cob_dt.date()} does not exist on {table}"
+                + (f" (partitions cover up to {last})." if last else ".")
+                + " Ask the DBA / OLS dev team to create the partition/subpartition, then retry."))
+
     now = datetime.now()
     present_audit = {c["name"].upper() for c in columns} & AUDIT_COLUMNS
     system_defaults: dict[str, Any] = {}
@@ -269,7 +295,7 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
     common = dict(app_env=getattr(request.app.state, "app_env", None), scope=scope, table_name=table,
                   load_mode=body.mode, date_col=date_col, cob_dt=(cob_dt.isoformat() if cob_dt else None),
                   original_filename=body.original_filename, delimiter=body.delimiter, uploaded_by=body.caller,
-                  uploaded_on=started, rows_in_file=len(data_rows), rows_rejected=len(rejects),
+                  start_time=started, rows_in_file=len(data_rows), rows_rejected=len(rejects),
                   file_hash=hashlib.sha256(body.file_content.encode("utf-8")).hexdigest())
     try:
         result = database.config_load_table(
@@ -277,16 +303,16 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
             date_col=date_col, cob_dt=cob_dt, system_defaults=system_defaults,
             lock_key=lock_key, locked_by=body.caller, batch_size=BATCH_SIZE)
     except Exception as exc:  # noqa: BLE001 — audit the failure, then surface it
-        database.config_upload_audit_write(dbcfg, **common, archived_path="", finished_on=datetime.now(),
+        database.config_upload_audit_write(dbcfg, **common, archived_path="", end_time=datetime.now(),
                                            duration_secs=(datetime.now() - started).total_seconds(),
-                                           rows_loaded=0, rows_deleted=0, status="failed", error_detail=str(exc))
+                                           rows_loaded=0, rows_deleted=0, status="failed", error_desc=str(exc))
         raise HTTPException(status_code=409 if "in progress" in str(exc) else 500, detail=str(exc))
 
     archived = _archive(body.file_content, body.original_filename, body.caller, token)
     load_id = database.config_upload_audit_write(
-        dbcfg, **common, archived_path=archived, finished_on=datetime.now(),
+        dbcfg, **common, archived_path=archived, end_time=datetime.now(),
         duration_secs=(datetime.now() - started).total_seconds(),
-        rows_loaded=result["rows_loaded"], rows_deleted=result["rows_deleted"], status="success", error_detail=None)
+        rows_loaded=result["rows_loaded"], rows_deleted=result["rows_deleted"], status="success", error_desc=None)
     return {"status": "success", "result": {
         "load_id": load_id, "mode": body.mode, "rows_loaded": result["rows_loaded"],
         "rows_deleted": result["rows_deleted"], "rows_rejected": len(rejects),

@@ -3,7 +3,7 @@ import { delay, Observable, of, throwError } from 'rxjs';
 
 import { ConfigScope } from './api-endpoints';
 import { environment } from '../../environments/environment';
-import { LoginResponse } from './models';
+import { DocEntry, LoginResponse } from './models';
 import {
   MOCK_ACTIVITY,
   MOCK_DASHBOARD_STATS,
@@ -180,6 +180,21 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockRegression(path, (req.body ?? {}) as Record<string, unknown>));
   }
 
+  // --- Documentation Center -------------------------------------------------
+  // Catalogue is RBAC-filtered by audience (technical docs only for ADMIN / ops-admin / S-Studio);
+  // content is re-checked the same way (UI hiding is never the boundary — mirrors docs_api.py).
+  if (path === '/api/docs/catalog') {
+    return respond({ status: 'success', entries: mockDocsCatalog() });
+  }
+  if (path === '/api/docs/content') {
+    const id = String(((req.body ?? {}) as { id?: string }).id ?? '');
+    const doc = mockDocContent(id);
+    if (!doc) {
+      return respondError(404, `Document '${id}' not found or not permitted.`);
+    }
+    return respond({ status: 'success', doc });
+  }
+
   // --- System / dashboard ---------------------------------------------------
   if (path === '/api/system/memory') {
     return respond(mockMemory());
@@ -253,14 +268,23 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     if (!body.table_name || !body.source_date || !(body.target_dates?.length)) {
       return respondError(400, 'table_name, source_date and target_dates are required');
     }
-    // Structured per-date result: { source_date, source_count, targets:[{date,count}] }.
-    const sourceCount = 100;
-    return respond({
-      status: 'success',
-      source_date: body.source_date,
-      source_count: sourceCount,
-      targets: body.target_dates.map((d) => ({ date: d, count: sourceCount }))
+    // Structured per-date result: { source_date, source_count, targets:[{date,status,count,error?}] }.
+    // Demos: a target > 2026-08-31 is "skipped" with a multi-line DB error; a date ending -27 rolls
+    // DOUBLE rows and one ending -29 rolls ZERO — both success-with-wrong-count (the ⚠ mismatch path);
+    // everything else matches the source. Mirrors the proc's per-date OUT lists (errmsg/rows/src_rows).
+    const SRC = 100;
+    const targets = body.target_dates.map((d) => {
+      if (d > '2026-08-31') {
+        return { date: d, status: 'failed', count: null,
+          error: `ORA-14400: inserted partition key does not map to any partition (no partition for ${d})\n`
+            + `ORA-06512: at "OLS_UTIL.ROLL_STATIC_DATA", line 42\n`
+            + `ORA-06512: at "OLS_ROLL.ROLLTABLE", line 118\n`
+            + `ORA-06512: at line 1` };
+      }
+      const count = d.endsWith('-27') ? SRC * 2 : d.endsWith('-29') ? 0 : SRC;
+      return { date: d, status: 'success', count };
     });
+    return respond({ status: 'success', source_date: body.source_date, source_count: SRC, targets });
   }
 
   // Table content (eye) — { table_name, is_cobdt, start_date, end_date, date_range }.
@@ -321,10 +345,20 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     const body = (req.body ?? {}) as { mode?: string; file_content?: string };
     const lines = String(body.file_content ?? '').split(/\r?\n/).filter((l) => l.trim() !== '');
     const dataRows = Math.max(0, lines.length - 1);
+    // dev trigger: a cell containing DBERROR exercises the DB-error path (e.g. a missing partition)
+    if (/DBERROR/i.test(String(body.file_content ?? ''))) {
+      return respondError(500, 'ORA-14400: inserted partition key does not map to any partition\nORA-06512: at line 1 — the partition/subpartition for COB_DT does not exist (create it, then retry).');
+    }
     // dev trigger: a cell containing REJECTME exercises the server-rejected path
     if (/REJECTME/i.test(String(body.file_content ?? ''))) {
       return respond({ status: 'rejected', rows_rejected: 2,
         rejects: [{ row: 1, column: 'AMOUNT', reason: 'not a number' }, { row: 4, column: 'COB_DT', reason: 'expected date YYYY-MM-DD' }] });
+    }
+    // detect-and-report demo: pretend partitions exist up to 2026-08-31; a later COB date → partition missing
+    const fileDates = (String(body.file_content ?? '').match(/\d{4}-\d{2}-\d{2}/g) || []).sort();
+    const maxDate = fileDates[fileDates.length - 1];
+    if (maxDate && maxDate > '2026-08-31') {
+      return respondError(409, `The partition for ${maxDate} does not exist on this table (partitions cover up to 2026-08-31). Ask the DBA / OLS dev team to create the partition/subpartition, then retry.`);
     }
     return respond({ status: 'success', result: {
       load_id: Math.floor(1000 + Math.random() * 9000), mode: body.mode ?? 'append',
@@ -416,7 +450,7 @@ function baseActive(over: Record<string, unknown>): Record<string, unknown> {
     role: 'READ', app_env: environment.appEnv, is_ops_admin: false, can_sql: false,
     screens: ['home', 'log_analytics', 'infra_health'],
     write_screens: [] as string[],
-    config: { scopes: [] as string[], all: false, all_level: 'READ', category_grants: [], table_grants: [] },
+    config: { scopes: [] as string[], all: false, all_level: 'READ', category_grants: [], table_grants: [], regression: [] as string[] },
     servers: [] as string[], all_servers: true, denied_servers: [],
     infra: { all_apps: true, apps: [], denied_apps: [] },
     service: { all_apps: false, apps: [] as string[], denied_apps: [] },
@@ -486,9 +520,69 @@ const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
         { scope: 'group', category: 'OMT-BOTH', level: 'WRITE' },
         { scope: 'cib', category: 'OMT-BOTH', level: 'WRITE' }
       ],
-      table_grants: []
+      table_grants: [],
+      // Regression granted on CIB only (via ols_app_access) — so CIB shows the Regression tab but GROUP
+      // does not, even though both scopes' config is granted. (config_group_cib grants neither.)
+      regression: ['cib']
     }
-  })
+  }),
+  // Config Ops on ONE scope only, no S-Studio, no Regression — "<scope> only, everything else hidden".
+  config_cib_only: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['cib'], all: false, all_level: 'WRITE',
+      category_grants: [{ scope: 'cib', category: 'OMT-BOTH', level: 'WRITE' }],
+      table_grants: [], regression: []
+    }
+  }),
+  config_group_only: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['group'], all: false, all_level: 'WRITE',
+      category_grants: [{ scope: 'group', category: 'OMT-BOTH', level: 'WRITE' }],
+      table_grants: [], regression: []
+    }
+  }),
+  config_retail_only: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['retail'], all: false, all_level: 'WRITE',
+      category_grants: [{ scope: 'retail', category: 'OMT-BOTH', level: 'WRITE' }],
+      table_grants: [], regression: []
+    }
+  }),
+  // Config Ops READ-ONLY on one scope (category READ) — proves NO add/edit/delete/duplicate/upload/roll
+  // buttons (view + Export only). One per scope.
+  config_cib_readonly: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['cib'], all: false, all_level: 'READ',
+      category_grants: [{ scope: 'cib', category: 'OMT-BOTH', level: 'READ' }],
+      table_grants: [], regression: []
+    }
+  }),
+  config_group_readonly: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['group'], all: false, all_level: 'READ',
+      category_grants: [{ scope: 'group', category: 'OMT-BOTH', level: 'READ' }],
+      table_grants: [], regression: []
+    }
+  }),
+  config_retail_readonly: () => baseActive({
+    screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
+    config: {
+      scopes: ['retail'], all: false, all_level: 'READ',
+      category_grants: [{ scope: 'retail', category: 'OMT-BOTH', level: 'READ' }],
+      table_grants: [], regression: []
+    }
+  }),
+  // Docs: only the User Guide granted (SCREEN/docs) — the Technical Guide tab + nav item stay hidden.
+  docs_user_only: () => baseActive({ screens: ['home', 'log_analytics', 'infra_health', 'docs'] }),
+  // Docs: only the Technical Guide granted (SCREEN/docs_technical) — the User Guide is hidden; /docs
+  // lands straight on the Technical Guide.
+  docs_technical_only: () => baseActive({ screens: ['home', 'log_analytics', 'infra_health', 'docs_technical'] })
+  // (No docs grant at all → the whole Docs group is hidden — see the `defaults_only` scenario.)
 };
 
 function mockAccessSnapshot(): Record<string, unknown> {
@@ -551,7 +645,7 @@ function mockAccessSnapshot(): Record<string, unknown> {
   // WRITE on GROUP + READ on CIB BATCH; SQL Intelligence denied.
   return {
     ...base,
-    screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
+    screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'docs', 'docs_technical'],
     write_screens: ['service_console'],
     config: {
       scopes: ['group', 'cib'], all: false, all_level: 'READ',
@@ -689,37 +783,51 @@ function mockSqlExecute(sql: string): Record<string, unknown> {
   return { kind: 'exec', message, rows_affected: dml[verb] ? 1 : null, statements: stmts.length };
 }
 
-// --- Regression dev engine (in-memory run + step state) ---------------------------------------
+// --- Regression dev engine (in-memory run + step state, PER SCOPE) ------------------------------
+// Each config scope (cib / retail / …) is a SEPARATE application with its own regression process, so
+// the mock keeps a separate store + localStorage entry per scope. The active scope for a request comes
+// from body.scope (set by each scope's service); the helpers operate on the current scope's store.
 
-interface RegStep { status: string; forced_by?: string; task_completion_time?: number; started_on?: string; finished_on?: string; performed_by?: string; stale?: boolean; age_seconds?: number; }
-const regStore: { run: Record<string, unknown> | null; steps: Record<string, RegStep>; activity: Record<string, unknown>[]; nextLog: number } =
-  { run: null, steps: {}, activity: [], nextLog: 1 };
+interface RegStep { status: string; forced_by?: string; task_completion_time?: number; start_time?: string; end_time?: string; performed_by?: string; stale?: boolean; age_seconds?: number; }
+interface RegStoreT { run: Record<string, unknown> | null; steps: Record<string, RegStep>; activity: Record<string, unknown>[]; nextLog: number; }
+const regStores: Record<string, RegStoreT> = {};
+const regLastBranches: Record<string, string> = {};
+let curScope = 'cib';
+// One-time cleanup: drop the legacy pre-scope store key (replaced by per-scope ols.reg.store.<scope>).
+try { localStorage.removeItem('ols.reg.store'); } catch { /* ignore */ }
 
 function regNow(): string { return new Date().toISOString().slice(0, 19).replace('T', ' '); }
+function regKey(scope: string): string { return `ols.reg.store.${scope}`; }
+function lastBranch(): string { return regLastBranches[curScope] ?? 'release/20260828'; }
 
-let regLastBranch = 'release/20260828';   // last branch pulled (mock git/tree reflects it)
-
-// Persist the dev run across page reloads, so the mock mirrors the real backend (run + steps live in
-// Oracle) and the "resume after refresh" UX is demoable locally. Cleared by starting/abandoning a run.
-const REG_STORE_KEY = 'ols.reg.store';
-function regSave(): void {
-  try { localStorage.setItem(REG_STORE_KEY, JSON.stringify({ run: regStore.run, steps: regStore.steps, activity: regStore.activity, nextLog: regStore.nextLog, lastBranch: regLastBranch })); } catch { /* ignore */ }
-}
-function regLoad(): void {
+// Persist each scope's dev run across reloads (mirrors the run living in Oracle; "resume after refresh").
+function loadRegStore(scope: string): RegStoreT {
   try {
-    const raw = localStorage.getItem(REG_STORE_KEY); if (!raw) { return; }
-    const d = JSON.parse(raw) as { run: Record<string, unknown> | null; steps: Record<string, RegStep>; activity: Record<string, unknown>[]; nextLog: number; lastBranch?: string };
-    regStore.run = d.run ?? null; regStore.steps = d.steps ?? {}; regStore.activity = d.activity ?? []; regStore.nextLog = d.nextLog ?? 1;
-    if (d.lastBranch) { regLastBranch = d.lastBranch; }
+    const raw = localStorage.getItem(regKey(scope));
+    if (raw) {
+      const d = JSON.parse(raw) as { run: Record<string, unknown> | null; steps: Record<string, RegStep>; activity: Record<string, unknown>[]; nextLog: number; lastBranch?: string };
+      if (d.lastBranch) { regLastBranches[scope] = d.lastBranch; }
+      return { run: d.run ?? null, steps: d.steps ?? {}, activity: d.activity ?? [], nextLog: d.nextLog ?? 1 };
+    }
   } catch { /* ignore */ }
+  return { run: null, steps: {}, activity: [], nextLog: 1 };
 }
-regLoad();
+/** The current scope's store (lazily loaded). */
+function store(): RegStoreT {
+  if (!regStores[curScope]) { regStores[curScope] = loadRegStore(curScope); }
+  return regStores[curScope];
+}
+function regSave(): void {
+  const s = regStores[curScope]; if (!s) { return; }
+  try { localStorage.setItem(regKey(curScope), JSON.stringify({ run: s.run, steps: s.steps, activity: s.activity, nextLog: s.nextLog, lastBranch: regLastBranches[curScope] })); } catch { /* ignore */ }
+}
 
 function regLog(step_key: string, action: string, status: string, extra: Record<string, unknown> = {}): void {
-  regStore.activity.unshift({
-    log_id: regStore.nextLog++, run_id: (regStore.run?.['run_id'] ?? 1), step_key, action, status,
-    performed_by: environment.username, started_on: regNow(), finished_on: regNow(),
-    task_completion_time: 0, forced_by: null, details: null, ...extra
+  const s = store();
+  s.activity.unshift({
+    log_id: s.nextLog++, run_id: (s.run?.['run_id'] ?? 1), load_dt: regNow().slice(0, 10),
+    step_key, action, status, performed_by: environment.username, start_time: regNow(), end_time: regNow(),
+    task_completion_time: 0, forced_by: null, comments: null, ...extra
   });
   regSave();
 }
@@ -728,52 +836,55 @@ function regSetStep(key: string, status: string, forced_by?: string, details?: s
   // simulate a realistic elapsed time so the per-step "Run time" line has a value in dev
   const secs = status === 'in_progress' ? 0 : 1 + Math.floor(Math.random() * 6);
   const now = regNow();
-  regStore.steps[key] = { status, forced_by, task_completion_time: secs, started_on: now, finished_on: now, performed_by: environment.username };
-  regLog(key, forced_by ? 'forced' : status, status, { forced_by: forced_by ?? null, details: details ?? null, task_completion_time: secs });
+  const cur = store();
+  cur.steps[key] = { status, forced_by, task_completion_time: secs, start_time: now, end_time: now, performed_by: environment.username };
+  regLog(key, forced_by ? 'forced' : status, status, { forced_by: forced_by ?? null, comments: details ?? null, task_completion_time: secs });
 }
 
 function mockRegression(path: string, body: Record<string, unknown>): Record<string, unknown> {
+  curScope = String(body['scope'] ?? 'cib');   // route to this scope's separate run/activity store
+  const rs = store();
   const dbs = String(body['dbs'] ?? '');
   const scripts = (body['scripts'] as string[]) ?? [];
   switch (path) {
     case '/api/regression/run/current': {
-      const active = regStore.run && regStore.run['status'] === 'in_progress';
+      const active = rs.run && rs.run['status'] === 'in_progress';
       if (active) {
         const staleSecs = 30 * 60;
-        for (const k of Object.keys(regStore.steps)) {
-          const s = regStore.steps[k];
-          if (s.status === 'in_progress' && s.started_on) {
+        for (const k of Object.keys(rs.steps)) {
+          const s = rs.steps[k];
+          if (s.status === 'in_progress' && s.start_time) {
             // regNow() emits a UTC timestamp — parse it back as UTC (append 'Z') to age it correctly.
-            s.age_seconds = Math.floor((Date.now() - new Date(String(s.started_on).replace(' ', 'T') + 'Z').getTime()) / 1000);
+            s.age_seconds = Math.floor((Date.now() - new Date(String(s.start_time).replace(' ', 'T') + 'Z').getTime()) / 1000);
             s.stale = s.age_seconds > staleSecs;
           } else { s.stale = false; }
         }
       }
-      return { status: 'success', run: active ? regStore.run : null, steps: active ? regStore.steps : {} };
+      return { status: 'success', run: active ? rs.run : null, steps: active ? rs.steps : {} };
     }
     case '/api/regression/step/unlock': {
       const key = String(body['step_key'] ?? '');
-      regStore.steps[key] = { status: 'error', task_completion_time: 0, started_on: regNow(), finished_on: regNow(), performed_by: environment.username };
-      regLog(key, 'unlock', 'error', { details: `Stuck in-progress step cleared by ${environment.username}` });
-      return { status: 'success', run: regStore.run, steps: regStore.steps };
+      rs.steps[key] = { status: 'error', task_completion_time: 0, start_time: regNow(), end_time: regNow(), performed_by: environment.username };
+      regLog(key, 'unlock', 'error', { comments: `Stuck in-progress step cleared by ${environment.username}` });
+      return { status: 'success', run: rs.run, steps: rs.steps };
     }
     case '/api/regression/run/complete': {
       const st = String(body['status'] ?? 'complete');
       const abandoned = st === 'abandoned';
-      regLog('run', abandoned ? 'abandoned' : 'complete', st, { details: abandoned ? 'Regression run abandoned' : 'Regression run completed' });
-      if (regStore.run) { regStore.run['status'] = st; regStore.run['finished_on'] = regNow(); }
+      regLog('run', abandoned ? 'abandoned' : 'complete', st, { comments: abandoned ? 'Regression run abandoned' : 'Regression run completed' });
+      if (rs.run) { rs.run['status'] = st; rs.run['end_time'] = regNow(); }
       regSave();
       return { status: 'success', run: null, steps: {} };
     }
     case '/api/regression/run/start':
-      regStore.run = { run_id: 1, app_env: environment.appEnv, status: 'in_progress', started_by: environment.username, started_on: regNow() };
-      regStore.steps = {}; regStore.activity = []; regStore.nextLog = 1;
+      rs.run = { run_id: 1, app_env: environment.appEnv, status: 'in_progress', started_by: environment.username, start_time: regNow() };
+      rs.steps = {}; rs.activity = []; rs.nextLog = 1;
       regLog('run', 'start', 'in_progress');
-      return { status: 'success', run: regStore.run, steps: regStore.steps };
+      return { status: 'success', run: rs.run, steps: rs.steps };
     case '/api/regression/step/mark': {
       const key = String(body['step_key'] ?? ''); const st = String(body['status'] ?? 'complete');
       regSetStep(key, st, body['forced'] ? environment.username : undefined, String(body['details'] ?? ''));
-      return { status: 'success', run: regStore.run, steps: regStore.steps };
+      return { status: 'success', run: rs.run, steps: rs.steps };
     }
     case '/api/regression/refresh-db': {
       const rdbs = (body['dbs'] as string[]) ?? [];
@@ -783,13 +894,13 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
     case '/api/regression/git/branches':
       return { status: 'success', branches: ['release/20260828', 'release/20260815'] };
     case '/api/regression/git/pull':
-      regLastBranch = String(body['branch'] ?? regLastBranch);
+      regLastBranches[curScope] = String(body['branch'] ?? lastBranch());
       regSave();
       return { status: 'success', scripts: ['apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql', 'reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
     case '/api/regression/git/scripts':
       return { status: 'success', scripts: ['apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql', 'reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
     case '/api/regression/git/tree':
-      return { status: 'success', workdir: 'D:/ols/regression/work', branch: regLastBranch, files: [
+      return { status: 'success', workdir: 'D:/ols/regression/work', branch: lastBranch(), files: [
         'apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql',
         'db/package/lam/abc.pck', 'db/package/lam/xyz.pck', 'db/package/cb/cb_valuation.pck',
         'db/procedure/lam/load_positions.prc', 'reset/reset_batches.sql',
@@ -864,7 +975,7 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
                ['GECD', 'GECD_FEED', 2, '2026-08-28 08:20', '2026-08-28 08:44'],
                ['FI', 'FI_POST', 3, '2026-08-28 08:30', '2026-08-28 08:31']] };
     case '/api/regression/activity':
-      return { status: 'success', rows: regStore.activity };
+      return { status: 'success', rows: rs.activity };
     default:
       return { status: 'success' };
   }
@@ -874,7 +985,9 @@ function mockCatalogue(): Record<string, unknown> {
   return {
     screens: [
       { key: 'service_console', label: 'Service Console', write_capable: true },
-      { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true }
+      { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true },
+      { key: 'docs', label: 'Docs — User Guide', write_capable: false },
+      { key: 'docs_technical', label: 'Docs — Technical Guide', write_capable: false }
     ],
     config: {
       scopes: [{ key: 'group', label: 'OLS GROUP' }, { key: 'cib', label: 'OLS CIB' }, { key: 'retail', label: 'OLS RETAIL' }],
@@ -904,4 +1017,182 @@ function mockCatalogue(): Record<string, unknown> {
     ],
     app_envs: ['PROD', 'STG', 'DEV', '*']
   };
+}
+
+// --- Documentation Center dev mocks -----------------------------------------------------------
+// Canned catalogue: local markdown docs (with content, to exercise the renderer) + external wiki
+// links. `audience` drives BOTH grouping and RBAC — technical docs are only returned to a technical
+// user (ADMIN / ops-admin / S-Studio). Mirrors docs_api.py (auto-discovered md + config wikis).
+
+interface MockMd { title: string; audience: 'user' | 'technical'; description: string; tags: string[]; updated: string; markdown: string; }
+
+const DOCS_MD: Record<string, MockMd> = {
+  'getting-started': {
+    title: 'Getting Started', audience: 'user', updated: '2026-08-24',
+    description: 'A quick tour of the OLS Dashboard and how to find your tools.',
+    tags: ['intro', 'overview'],
+    markdown: [
+      '# Getting Started',
+      '',
+      'Welcome to the **OLS Dashboard** — your single console for operations across the estate.',
+      '',
+      '## What you can do',
+      '',
+      '- Monitor infrastructure and services from **Home**',
+      '- Browse logs in the **Log Analytics Hub**',
+      '- Edit configuration in the **Config Ops Console**',
+      '  - Upload CSVs and roll COB dates',
+      '  - Review every change before it applies',
+      '- Investigate databases in the **Oracle Command Center**',
+      '',
+      '## Signing in',
+      '',
+      'Use your corporate SSO. Your access is resolved from your role — you only ever see the tools you are granted.',
+      '',
+      '> Tip: if a screen looks missing, you probably need a grant. Reach out to the OLS Team.',
+      '',
+      '## Finding things',
+      '',
+      'Most grids support inline `filter` and `sort`. Use the search box on this page to find any document by title or tag.',
+      '',
+      '| Area | Where to look |',
+      '| --- | --- |',
+      '| Logs | Log Analytics Hub |',
+      '| Config | Config Ops Console |',
+      '| Databases | Oracle Command Center |',
+      ''
+    ].join('\n')
+  },
+  'config-ops-guide': {
+    title: 'Using the Config Ops Console', audience: 'user', updated: '2026-08-27',
+    description: 'Edit tables, upload CSVs and roll COB dates safely.',
+    tags: ['config', 'how-to', 'upload'],
+    markdown: [
+      '# Using the Config Ops Console',
+      '',
+      'The Config Ops Console lets you view and edit configuration tables for each OLS application.',
+      '',
+      '## Editing a table',
+      '',
+      '1. Pick your application scope (GROUP / CIB / RETAIL).',
+      '2. Open a table with the *eye* icon to view its rows.',
+      '3. Use **Add**, **Edit** or **Delete** — buttons only appear where you have write access.',
+      '',
+      '## Uploading a CSV',
+      '',
+      'Choose **Upload Data**, pick *Append* or *Replace*, and review the parsed rows before loading.',
+      '',
+      '- **Append** inserts new rows only.',
+      '- **Replace** clears the table (or just the COB date) then inserts.',
+      '',
+      '> Nothing is written until you confirm — you always see a preview first.',
+      ''
+    ].join('\n')
+  },
+  'architecture-overview': {
+    title: 'Architecture Overview', audience: 'technical', updated: '2026-08-29',
+    description: 'How the UI, API and data layers fit together.',
+    tags: ['architecture', 'internals'],
+    markdown: [
+      '# Architecture Overview',
+      '',
+      'The dashboard is an **Angular 22** (standalone, signals, zoneless) front end backed by a **FastAPI** service.',
+      '',
+      '## Layers',
+      '',
+      '1. **UI** — served same-origin; detects its environment from the hostname.',
+      '2. **API** — FastAPI routers under `/api/*`.',
+      '3. **Data** — all SQL lives in `database.py`; routers only shape the contract.',
+      '',
+      '## Environment detection',
+      '',
+      'One build runs in DEV / STG / PROD; the browser resolves the environment at runtime:',
+      '',
+      '```ts',
+      'const HOST = window.location.hostname;',
+      'const env = detectEnv(HOST);   // DEV | STG | LIVE',
+      '```',
+      '',
+      '## Access model',
+      '',
+      'Access is resolved into one snapshot (`/api/access/me`) and **every write is re-checked server-side**.',
+      '',
+      '> UI hiding is *never* the security boundary.',
+      ''
+    ].join('\n')
+  },
+  'regression-runbook': {
+    title: 'Regression Runbook', audience: 'technical', updated: '2026-08-28',
+    description: 'The gated pre-release regression workflow, step by step.',
+    tags: ['regression', 'runbook', 'release'],
+    markdown: [
+      '# Regression Runbook',
+      '',
+      'Run before a production deployment (DEV/STG only). Each step is gated, logged and force-markable.',
+      '',
+      '## Workflow',
+      '',
+      '1. **Refresh DB** — restore the target from the source.',
+      '2. **Apply DB changes** — pull the `release/*` branch and run each `CHG_*.sql`.',
+      '3. **File copy** — copy the developer manifest (source → destination).',
+      '4. **Reset batches** — run the reset script.',
+      '5. **Trigger batches** — kick off per business line.',
+      '',
+      'A step unlocks only when the previous one is `complete` or `forced`.',
+      '',
+      '```sql',
+      '-- example reset invoked by the engine',
+      'UPDATE ols_batch SET status_id = 2;',
+      'COMMIT;',
+      '```',
+      '',
+      '> Force-completing a step is logged with your name — use it only when you understand why the step failed.',
+      ''
+    ].join('\n')
+  }
+};
+
+const DOCS_WIKIS: DocEntry[] = [
+  { id: 'wiki-onboarding', type: 'wiki', audience: 'user', title: 'Team Onboarding (Wiki)',
+    description: 'Joiners: accounts, access requests and first-week checklist.',
+    url: 'https://coreui.io/angular/docs/', tags: ['onboarding'], updated: '2026-07-30' },
+  { id: 'wiki-batch-runbook', type: 'wiki', audience: 'user', title: 'Batch Recovery Runbook (Wiki)',
+    description: 'Step-by-step recovery when an overnight batch fails.',
+    url: 'https://coreui.io/angular/docs/', tags: ['runbook', 'batch'], updated: '2026-08-12' },
+  { id: 'wiki-db-standards', type: 'wiki', audience: 'technical', title: 'Database Standards (Wiki)',
+    description: 'Naming, partitioning and change-control standards for the DBs.',
+    url: 'https://coreui.io/angular/docs/', tags: ['database', 'standards'], updated: '2026-08-05' }
+];
+
+/** Grant-driven docs access from the current dev snapshot: ADMIN → both guides; otherwise the
+ *  SCREEN grants `docs` (User Guide) / `docs_technical` (Technical Guide) appear in `screens`. No grant
+ *  → neither (Docs hidden). Mirrors docs_api._docs_access; switching dev scenario changes the result. */
+function docsAllowed(): { user: boolean; technical: boolean } {
+  const s = mockAccessSnapshot() as Record<string, unknown>;
+  if (!s['active']) { return { user: false, technical: false }; }
+  if (String(s['role'] ?? '') === 'ADMIN') { return { user: true, technical: true }; }
+  const screens = (s['screens'] as string[]) ?? [];
+  return { user: screens.includes('docs'), technical: screens.includes('docs_technical') };
+}
+
+function mockDocsCatalog(): DocEntry[] {
+  const can = docsAllowed();
+  const md: DocEntry[] = Object.entries(DOCS_MD).map(([id, d]) => ({
+    id, title: d.title, description: d.description, type: 'markdown',
+    audience: d.audience, tags: d.tags, updated: d.updated, file: `${id}.md`
+  }));
+  return [...md, ...DOCS_WIKIS].filter((e) =>
+    (e.audience === 'user' && can.user) || (e.audience === 'technical' && can.technical));
+}
+
+function mockDocContent(id: string): { id: string; title: string; markdown: string; updated: string } | null {
+  const d = DOCS_MD[id];
+  if (!d) {
+    return null;
+  }
+  const can = docsAllowed();
+  if ((d.audience === 'technical' && !can.technical) || (d.audience === 'user' && !can.user)) {
+    return null;   // RBAC re-check on content (not just catalogue)
+  }
+  return { id, title: d.title, markdown: d.markdown, updated: d.updated };
 }

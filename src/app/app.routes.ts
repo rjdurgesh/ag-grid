@@ -54,6 +54,12 @@ export const routes: Routes = [
         canActivate: [opsAdminGuard],
         data: { screen: 'user_management' },
         loadChildren: () => import('./views/user_management/route').then((m) => m.routes)
+      },
+      {
+        // Documentation Center — two screens: User Guide (always visible) and Technical Guide
+        // (role-gated). Each child carries its own rbacGuard + screen key; see views/docs/route.ts.
+        path: 'docs',
+        loadChildren: () => import('./views/docs/route').then((m) => m.routes)
       }
     ]
   },

@@ -1,0 +1,43 @@
+{
+  "_comment": "Documentation Center config. Copy to docs.json and edit per server (gitignored). base_dir may also come from the DOCS_BASE_DIR env var. See DOCS_DESIGN.md / GUIDE.md.",
+
+  "base_dir": "D:\\ols\\docs",
+
+  "_audience_note": "Audience is decided by the top-level SUBFOLDER under base_dir: files under user/ show in the User Guide, files under technical/ in the Technical Guide. Files elsewhere default to technical. An 'overrides' entry (keyed by the path relative to base_dir) always wins and can also set title/description/tags/order. Example layout: base_dir/user/getting-started.md, base_dir/technical/architecture.md.",
+
+  "wikis": [
+    {
+      "id": "wiki-batch-runbook",
+      "title": "Batch Recovery Runbook (Wiki)",
+      "description": "Step-by-step recovery when an overnight batch fails.",
+      "url": "https://wiki.internal.example/display/OLS/Batch+Recovery",
+      "audience": "user",
+      "tags": ["runbook", "batch"],
+      "updated": "2026-08-12"
+    },
+    {
+      "id": "wiki-db-standards",
+      "title": "Database Standards (Wiki)",
+      "description": "Naming, partitioning and change-control standards for the DBs.",
+      "url": "https://wiki.internal.example/display/OLS/DB+Standards",
+      "audience": "technical",
+      "tags": ["database", "standards"],
+      "updated": "2026-08-05"
+    }
+  ],
+
+  "overrides": {
+    "user/getting-started.md": {
+      "title": "Getting Started",
+      "description": "A quick tour of the OLS Dashboard and how to find your tools.",
+      "tags": ["intro", "overview"],
+      "order": 1
+    },
+    "technical/architecture.md": {
+      "title": "Architecture Overview",
+      "description": "How the UI, API and data layers fit together.",
+      "tags": ["architecture", "internals"],
+      "order": 10
+    }
+  }
+}

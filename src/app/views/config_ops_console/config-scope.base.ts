@@ -197,8 +197,10 @@ export abstract class ConfigScopeBase implements OnInit {
   /** S-Studio tab visible ONLY for authorised operators (`ols_ops_access.can_sql`). */
   readonly canSql = computed(() => this.rbac.canSql());
 
-  /** Regression tab visible only in DEV/STG (rendered only on the CIB scope screen). */
-  readonly showRegression = computed(() => environment.appEnv === 'DEV' || environment.appEnv === 'STG');
+  /** Regression tab: DEV/STG only AND granted for this scope via `ols_app_access` (`config.regression`).
+   *  So it's hidden unless explicitly granted — not shown to every config user any more. */
+  readonly showRegression = computed(() =>
+    (environment.appEnv === 'DEV' || environment.appEnv === 'STG') && this.rbac.regressionVisible(this.scope));
 
   /** The config scope, exposed for the S-Studio child (`[scope]`). */
   get scopeKey(): ConfigScope {
@@ -413,6 +415,7 @@ export abstract class ConfigScopeBase implements OnInit {
         rolled_by: this.actor,
         tablespace: this.scope === 'group' ? 'OLS_RPT32' : 'OLS',
         table_name: event.tableName,
+        db_source: String(event.row['DB_SOURCE'] ?? event.row['db_source'] ?? ''),
         source_date: event.source,
         target_dates: event.targets
       })

@@ -43,7 +43,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 8v4l3 2M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <div class="rg-resume__msg">
           <strong>Regression run #{{ state().run?.run_id }} is already in progress.</strong>
-          <span>Started by {{ state().run?.started_by }}@if (state().run?.started_on) { · {{ state().run?.started_on }}}. Resume to open the workflow and continue where it left off, or start a fresh run.</span>
+          <span>Started by {{ state().run?.started_by }}@if (state().run?.start_time) { · {{ state().run?.start_time }}}. Resume to open the workflow and continue where it left off, or start a fresh run.</span>
         </div>
         <div class="rg-resume__actions">
           <button type="button" class="rg-btn rg-btn--primary" (click)="resumeRun()">Resume</button>
@@ -290,43 +290,40 @@
     <!-- ================= Monitoring ================= -->
     <section class="rg__monitor">
       <div class="rg-subtabs">
-        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches')">Monitoring Batches</button>
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches'); loadBatches()">Monitoring Batches</button>
         <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'activity'" (click)="monitorTab.set('activity'); loadActivity()">Regression Activity</button>
       </div>
 
       @if (monitorTab() === 'batches') {
-        <div class="rg-row">
-          <select [ngModel]="monitorDb()" (ngModelChange)="monitorDb.set($event)">
-            @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
-          </select>
-          <button type="button" class="rg-btn rg-btn--primary" [disabled]="monitorLoading()" (click)="loadBatches()">{{ monitorLoading() ? 'Loading…' : 'Refresh' }}</button>
+        <div class="rg-row rg-row--tools">
+          <span class="rg-refreshed">{{ batchRefreshed() || 'OLS CIB Batch' }}</span>
+          <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="monitorLoading()"
+                  [disabled]="monitorLoading()" (click)="loadBatches()" title="Refresh" aria-label="Refresh batch status">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
         @if (batchResult(); as br) {
-          <div class="rg-table-wrap">
-            <table class="rg-table">
-              <thead><tr>@for (c of br.columns; track $index) { <th>{{ c }}</th> }</tr></thead>
-              <tbody>@for (row of br.rows; track $index) { <tr>@for (v of row; track $index) { <td>{{ cell(v) }}</td> }</tr> }</tbody>
-            </table>
-          </div>
-        } @else { <p class="rg-hint">Refresh to load batch status.</p> }
+          <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="batchRowData()"
+                           [columnDefs]="batchColDefs()" [gridOptions]="batchGridOptions"></ag-grid-angular>
+        } @else { <p class="rg-hint">Loading batch status…</p> }
       } @else {
-        <div class="rg-row"><button type="button" class="rg-btn" (click)="loadActivity()">Refresh</button></div>
-        <div class="rg-table-wrap">
-          <table class="rg-table">
-            <thead><tr><th>Step</th><th>Action</th><th>Status</th><th>By</th><th>Started</th><th>Finished</th><th>Dur (s)</th><th>Details</th></tr></thead>
-            <tbody>
-              @for (a of activityRows(); track a.log_id) {
-                <tr>
-                  <td>{{ a.step_key }}</td><td>{{ a.action }}</td>
-                  <td><span class="rg-badge" [class]="badgeClass(a.status)">{{ badgeLabel(a.status) }}</span></td>
-                  <td>{{ a.performed_by }}</td><td>{{ a.started_on }}</td><td>{{ a.finished_on }}</td>
-                  <td>{{ a.task_completion_time }}</td><td class="rg-detail">{{ a.details }}</td>
-                </tr>
-              }
-              @if (!activityRows().length) { <tr><td colspan="8" class="rg-hint">No activity yet.</td></tr> }
-            </tbody>
-          </table>
+        <div class="rg-row rg-row--tools">
+          <span class="rg-refreshed">{{ activityRefreshed() || 'Latest regression activity.' }}</span>
+          <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="false"
+                  (click)="loadActivity()" title="Refresh" aria-label="Refresh activity">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
+        @if (activityRows().length) {
+          <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="activityRows()"
+                           [columnDefs]="activityColDefs" [gridOptions]="activityGridOptions"></ag-grid-angular>
+        } @else { <p class="rg-hint">No activity yet.</p> }
       }
     </section>
     }

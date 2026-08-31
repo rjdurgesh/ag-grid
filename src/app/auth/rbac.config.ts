@@ -12,7 +12,8 @@ export type ScreenKey =
   | 'oracle_command_center'
   | 'user_management'
   | 'extras'
-  | 'docs';
+  | 'docs'
+  | 'docs_technical';
 
 /** All screens (admin / read see every one of these). Note: `user_management` is NOT a normal
  *  opt-in screen — it is gated by the separate `ols_ops_access` table (see RbacService.canView). */
@@ -25,7 +26,8 @@ export const ALL_SCREENS: ScreenKey[] = [
   'oracle_command_center',
   'user_management',
   'extras',
-  'docs'
+  'docs',
+  'docs_technical'
 ];
 
 /** Screens an `is_salt` user may see (and act on). Edit to taste. */
@@ -41,7 +43,8 @@ export const SCREEN_ROUTES: Record<ScreenKey, string> = {
   oracle_command_center: '/oracle_command_center',
   user_management: '/user_management',
   extras: '/login',
-  docs: '/home'
+  docs: '/docs/user-guide',
+  docs_technical: '/docs/technical-guide'
 };
 
 /** Maps a sidebar nav item URL to its screen key, so the nav can be filtered. */
@@ -55,6 +58,8 @@ export function screenForNavUrl(url: string | undefined | any[]): ScreenKey | nu
   if (path.startsWith('/infra_pulse')) return 'infra_health'; // group parent → visible if health is
   if (path.startsWith('/oracle_command_center')) return 'oracle_command_center';
   if (path.startsWith('/user_management')) return 'user_management';
+  if (path.startsWith('/docs/technical-guide')) return 'docs_technical';
+  if (path.startsWith('/docs')) return 'docs';
   if (path.startsWith('/login') || path.startsWith('/404') || path.startsWith('/500')) return 'extras';
   if (path.startsWith('http')) return 'docs';
   return null;

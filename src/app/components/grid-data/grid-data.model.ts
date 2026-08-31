@@ -97,11 +97,14 @@ export interface RollDataEvent {
   targets: string[];         // one or more target (To) COB dates
 }
 
-/** Per-date roll summary returned by the backend. */
+/** Per-date roll summary returned by the backend. Each target either rolled (`success`, with the row
+ * `count` the package reported) or was skipped (`failed`, with the DB `error`) — one bad date doesn't
+ * abort the rest. `source_count` is the row count at the source date; a target whose `count` differs
+ * from it is flagged (catches a 0-row or doubled roll that raised no DB error). */
 export interface RollResult {
   source_date: string;
-  source_count: number;
-  targets: { date: string; count: number }[];
+  source_count?: number | null;
+  targets: { date: string; count?: number | null; status?: 'success' | 'failed'; error?: string }[];
 }
 
 /** Marker on draft rows added via the modal's "Add" button. */

@@ -1,14 +1,21 @@
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, OnInit, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { AgGridAngular } from 'ag-grid-angular';
+import { ColDef } from 'ag-grid-community';
+import { ColorModeService } from '@coreui/angular';
+import { interval } from 'rxjs';
 
-import { RegressionService } from './regression.service';
-import { LoaderComponent } from '../../../components/loader/loader.component';
-import { ConfirmService } from '../../../components/confirm/confirm.service';
+import { OlsCibRegressionService } from './ols-cib-regression.service';
+import { LoaderComponent } from '../../../../components/loader/loader.component';
+import { ConfirmService } from '../../../../components/confirm/confirm.service';
+import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data/grid-data.model';
+import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
   BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
   RegressionState, RunSqlResult
-} from '../../../shared/models';
+} from '../../../../shared/models';
 
 interface StepDef { key: string; title: string; }
 interface Toast { kind: 'ok' | 'err' | 'info'; text: string; }
@@ -21,14 +28,14 @@ interface TreeNode { name: string; path: string; dir: boolean; children: TreeNod
  * Every action is confirmed and audited server-side. See regression_api.py / the plan.
  */
 @Component({
-  selector: 'app-regression',
+  selector: 'app-ols-cib-regression',
   standalone: true,
-  imports: [FormsModule, NgTemplateOutlet, LoaderComponent],
-  templateUrl: './regression.component.html',
-  styleUrls: ['./regression.component.scss']
+  imports: [FormsModule, NgTemplateOutlet, LoaderComponent, AgGridAngular],
+  templateUrl: './ols-cib-regression.component.html',
+  styleUrls: ['./ols-cib-regression.component.scss']
 })
-export class RegressionComponent implements OnInit {
-  private readonly svc = inject(RegressionService);
+export class OlsCibRegressionComponent implements OnInit {
+  private readonly svc = inject(OlsCibRegressionService);
   private readonly confirm = inject(ConfirmService);
 
   readonly steps: StepDef[] = [
@@ -61,6 +68,10 @@ export class RegressionComponent implements OnInit {
   readonly refreshDbs = signal<string[]>(['cib_batch']);
   readonly loading = signal(true);
   readonly toast = signal<Toast | null>(null);
+  // Auto-dismiss any toast a few seconds after it appears (e.g. "State refreshed.") so it doesn't linger.
+  private readonly _toastAuto = effect((onCleanup) => {
+    if (this.toast()) { const id = setTimeout(() => this.toast.set(null), 4000); onCleanup(() => clearTimeout(id)); }
+  });
   readonly busy = signal<string>('');            // step_key currently running
 
   // Apply DB
@@ -109,6 +120,65 @@ export class RegressionComponent implements OnInit {
   readonly activityRows = signal<RegressionActivityRow[]>([]);
   readonly monitorLoading = signal(false);
 
+  // Batch-monitor grid: AG-Grid (pagination + per-column filter + sort; virtualized for large sets).
+  private readonly colorMode = inject(ColorModeService);
+  readonly gridTheme = computed(() => (this.isDark() ? olsGridThemeDark : olsGridTheme));
+  private isDark(): boolean {
+    const m = this.colorMode.colorMode();
+    if (m === 'dark') { return true; }
+    if (m === 'light') { return false; }
+    return this.colorMode.getPrefersColorScheme() === 'dark';
+  }
+  readonly batchColDefs = computed<ColDef[]>(() =>
+    (this.batchResult()?.columns ?? []).map((c) => ({ field: c, headerName: c })));
+  readonly batchRowData = computed<Record<string, unknown>[]>(() => {
+    const br = this.batchResult();
+    if (!br) { return []; }
+    return br.rows.map((row) => Object.fromEntries(br.columns.map((c, i) => [c, row[i]])));
+  });
+  // Separate options objects per grid — AG-Grid attaches its api to the gridOptions instance, so the two
+  // grids must NOT share one object. Different default page sizes too.
+  readonly batchGridOptions = {
+    defaultColDef: { resizable: true, sortable: true, filter: true, floatingFilter: true, minWidth: 120 },
+    pagination: true,
+    paginationPageSize: 50,
+    paginationPageSizeSelector: [25, 50, 100, 500],
+  };
+  readonly activityGridOptions = {
+    defaultColDef: { resizable: true, sortable: true, filter: true, floatingFilter: true, minWidth: 120 },
+    pagination: true,
+    paginationPageSize: 100,
+    paginationPageSizeSelector: [50, 100, 500, 1000],
+  };
+  /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
+  readonly activityColDefs: ColDef[] = [
+    { field: 'load_dt', headerName: 'Date', maxWidth: 120 },
+    { field: 'step_key', headerName: 'Step' },
+    { field: 'action', headerName: 'Action' },
+    { field: 'status', headerName: 'Status', maxWidth: 130,
+      cellClassRules: {
+        'rg-cell--ok': (p) => p.value === 'complete',
+        'rg-cell--err': (p) => p.value === 'error',
+        'rg-cell--warn': (p) => p.value === 'forced',
+      } },
+    { field: 'performed_by', headerName: 'By' },
+    { field: 'start_time', headerName: 'Start' },
+    { field: 'end_time', headerName: 'End' },
+    { field: 'task_completion_time', headerName: 'Dur (s)', maxWidth: 110 },
+    { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220, tooltipField: 'comments' },
+  ];
+
+  // "Last refreshed <ts> · N sec ago" per monitor tab (reuses the Home last-synced pattern).
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly nowTick = signal(Date.now());
+  private readonly batchAt = signal<Date | null>(null);
+  private readonly activityAt = signal<Date | null>(null);
+  readonly batchRefreshed = computed(() => this.refreshedLabel(this.batchAt()));
+  readonly activityRefreshed = computed(() => this.refreshedLabel(this.activityAt()));
+  private refreshedLabel(at: Date | null): string {
+    return at ? `Last refreshed ${formatDateTime(at)} · ${syncAgo(at, this.nowTick())}` : '';
+  }
+
   readonly chgScripts = computed(() => this.scripts().filter((s) => /(^|\/)CHG_/i.test(s)));
   /** Every step complete or forced → the run can be closed out. */
   readonly allStepsDone = computed(() => {
@@ -128,6 +198,9 @@ export class RegressionComponent implements OnInit {
       error: (e) => { this.loading.set(false); this.fail(e, 'Could not load the regression run'); }
     });
     this.loadActivity();
+    this.loadBatches();          // show batch status by default — don't make the user click Refresh
+    // Tick every second so the "N sec ago" last-refreshed labels stay live.
+    interval(1000).pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.nowTick.set(Date.now()));
   }
 
   /** Re-hydrate the pulled-branch scripts after a refresh/resume so Apply/Reset/Trigger work again. */
@@ -193,7 +266,7 @@ export class RegressionComponent implements OnInit {
   effectiveStatus(key: string): string { return this.busy() === key ? 'in_progress' : this.stepStatus(key); }
 
   /** Timestamp of the last time this step ran (for the "last run" line). */
-  lastRun(key: string): string { const m = this.stepMeta(key); return m?.finished_on || m?.started_on || ''; }
+  lastRun(key: string): string { const m = this.stepMeta(key); return m?.end_time || m?.start_time || ''; }
   stepBy(key: string): string { return this.stepMeta(key)?.performed_by ?? ''; }
 
   // --- concurrency lock + stuck detection ------------------------------------
@@ -522,12 +595,14 @@ export class RegressionComponent implements OnInit {
   loadBatches(): void {
     this.monitorLoading.set(true);
     this.svc.batchMonitor(this.monitorDb()).subscribe({
-      next: (r) => { this.monitorLoading.set(false); this.batchResult.set(r); },
+      next: (r) => { this.monitorLoading.set(false); this.batchResult.set(r); this.batchAt.set(new Date()); this.nowTick.set(Date.now()); },
       error: (e) => { this.monitorLoading.set(false); this.fail(e, 'Could not load batch status'); }
     });
   }
   loadActivity(): void {
-    this.svc.activity(this.runId || undefined).subscribe({ next: (r) => this.activityRows.set(r.rows ?? []) });
+    this.svc.activity(this.runId || undefined).subscribe({
+      next: (r) => { this.activityRows.set(r.rows ?? []); this.activityAt.set(new Date()); this.nowTick.set(Date.now()); }
+    });
   }
   cell(v: unknown): string { return v === null || v === undefined ? '' : String(v); }
 

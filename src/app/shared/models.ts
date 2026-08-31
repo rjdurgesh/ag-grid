@@ -218,6 +218,9 @@ export interface AccessSnapshot {
     all_level?: 'READ' | 'WRITE';
     category_grants: ConfigCategoryGrant[];
     table_grants: ConfigTableGrant[];
+    /** Scopes where the Regression tab is granted (from ols_app_access, e.g. ['cib']). DEV/STG only;
+     *  a scope not listed → the tab is hidden even for a user who can see that scope's config. */
+    regression?: string[];
   };
   /** Log Analytics: visible server names. `all_servers` true → every server; `denied_servers`
    *  subtracts specific servers from that ("all EXCEPT these"). */
@@ -339,15 +342,15 @@ export interface RegressionRun {
   app_env: string;
   status: string;
   started_by: string;
-  started_on?: string;
+  start_time?: string;
 }
 /** Current status of one step (latest log row). */
 export interface RegressionStepState {
   status: string;                 // not_started | in_progress | complete | error | forced
   performed_by?: string;
   forced_by?: string;
-  started_on?: string;
-  finished_on?: string;
+  start_time?: string;
+  end_time?: string;
   task_completion_time?: number;
   stale?: boolean;                // in_progress longer than the threshold → possibly stuck
   age_seconds?: number;           // how long it's been in_progress
@@ -388,6 +391,7 @@ export interface BatchMonitorResult {
 }
 /** One regression audit-log row (Regression Activity grid). */
 export interface RegressionActivityRow {
+  load_dt?: string;
   log_id: number;
   run_id: number;
   business_line?: string;
@@ -395,11 +399,43 @@ export interface RegressionActivityRow {
   action: string;
   status: string;
   performed_by: string;
-  started_on?: string;
-  finished_on?: string;
+  start_time?: string;
+  end_time?: string;
   task_completion_time?: number;
   forced_by?: string;
-  details?: string;
+  comments?: string;
+}
+
+// --- Documentation Center (POST /api/docs/* — see docs_api.py / DOCS_DESIGN.md) -----------------
+
+/** Which audience a doc targets — drives grouping AND role-based visibility. */
+export type DocAudience = 'user' | 'technical';
+/** How a doc opens: an external wiki link (new tab) or a local markdown file (in-app reader). */
+export type DocType = 'wiki' | 'markdown';
+
+/** One catalogue entry — a wiki link or a local `.md` file. Markdown docs are addressed by an opaque
+ *  `id` (never a filesystem path); wikis carry an external `url`. */
+export interface DocEntry {
+  id: string;
+  title: string;
+  description?: string;
+  type: DocType;
+  audience: DocAudience;
+  tags?: string[];
+  /** ISO date — file mtime for markdown, or the catalogue for a wiki. */
+  updated?: string;
+  /** Source filename (markdown only), e.g. "RBAC_DESIGN.md" — shown on the card. */
+  file?: string;
+  /** External URL (wiki only). */
+  url?: string;
+}
+
+/** The raw markdown of one local doc (rendered + sanitized client-side). */
+export interface DocContent {
+  id: string;
+  title: string;
+  markdown: string;
+  updated?: string;
 }
 
 /** Result of running a statement/script (discriminated by `kind`). */

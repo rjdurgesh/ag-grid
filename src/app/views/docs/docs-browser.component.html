@@ -1,0 +1,146 @@
+<section class="ols-view ols-surface docs">
+
+  <!-- ================= READER ================= -->
+  @if (selected(); as doc) {
+    <div class="docs-reader">
+      <div class="docs-reader__bar">
+        <nav class="docs-crumb" aria-label="Breadcrumb">
+          <button type="button" class="docs-crumb__link" (click)="back()">{{ heroTitle() }}</button>
+          <span class="docs-crumb__sep">/</span>
+          <span class="docs-crumb__cur">{{ doc.title }}</span>
+        </nav>
+        <div class="docs-reader__actions">
+          @if (docUpdated()) { <span class="docs-reader__updated">Updated {{ docUpdated() }}</span> }
+          <button type="button" class="docs-btn" (click)="downloadRaw()" [disabled]="docLoading()" title="Download the raw .md file">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download
+          </button>
+          <button type="button" class="docs-btn docs-btn--primary" (click)="back()">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Back
+          </button>
+        </div>
+      </div>
+
+      @if (docLoading()) {
+        <app-loader variant="skeleton" [rows]="6" message="Loading document…" />
+      } @else if (error()) {
+        <div class="docs-alert">{{ error() }}</div>
+      } @else {
+        <div class="docs-reader__body">
+          @if (toc().length > 1) {
+            <aside class="docs-toc" aria-label="On this page">
+              <div class="docs-toc__title">On this page</div>
+              <ul class="docs-toc__list">
+                @for (t of toc(); track t.id) {
+                  <li class="docs-toc__item" [class.docs-toc__item--sub]="t.level === 3">
+                    <button type="button" class="docs-toc__link" (click)="goto(t.id)">{{ t.text }}</button>
+                  </li>
+                }
+              </ul>
+            </aside>
+          }
+          <article class="docs-content markdown-body" (click)="onReaderClick($event)" [innerHTML]="docHtml()"></article>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- ================= CATALOGUE ================= -->
+  @else {
+    <header class="docs-hero">
+      <div class="docs-hero__text">
+        <h1 class="docs-hero__title">{{ heroTitle() }}</h1>
+        <p class="docs-hero__sub">{{ heroSub() }}</p>
+      </div>
+      <div class="docs-search">
+        <svg class="docs-search__ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <input type="search" class="docs-search__input" placeholder="Search documentation…"
+               [value]="search()" (input)="search.set($any($event.target).value)" aria-label="Search documentation" />
+      </div>
+    </header>
+
+    @if (loading()) {
+      <app-loader variant="skeleton" [rows]="4" message="Loading documentation…" />
+    } @else if (error()) {
+      <div class="docs-alert">{{ error() }}</div>
+    } @else if (isEmpty()) {
+      <div class="docs-empty">No documentation is available yet.</div>
+    } @else if (noMatches()) {
+      <div class="docs-empty">No documents match “{{ search() }}”.</div>
+    } @else {
+      @for (sec of sections(); track sec.key) {
+        <div class="docs-section">
+          <div class="docs-section__head">
+            <h2 class="docs-section__title">{{ sec.title }}</h2>
+            <span class="docs-section__hint">{{ sec.hint }}</span>
+          </div>
+          <div class="docs-grid">
+            @for (e of sec.entries; track e.id) {
+              @if (e.type === 'wiki') {
+                <a class="docs-card docs-card--wiki" [href]="e.url" target="_blank" rel="noopener noreferrer"
+                   [title]="'Open ' + e.title + ' (external)'">
+                  <ng-container *ngTemplateOutlet="cardInner; context: { e: e }"></ng-container>
+                </a>
+              } @else {
+                <button type="button" class="docs-card" (click)="open(e)" [title]="'Open ' + e.title">
+                  <ng-container *ngTemplateOutlet="cardInner; context: { e: e }"></ng-container>
+                </button>
+              }
+            }
+          </div>
+        </div>
+      }
+    }
+  }
+
+  <!-- Shared card body -->
+  <ng-template #cardInner let-e="e">
+    <div class="docs-card__top">
+      <span class="docs-card__icon" [class.docs-card__icon--wiki]="e.type === 'wiki'" aria-hidden="true">
+        @if (e.type === 'wiki') {
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M14 4h6v6M20 4l-9 9M10 5H5v14h14v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        } @else {
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M7 3h7l4 4v14H7zM14 3v4h4M9 12h6M9 16h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        }
+      </span>
+      <span class="docs-card__badge" [class.docs-card__badge--wiki]="e.type === 'wiki'">{{ badge(e) }}</span>
+      <span class="docs-card__spacer"></span>
+      @if (e.updated) { <span class="docs-card__date">{{ e.updated }}</span> }
+    </div>
+    <div class="docs-card__title">{{ e.title }}</div>
+    @if (cardSource(e); as src) {
+      <div class="docs-card__file" [class.docs-card__file--wiki]="e.type === 'wiki'" [title]="src">
+        @if (e.type === 'wiki') {
+          <svg class="docs-card__file-ico" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M9.5 14.5l5-5M11 7l1-1a3.4 3.4 0 0 1 4.8 4.8l-1 1M13 17l-1 1A3.4 3.4 0 0 1 7.2 13.2l1-1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        } @else {
+          <svg class="docs-card__file-ico" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M13 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8zM13 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        }
+        <span class="docs-card__file-name">{{ src }}</span>
+      </div>
+    }
+    @if (e.description) { <div class="docs-card__desc">{{ e.description }}</div> }
+    @if (e.tags?.length) {
+      <div class="docs-card__tags">
+        @for (t of e.tags; track t) { <span class="docs-tag">{{ t }}</span> }
+      </div>
+    }
+    <div class="docs-card__foot">
+      <span class="docs-card__open">
+        {{ e.type === 'wiki' ? 'Open in new tab' : 'Open' }}
+        @if (e.type === 'wiki') {
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M10 5H5v14h14v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        } @else {
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        }
+      </span>
+    </div>
+  </ng-template>
+</section>

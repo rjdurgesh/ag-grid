@@ -51,16 +51,24 @@ Command Center are already `false` (live) against the FastAPI backend in `backen
 **Two independent layers of "mock" — don't confuse them:**
 1. **Frontend `apiMocks`** (above, in `environment.ts`) decides whether a request *even leaves
    Angular*. `true` → answered in-browser by `mock-data.ts`, backend never called.
-2. **Backend per-screen `*_USE_DUMMY`** (in `backend/.env`) decides, *once a request reaches
-   FastAPI*, whether that screen returns canned data or runs its real functions:
-   `ORACLE_CC_USE_DUMMY`, `INFRA_HEALTH_USE_DUMMY` (add one per screen you split). The backend
-   has **no** `apiMocks` — these env flags are its equivalent, screen by screen.
+2. **Backend per-screen `*_USE_DUMMY`** decides, *once a request reaches FastAPI*, whether that
+   screen returns canned data or runs its real functions: `ACCESS_USE_DUMMY` (access/config/regression),
+   `INFRA_HEALTH_USE_DUMMY` in `.env`; OCC's is `use_dummy` in `config/occ.json`. The backend has **no**
+   `apiMocks` — these flags are its equivalent, screen by screen.
 
    So three dev stages per screen: `apiMocks:true` (pure UI, no backend) → `apiMocks:false` +
    `*_USE_DUMMY=1` (real backend, canned data, no DB/agent) → `apiMocks:false` + `*_USE_DUMMY=0`
    (fully live). Each screen with a real/dummy split keeps its dummy data in a sibling module
-   (`oracle_cc_dummy.py`, `infrastructure_health_dummy.py`) imported at the bottom of its API
-   file; flip its flag in `.env`, no code change.
+   (`oracle_cc_dummy.py`, `infrastructure_health_dummy.py`) imported at the bottom of its API file.
+
+**Backend config split** (`config_loader.py`): screen-specific, non-secret settings live in
+per-feature files **`backend/config/<feature>.json`** — `regression.json` (**per scope**: cib/retail/group
+git repo, work/log dirs, NAS feed path + a `defaults` block), `occ.json` (Oracle Command Center thresholds
+/ schema / SQL-Intelligence), `config_ops.json` (CSV upload archive dir, limits, batch size). Real files are
+per-server + gitignored; commit only `<feature>.example.json`. **`.env`** keeps only GLOBAL (`APP_ENV`, CORS)
++ SECRETS (`REGRESSION_GIT_TOKEN[_<SCOPE>]`, `CYBERARK_*`, DB creds) + the dummy flags. Resolution per key is
+**JSON → legacy env var → default**, so existing `.env`-only deployments keep working (non-breaking). Edit a
+JSON → restart the backend (read at import).
 
 ---
 
@@ -227,18 +235,27 @@ validation** (name + order; **trailing columns may be omitted → NULL**) → **
 preview** with per-cell validation (bad cells red; dates must be `YYYY-MM-DD`, fix inline or **Issues only** /
 **Export**) → **Append** (insert only) or **Replace** (delete-then-insert; whole table, or the single COB date).
 The server ([`config_api.py`](backend/config_api.py)) is the authority: validates against the real schema
-(`ALL_TAB_COLUMNS`), reads the **date column from a 1-1 mapping table**, type-casts (explicit `TO_DATE`/native
-bind — never NLS), then `database.config_load_table` does the **atomic** load (per-table lock, `DELETE` not
-`TRUNCATE`, batched `executemany`), **archives the CSV to NAS** (`<stem>_<user>_<token>.csv` + SHA-256) and writes
-a maximal **`ols_upload_audit`** row. DDL: [`sql/upload_setup.sql`](backend/sql/upload_setup.sql); `.env`:
-`CONFIG_UPLOAD_*`, `CONFIG_DATE_MAP_*`. Config Ops is mock-backed today, so this is the first **real Config write
-path** (frontend + mock verified; wire `sql_db_configs` + the mapping table to go live). Full design: UPLOAD_DESIGN.md.
+(`ALL_TAB_COLUMNS`), resolves the **date column via the DB function `ols_util.get_date_column(:table)`**, type-casts
+(explicit `TO_DATE`/native bind — never NLS), then `database.config_load_table` does the **atomic** load (per-table
+lock, `DELETE` not `TRUNCATE`, batched `executemany`), **archives the CSV to NAS** (`<stem>_<user>_<token>.csv` +
+SHA-256) and writes a maximal **`ols_upload_audit`** row. DDL: [`sql/upload_setup.sql`](backend/sql/upload_setup.sql);
+config: `config/config_ops.json` (archive dir, limits, batch size). Config Ops is mock-backed today, so this is the first **real Config write
+path** (frontend + mock verified; wire `sql_db_configs` to go live). Full design & internals: §4
+**Config Ops — CSV Upload & Load (design & internals)** below.
+Before a COB load the server runs a **partition detect-and-report** check (`database.config_partition_status`): if the
+table is RANGE-partitioned on the date column and the date's partition doesn't exist yet (e.g. a future COB date),
+it **stops before writing** with a clear 409 ("partition for <date> does not exist … ask the DBA/dev to create it")
+— no auto-DDL. Any load/DB error (including this) opens the **rich error dialog** (full message + Copy + Email to
+`environment.supportEmail`).
 The same modal's **Roll Data** (COB tables) rolls one **source** date's rows into **one or more target dates**
-(Target Start/End + a **Date Range** toggle → the expanded list; `POST …/roll` → `database.config_roll_dates`
-delete-then-insert copy per date, atomic) and reports a **per-date result** (source date/count + each target
-date + rows, ✓ or ⚠ vs source).
+(Target Start/End + a **Date Range** toggle → the expanded list; `POST …/roll` → `database.config_roll_dates`,
+which calls the standard **`ols_util.roll_static_data`** proc once with the target dates as a `SYS.ODCIVARCHAR2LIST`
+— the proc loops internally, per-date, and returns an OUT error list so one bad date is skipped not fatal) and
+reports a **per-date result** (each target ✓ rolled / ✗ failed with the DB error; "N of M rolled, K failed").
 
-**Regression** (Config Ops → CIB → **Regression** tab, **DEV/STG only**, anyone with CIB Config access)
+**Regression** (Config Ops → **Regression** tab, **DEV/STG only** AND granted per scope via an
+`ols_app_access` **`REGRESSION`** grant — `rbac.regressionVisible(scope)`; hidden otherwise, NOT tied to the
+ops-admin table)
 drives the pre-prod cycle as a gated, force-markable, fully-audited workflow: Refresh DB (multi-select all 5 DBs)
 → Apply DB changes (git-pull a `release/*` branch → run `CHG_*.sql` on the chosen DB(s) via **sqlplus**, log +
 Download) → File copy (developer JSON manifest, `*` = recurse) → Reset → Trigger (run a branch `.sql` on one of
@@ -264,14 +281,26 @@ the same step (409) while it runs, and every action records **who did it** (`per
 log) — so multiple operators can share a run without stepping on each other. A step stuck `in_progress` past
 `REGRESSION_STEP_STALE_MINUTES` (crash between start and result) is flagged **stale** and offers a logged **Unlock**
 (→ error, re-runnable) so the run can't deadlock. Below it, two monitors: **Monitoring Batches** (a
-`database.fetch_batch_monitor` query, scoped to the three batch schedulers — Group / CIB Batch / Retail Batch) and
-**Regression Activity** (the `ols_regression_log` audit). Backend
+`database.fetch_batch_monitor` query — returns the whole result set, capped only by `REGRESSION_BATCH_MAX_ROWS`
+(default 100k); shown in an **AG-Grid with pagination + per-column filter + sort**, fixed to **OLS CIB Batch**
+(no DB dropdown); icon **Refresh** + a live **"Last refreshed <ts> · N sec ago"** line) and
+**Regression Activity** (the `ols_regression_log` audit — also an **AG-Grid** with pagination/filter/sort, icon
+Refresh + the same live last-refreshed line). Backend
 [`regression_api.py`](backend/regression_api.py) + `regression_ops.py` (git/sqlplus/copy) + `database.py`;
-tables `sql/regression_setup.sql`; config in `.env` (git repo/auth, `REGRESSION_LOG_DIR`, manifest path).
+tables `sql/regression_setup.sql`; **per-scope config in `config/regression.json`** (each scope's git repo,
+work/log dirs, NAS feed manifest — resolved via `config_loader.regression_scope_config(scope)`), git token in `.env`.
 **Server prereqs: git + sqlplus.** The sqlplus password is fed over STDIN and **masked** in every log; it is
 resolved server-side — from config, or at runtime from **CyberArk** ([`cyberark.py`](backend/cyberark.py), CCP
 client-cert call by AppID; `CYBERARK_*` in `.env`) — so it is never typed in the UI or visible in the network tab.
-Full detail: memory `regression-screen`.
+**Frontend is per-scope** (so scopes can diverge — different steps later): each has its own component + service
+under `views/config_ops_console/regression/` — `ols_cib_regression/` (`app-ols-cib-regression`, rendered by
+config_ols_cib) and `ols_retail_regression/` (`app-ols-retail-regression`, rendered by config_ols_retail); group
+to follow. Both are gated by `showRegression` = **DEV/STG AND a per-scope `REGRESSION` grant**. Each scope is a **separate application with separate regression
+state** — the per-scope service sends `scope` on every `/api/regression/*` call and the dev mock keys its run/activity
+store per scope (real backend is CIB-only today and ignores it; a retail backend would filter by scope). Retail's DB
+defaults are `retail_batch`. The two monitor grids auto-load on open (no Refresh click), use **separate `gridOptions`**
+(batches page size 50, activity 100 — never share one options object across grids), show a live "Last refreshed … ·
+N sec ago" beside the refresh icon, and any toast auto-dismisses after 4s. Full detail: memory `regression-screen`.
 
 **Local testing** (`USE_MOCK`/access mocked): flip `devRoles` in
 [`environment.ts`](src/environments/environment.ts) to ADMIN/READ/SALT — the mock
@@ -383,7 +412,7 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 | `POST /api/config/{scope}/tables` | `{ app_env, username }` | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`). Body (not query) so `username` stays out of the URL/logs. |
 | `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
 | `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
-| `POST /api/config/{scope}/roll` | `{ rolled_by, tablespace, table_name, from, to }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, message }` — the UI shows `message` verbatim in the roll panel (falls back to a count line only if `message` is absent) |
+| `POST /api/config/{scope}/roll` | `{ rolled_by, table_name, db_source, source_date, target_dates[], tablespace }` — `db_source` (the row's physical DB, e.g. `ols_cib_reporting`) routes the op; `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, source_date, source_count, targets:[{date,status,count,error?}] }` — per-date result |
 | `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
 | `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
 | `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |
@@ -459,6 +488,240 @@ clears whatever was pending. *Add and Duplicate are both INSERT.*
   never in bulk.
 - **Save selected N** commits only the current pending operation for the **ticked** rows:
   the ticked drafts in Insert mode, or the ticked edited rows in Update mode.
+
+### Config Ops — CSV Upload & Load (design & internals)
+
+Design for the **Upload Data** feature in the Config Ops grid modal (3-dot → *Upload Data*). An
+authorized user uploads a CSV into the currently-open table, reviews/edits/validates it on screen, then
+loads it — safely, generically, fully audited. RBAC detail: RBAC_DESIGN.md. (The §3b summary above is the
+short version; this is the full internals.)
+
+#### 1. Goals & principles
+- **Generic** across any config table (columns/types come from the catalogue, not hard-coded).
+- **Safe**: every load is one **atomic transaction** — it fully succeeds or fully rolls back. No partial state.
+- **Reviewable**: the user sees + edits the data on screen and fixes rejects **before** anything is written.
+- **Authoritative server**: the client is UX; the server re-validates header, types, RBAC, and identifiers.
+- **Traceable**: every successful load archives the file to NAS + writes a maximal audit row.
+
+#### 2. Where it hooks in
+- **Frontend**: `GridDataComponent.uploadData()` opens the upload dialog. The modal already holds the
+  table's `cols`, `cols_data_types`, and the row's date flag — so header + type + COB decisions are
+  available client-side. Reuses the existing `toCsv` export.
+- **Gate**: same RBAC as editing — only users who can **write** that table (`canWriteTable`) see/use Upload.
+  The server re-checks write permission.
+- **Backend**: the Config Ops backend is **mock-only today**. This feature ships the **first real Config
+  write path** (`config_api.py` + `database.py` functions), plus a mock for dev.
+
+#### 3. Table / date metadata (the date-column function)
+The customer's **existing DB function** `ols_util.get_date_column(<table_name>)` returns each config
+table's **date column name** — `COB_DT` or `REPORTING_DT` (defaulting to `COB_DT` when it returns
+nothing). This is the authority for the **exact date column name** to use in `DELETE WHERE <date_col> = :d`.
+The server resolves it via `cursor.callfunc("ols_util.get_date_column", str, [table])` (in
+`database.config_date_column`) — never trusts the client. The catalogue's existing `is_cobdt`-style flag /
+start-end date UI is derived from the same source.
+
+#### 4. Load modes
+Both modes apply to **every** table type; only the DELETE scope differs.
+
+| Mode | Non-date table | Date table (COB/reporting) |
+|------|----------------|-----------------------------|
+| **Append**  | `INSERT` only (no delete) | `INSERT` only for that date (no delete) |
+| **Replace** | `DELETE FROM tgt;` then `INSERT` (full replace) | `DELETE FROM tgt WHERE <date_col> = :d;` then `INSERT` |
+
+- **Date tables: exactly ONE distinct date per file, enforced** (client + server). >1 distinct date →
+  block: *"This file has N dates (…). Upload one date per file."*
+- **`DELETE`, never `TRUNCATE`** — TRUNCATE is DDL, auto-commits, can't roll back; a failed insert after
+  TRUNCATE would leave the table empty with no undo. DELETE keeps the whole load atomic.
+
+#### 5. Date & type handling
+The #1 Oracle-load bug is relying on implicit `NLS_DATE_FORMAT` conversion (ambiguous, env-dependent).
+We avoid it entirely:
+- **Canonical input formats, enforced + shown in the dialog** (ISO 8601, **24-hour, no AM/PM, no tz**):
+  - `DATE` → `YYYY-MM-DD` (time defaults to `00:00:00`); also accepts `YYYY-MM-DD HH24:MI:SS` when the DATE carries a time.
+  - `TIMESTAMP` → `YYYY-MM-DD HH24:MI:SS`, optional fractional seconds `.ffffff` (≤6).
+- **Date columns are known** from `cols_data_types` (the catalogue already returns Oracle types).
+- **Client** validates each date cell (format + real-calendar check → `2026-02-30` rejected); 2-digit years
+  rejected; users warned that Excel reformats dates (save ISO / as text).
+- **Server converts explicitly** — parse each date string with the canonical format into a native
+  `datetime` and **bind the datetime object** (python-oracledb → `DATE`/`TIMESTAMP`, no NLS). The
+  `date_col = :d` value in the DELETE is likewise a bound date.
+- **Numbers**: validate numeric (reject thousands separators / stray chars), bind native; **NULLs**: empty
+  cell → `NULL` for nullable columns, **reject** for `NOT NULL`; strings trimmed; length checked.
+
+#### 6. Header validation (strict, with trailing-column omission)
+Expected header = the table's business columns from `retrieve` (audit columns like `inserted_by` are
+system-set, **not** in the file). Validate **name + position** from the left — case-insensitive, trimmed.
+
+**Trailing columns may be omitted** (SQL*Loader `TRAILING NULLCOLS`): the file's columns must be a valid
+**left-prefix** of the table's columns (names match in order from column 1 — **no middle gaps, no
+reordering**). Omitted **trailing** columns are auto-filled `NULL`, provided:
+- each omitted column is **nullable or has a DB default** — an omitted `NOT NULL` (no default) column is a
+  hard error: *"Your file omits required column(s): X, Y."*;
+- for a **date table**, the **date column is never omittable** (needed for the single-date rule + Replace).
+
+**Never silent**: the preview shows all table columns with omitted ones rendered as `(NULL — not in file)`,
+and the confirm dialog states *"columns X, Y, Z will be set to NULL."* Middle gaps / extra / reordered
+columns → Load stays disabled with a precise diff.
+
+#### 7. Preview, validation & the reject flow
+- **Editable, virtualized grid** (AG-Grid — virtualization handles 80–90k rows; only visible cells render).
+  A **3-way view segment (All / Valid / Issues)** + pagination + column filters replace the old binary toggle.
+- **Two-layer validation** (validation itself is cheap — ~1.8M cell checks at 90k×20 is sub-second):
+  - **Client, primary**: per-cell type/format/NOT-NULL checks; bad cells **highlighted**; validated on edit
+    (automatic — `onCellChanged` → `validateRow`, no separate validate click) and fully on Load.
+  - **Server, authority**: re-validate header + type-cast + DB constraints; rejects are rare by then.
+- **Reject flow**: fix a rejected row → re-validate → it promotes into the valid set; may **proceed with
+  valid rows only**; may **export rejects** to CSV. **Atomic load**: only the valid set is inserted.
+
+#### 8. Delimiter & parsing
+- **Delimiter**: **Auto-detect** (sniff the header for the most consistent delimiter) with manual
+  **override** (`, ; | : tab`).
+- **RFC-4180 parser** — quoted fields, embedded delimiters/newlines, `""` escaping, BOM strip
+  (hand-rolled in `shared/csv-util.ts`, dependency-free — not `split(',')`).
+
+#### 9. Transfer & the load engine
+- Because the grid is **editable**, what loads is the **edited** data — on Load the client **regenerates a
+  CSV from the (edited) valid rows** and sends *that*. The server re-parses it (authority) and inserts. That
+  same CSV is archived — a faithful record of exactly what entered the table.
+- **No per-user temp tables** (dynamic `CREATE TABLE tmp_<t>_<user>` is an anti-pattern: DDL per upload,
+  library-cache churn, orphan cleanup; and it doesn't prevent the real conflict on the shared target). A
+  **single-request atomic load needs no staging** — the user already reviewed client-side.
+- **Engine (one request, one session, one transaction)**:
+  1. RBAC write re-check + **identifier whitelist** (table + columns must exist in the catalogue — never
+     interpolate client identifiers).
+  2. Resolve date column via `ols_util.get_date_column(:table)` → date column / mode scope.
+  3. Take a **per-target-table application lock** (`SELECT … FOR UPDATE NOWAIT`, reuses the regression
+     step-lock pattern) → reject a concurrent load with *"A load into TBL is in progress by X"*. (COB tables
+     lock at `(table, date)`.)
+  4. Re-parse CSV → re-validate header → type-cast/convert every cell (collect rejects).
+  5. **Partition detect-and-report** (COB tables): `database.config_partition_status` — if the table is
+     RANGE-partitioned on the date column and the date's partition doesn't exist yet, stop **before** any
+     write with a **409** (*"partition for <date> does not exist … ask the DBA/dev to create it"*). No DDL.
+  6. `DELETE` per mode (none for Append) → **batched `executemany` INSERT** (5–10k rows/batch).
+  7. **COMMIT** (or ROLLBACK on any error).
+  8. On success: **archive to NAS** + **write audit** + return counts. UI refreshes the modal grid.
+- **Scale**: batched insert; define ceilings (`CONFIG_UPLOAD_MAX_ROWS` / `_MAX_MB`); beyond that, direct
+  users to SQL*Loader/external tables.
+
+#### 10. NAS archive
+On success, copy the loaded CSV to `CONFIG_UPLOAD_ARCHIVE_DIR`, renamed
+**`<original_stem>_<username>_<token>.csv`** (username for at-a-glance, token for uniqueness even if the same
+user re-uploads the same filename). Store its SHA-256 in the audit row.
+
+#### 11. Audit — `ols_upload_audit` (maximal)
+`load_id (PK, identity)`, `load_dt` (DATE, default SYSDATE — activity date, query "today's/yesterday's" loads),
+`app_env`, `scope`, `table_name`, `mode` (append/replace), `date_col`, `cob_dt` (the single business date
+loaded), `original_filename`, `archived_path`, `file_hash` (SHA-256), `delimiter`, `uploaded_by`,
+`start_time`, `end_time`, `duration_secs` (= end−start, seconds; convenience, derivable), `rows_in_file`,
+`rows_loaded`, `rows_rejected`, `rows_deleted`, `status` (success/partial/failed), `error_desc` (CLOB). A
+failed load also writes an audit row (`status='failed'`, `error_desc` set) before surfacing the error. The row is written by the
+**`ols_upload_audit_write` DB procedure**, called as a **`PRAGMA AUTONOMOUS_TRANSACTION`** so the audit
+persists even when the load's own transaction rolls back. `database.config_upload_audit_write` holds **no
+column list** — it forwards whatever fields the caller passes as `p_<name>` params — so **the proc owns the
+column list**: adding an audit column means changing only the proc (and `config_api.py` if the value comes
+from the app; nothing if the column is DB-defaulted/computed), never the `database.py` plumbing.
+
+#### 12. Security
+- **RBAC**: server re-checks per-table write permission (`canWriteTable`). Upload hidden without it.
+- **SQL-injection surface** (genericity is the risk): table + column identifiers **whitelisted** against the
+  catalogue (`_is_ident` + `ALL_TAB_COLUMNS`); **all values bound as parameters**; never string-concatenate
+  identifiers/values.
+- **Privileged connection**: writes use `app.state.sql_db_configs` (privileged), never the read-only OCC
+  monitor `db_configs`.
+- **File**: `.csv` only, max size/rows enforced. CSV-injection: sanitize leading `= + - @` on any re-export.
+
+#### 13. Code layout (data/API split)
+- **Backend**: `database.py` holds **all** SQL — `config_table_columns`, `config_date_column`,
+  `config_load_table` (lock/delete/executemany), `config_upload_audit_write`, `config_partition_status`,
+  `config_roll_dates`. Thin `config_api.py` — `POST /api/config/{scope}/table/{table}/upload` and `…/roll`
+  — validates + parses + orchestrates; router registered in `app.py`. DDL in `sql/upload_setup.sql`
+  (`ols_upload_audit` + `ols_upload_lock` + the `ols_upload_audit_write` autonomous-transaction proc).
+- **Frontend**: upload dialog (`components/grid-data/upload/`), `shared/csv-util.ts`, RBAC gate; reuses `toCsv`.
+- **Mock**: `mock-api.interceptor.ts` handles the upload + roll endpoints for dev parity (`REJECTME` cell →
+  reject demo; `DBERROR` → ORA-14400 demo; future date > mock max → partition 409 demo).
+- **Config** (`config/config_ops.json`, via `config_loader.config_ops_config()`): `archive_dir`, `max_rows`,
+  `max_mb`, `batch_size`, `audit_columns` (legacy `CONFIG_UPLOAD_*` env vars still work as fallback).
+
+#### 14. Failure & concurrency
+- Any error → ROLLBACK → target unchanged; audit row written `failed` with `error_desc`; the UI opens the
+  **rich error dialog** (full message + Copy + Email to `environment.supportEmail`).
+- Per-table (or per table+date) lock serializes concurrent loads; a stuck lock reuses the regression
+  stale-threshold + unlock pattern.
+
+#### 15. Roll Data (COB tables)
+The same modal's **Roll Data** rolls one **source** date's rows into **one or more target dates** (Target
+Start/End + a **Date Range** toggle → the expanded local-time list, excluding the source). `POST …/roll` →
+`database.config_roll_dates`, which just hands the customer's standard **`ols_util.roll_static_data(table, fromdt,
+todt_list, tablespace, uid, errmsg OUT)`** procedure its five inputs (table, from date, the **`SYS.ODCIVARCHAR2LIST`**
+of 'YYYY-MM-DD' target dates, tablespace, uid) and lets the package do everything — **the proc loops over the dates
+internally** (`ols_roll.rolltable` per date; audit stamping, tablespace/partition handling, and — per its loop
+`COMMIT` — each target commits independently). No app-side COUNT queries. The proc returns a **same-length OUT
+`errmsg` list** — slot *i* is `NULL` when date *i* rolled, or its Oracle error when that date was **skipped** — so one
+bad date **doesn't abort the rest** (each iteration is its own `BEGIN…EXCEPTION…END`). from/to pass as strings (the
+proc `TO_DATE`s them). The **per-date result** marks each target `success` (✓ rolled) or `failed` (the DB error) →
+the roll panel shows a *"N of M rolled, K failed"* banner with each good date ✓ and, for each failed date, the
+**first line** of the DB error + "…" as a **clickable link** → the full multi-line error opens in the rich error
+dialog (Copy + Email; `errorReport.show`). The proc also returns per-date **row counts** (`p_rows OUT
+SYS.ODCINUMBERLIST`) + the **source count** (`p_src_rows OUT NUMBER`) — counted inside the DB via the date column
+it resolves, no app-side query — so each rolled date shows its row count and a **⚠** when it differs from the
+source (catches a **0-row or doubled** roll that raised no DB error). `tablespace` + `uid` (roller) come from the
+Roll Data dialog / `RollBody`.
+
+#### 16. Open / future
+Second date format via dropdown (if needed). Per-row server-side reject persistence. Progress streaming
+(SSE, like the regression console) for very large loads. SQL*Loader path beyond the row ceiling.
+
+### Documentation Center (`/docs`)
+
+An in-app documentation portal that replaced the old hardcoded external "Docs" nav link. It has
+**two screens** — **User Guide** (`/docs/user-guide`) and **Technical Guide** (`/docs/technical-guide`)
+— and each holds **both** wiki links (open in a new tab) *and* local `.md` files (rendered in-app),
+sub-grouped into *Guides* + *Wikis & Runbooks*. Full design: `DOCS_DESIGN.md`.
+
+| Method & path | Request | Response |
+| --- | --- | --- |
+| POST `/api/docs/catalog` | `{ caller, app_env }` | `{ status, entries: DocEntry[] }` — already RBAC-filtered |
+| POST `/api/docs/content` | `{ caller, id }` | `{ status, doc: { id, title, markdown, updated } }` |
+
+`DocEntry = { id, title, description?, type:'wiki'|'markdown', audience:'user'|'technical', tags?, updated?, url? }`.
+Markdown docs are addressed by an **opaque `id`** (never a filesystem path); wikis carry an external `url`.
+
+- **Backend** (`docs_api.py`) is a thin file server: it auto-discovers every `.md` under a configured
+  base dir — **hybrid discovery**. **Audience is set by the top-level subfolder**: a file under
+  `<base_dir>/user/` shows in the User Guide, `<base_dir>/technical/` in the Technical Guide (anything
+  else defaults to technical); an `overrides` entry (keyed by the path relative to `base_dir`) wins and
+  can also set title/description/tags/order. Title falls back to the file's first `#` heading. It reuses
+  the hardened `utils/fs_browser.py` (`resolve_within_bases`, `read_file_all`), whitelists `.md`, and
+  re-checks RBAC on **both** endpoints. Config lives in **`backend/config/docs.json`** (`base_dir` /
+  `wikis` / `overrides`) via `config_loader.docs_config()` (JSON → `DOCS_BASE_DIR` env → default).
+  `base_dir` is a **backend** setting (the server reads the files off disk) — **not** `environment.ts`.
+  Wiki links are config-only entries in `wikis[]` (external `url`, no file).
+- **RBAC (grant-based):** both screens are **opt-in `SCREEN` grants** — a user with **no docs grant sees
+  no Docs at all** (the whole sidebar group is hidden). **User Guide** = `SCREEN / docs`, **Technical
+  Guide** = `SCREEN / docs_technical`; **ADMIN / full-access (`SCREEN / * / *`) sees both**. Assign either
+  or both per user (they appear in the User Management screen picker). `RbacService.canView('docs' |
+  'docs_technical')` gates the nav children and the `rbacGuard` on each route; `/docs`
+  lands on the first guide the user can see. The catalogue + content endpoints re-filter by grant
+  server-side (UI hiding is never the boundary).
+- **Rendering** is client-side in `DocsRenderService` — a dependency-free, **safe-by-construction**
+  Markdown→HTML renderer (escapes all source text, emits only a fixed tag whitelist, validates URL
+  schemes → raw HTML in a `.md` renders as text, never markup). Supports headings (+ auto TOC & slug
+  anchors), lists, tables, fenced code (with copy button), blockquotes, links, images. Swapping in
+  `markdown-it` + `DOMPurify` later is a single-file change (keep `render()`'s signature).
+- **Nav/route:** sidebar "Docs" group with two children — User Guide + Technical Guide (`_nav.ts`).
+  The parent `/docs` lazy-loads `views/docs/route.ts`, whose two child routes carry `rbacGuard` +
+  `data.screen` (`docs` / `docs_technical`). Screen keys are in `rbac.config.ts`. **Each guide is its own
+  screen component** — `views/docs/user_guide/` (`UserGuideComponent`) and `views/docs/technical_guide/`
+  (`TechnicalGuideComponent`) — so they stay separate and can evolve independently; both render the
+  shared `DocsBrowserComponent` (the catalogue + reader engine) with `audience="user" | "technical"`.
+  No tabs — you switch guides from the sidebar. `/docs` redirects (via `docsLandingGuard`) to the first
+  guide the user can see. The open document is **URL state** — `…/technical-guide?doc=<id>` — so the
+  browser Back button returns to the guide's catalogue (not the previous page) and doc links are
+  shareable/bookmarkable. Cards show the source **filename** (e.g. `RBAC_DESIGN.md`) under the title.
+- **Dev mock vs real files:** by default the interceptor answers `/api/docs/*` in-browser with a sample
+  catalogue (scenarios `docs_user_only` / `docs_technical_only` / `defaults_only` exercise the grants;
+  ADMIN sees both). To serve **real `.md` files** from `base_dir` in local dev, run the backend and set
+  `'/api/docs': false` in `environment.ts` `apiMocks` — the app then calls the live `/api/docs/*`.
 
 ### Infrastructure Pulse — see section 5 for the full flow
 
@@ -772,8 +1035,11 @@ each key to a dropdown option carrying all its `basePaths`, and the file tree sh
 // CLOB/BLOB/JSON/XMLTYPE→"…" token, else text. `rowid` rides in each row but is NOT
 // in `cols`, so it stays hidden; the grid uses it for update/delete.
 
-// POST /api/config/{scope}/roll        → { rolled_by, tablespace, table_name, from, to }
-//                                       ← { status, message }   (UI shows `message`)
+// POST /api/config/{scope}/roll        → { rolled_by, table_name, db_source, source_date, target_dates[], tablespace }
+//                                       ← { status, source_date, source_count, targets:[{date,status,count,error?}] }
+// db_source = the table's physical DB (ols_cib_batch | ols_cib_reporting | …) from the catalogue row;
+// the backend routes every per-table op to that DB (scope still gates RBAC). The master/catalogue table
+// lives only in the scope's BATCH db but a table can be in batch OR reporting — db_source is the router.
 
 // --- Insert / Update / Delete (table name in the URL) --------------------------
 // POST /api/config/{scope}/table/EMPLOYEE/rows   (INSERT)

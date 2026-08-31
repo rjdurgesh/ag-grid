@@ -77,8 +77,20 @@ export const navItems: INavData[] = [
   },
   {
     name: 'Docs',
-    url: 'https://coreui.io/angular/docs/',
+    url: '/docs',
     iconComponent: { name: 'cil-description' },
-    attributes: { target: '_blank' }
+    children: [
+      {
+        name: 'User Guide',
+        url: '/docs/user-guide',
+        iconComponent: { name: 'cil-bookmark' }
+      },
+      {
+        // Auto-hidden for non-technical users by the nav filter (screen key `docs_technical`).
+        name: 'Technical Guide',
+        url: '/docs/technical-guide',
+        iconComponent: { name: 'cil-code' }
+      }
+    ]
   }
 ];

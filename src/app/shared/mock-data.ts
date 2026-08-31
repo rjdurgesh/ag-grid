@@ -271,7 +271,14 @@ const SCOPE_PREFIX: Record<ConfigScope, string> = { cib: 'CIB', group: 'GRP', re
 
 /** Catalogue columns — the generic `{ cols, rows }` shape the real API returns. TABLE_CATEGORY is
  *  required for RBAC category grants (the real /api/config/{scope}/tables must return it too). */
-const CATALOGUE_COLS = ['APP_ENV', 'TABLE_NAME', 'TABLE_CATEGORY', 'IS_COBDT', 'IS_ACTIVE'];
+const CATALOGUE_COLS = ['APP_ENV', 'TABLE_NAME', 'TABLE_CATEGORY', 'IS_COBDT', 'IS_ACTIVE', 'DB_SOURCE'];
+/** The physical DB a config table lives in (an app.py connection key). The master table is in the
+ *  scope's BATCH db but a table can be in batch OR reporting; DB_SOURCE routes each per-table op.
+ *  Group isn't split yet → always ols_group. */
+function dbSource(scope: ConfigScope, i: number): string {
+  if (scope === 'group') { return 'ols_group'; }
+  return i % 3 === 2 ? `ols_${scope}_reporting` : `ols_${scope}_batch`;
+}
 const CATEGORY_CYCLE = ['OMT-FUNCTIONAL', 'OMT-TECHNICAL', 'OMT-BOTH'];
 
 const yn = (v: boolean): string => (v ? 'Y' : 'N');
@@ -284,11 +291,11 @@ const yn = (v: boolean): string => (v ? 'Y' : 'N');
 export function mockConfigTables(scope: ConfigScope): TabularData {
   const defs = CONFIG_TABLE_DEFS[scope] ?? [];
   const prefix = SCOPE_PREFIX[scope] ?? 'OLS';
-  const rows: unknown[][] = defs.map((d) => [environment.appEnv, d.name, d.category, yn(d.cob), yn(d.active)]);
+  const rows: unknown[][] = defs.map((d, i) => [environment.appEnv, d.name, d.category, yn(d.cob), yn(d.active), dbSource(scope, i)]);
   // Pad out to ~60 rows so the grid's pagination is exercised.
   for (let i = defs.length + 1; i <= 60; i++) {
     rows.push([environment.appEnv, `${prefix}_REF_DATA_${String(i).padStart(3, '0')}`,
-      CATEGORY_CYCLE[i % CATEGORY_CYCLE.length], yn(i % 3 === 0), yn(i % 4 !== 0)]);
+      CATEGORY_CYCLE[i % CATEGORY_CYCLE.length], yn(i % 3 === 0), yn(i % 4 !== 0), dbSource(scope, i)]);
   }
   return { cols: CATALOGUE_COLS, rows };
 }

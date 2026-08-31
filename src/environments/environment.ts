@@ -130,7 +130,9 @@ export const environment: AppEnvironment = {
    *   localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
    *   localStorage.removeItem('ols.devScenario'); location.reload();   // back to devRoles
    * Scenarios (see mock-api.interceptor DEV_SCENARIOS): 'admin' | 'defaults_only' | 'not_provisioned'
-   * | 'config_group_cib' | 'occ_group_write' | 'service_console' | 'ops_admin' | 'sql_studio'.
+   * | 'config_group_cib' | 'occ_group_write' | 'service_console' | 'ops_admin' | 'sql_studio'
+   * | 'config_{cib,group,retail}_only' | 'config_{cib,group,retail}_readonly'
+   * | 'docs_user_only' | 'docs_technical_only'  (Documentation: one guide granted; defaults_only = none).
    */
   devScenario: '' as string,
   // Per-screen mock switches — LOCAL DEV ONLY (deployed envs never mock, so this is {} there).
@@ -142,5 +144,6 @@ export const environment: AppEnvironment = {
     '/api/service_console': false, // Service Console         → live backend
     '/api/oracle_cc':       false, // Oracle Command Center   → live backend
     '/api/config':          true,  // Config Ops Console      → in-app mock
+    '/api/docs':            false, // Documentation Center    → live backend (real .md files from base_dir)
   } : {},
 };

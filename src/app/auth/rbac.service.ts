@@ -23,9 +23,9 @@ const EMPTY: AccessSnapshot = {
   denied_sections: [], is_ops_admin: false, can_sql: false
 };
 
-/** Screens always resolvable (external help + login/error routes). Home is NOT here — it's opt-in
- *  now, visible only when the user has at least one granted feature. */
-const ALWAYS_VIEW = new Set<string>(['docs', 'extras']);
+/** Screens always resolvable (login/error routes only). Docs is NOT here anymore — both Docs screens
+ *  are grant-driven now (a user with no docs grant sees no Docs at all; ADMIN sees both). */
+const ALWAYS_VIEW = new Set<string>(['extras']);
 
 /**
  * Central RBAC authority. Loads ONE resolved access snapshot (`POST /api/access/me`, assembled
@@ -104,7 +104,16 @@ export class RbacService {
     if (s.role === 'ADMIN') {
       return true;
     }
+    // Everything else (incl. both Documentation screens `docs` / `docs_technical`) is opt-in: visible
+    // only when a grant put it in `screens`.
     return s.screens.includes(screen);
+  }
+
+  /** May the user see the Technical Guide? Grant-driven: ADMIN (all docs) or an explicit
+   *  `SCREEN / docs_technical` grant. The server re-filters the catalogue too — this is the cosmetic
+   *  hide (drives the tab), never the security boundary. */
+  technicalDocsVisible(): boolean {
+    return this.canView('docs_technical');
   }
 
   /** Is the user an ops-admin (may open User Management + hand out grants)? Gated solely by the
@@ -160,6 +169,20 @@ export class RbacService {
       return true;
     }
     return s.config.scopes.includes(scope);
+  }
+
+  /** Is the Regression tab granted for this scope? Driven by an `ols_app_access` grant
+   *  (`config.regression`), NOT the ops-admin table — so it doesn't overload `ols_ops_access`. ADMIN
+   *  always; others only where explicitly granted. The DEV/STG-only gate is applied at the screen. */
+  regressionVisible(scope: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    return (s.config.regression ?? []).includes(scope);
   }
 
   /**

@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import config_loader
 import database
 import regression_ops as ops
 from utils.logging import get_logger
@@ -31,21 +32,23 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/regression", tags=["regression"])
 
 REGRESSION_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
-FILECOPY_MANIFEST = os.getenv("REGRESSION_FILECOPY_MANIFEST", "")
-REFRESH_URL = os.getenv("REGRESSION_REFRESH_URL", "")     # dummy for now; real endpoint later
 DEFAULT_DB = "cib_batch"
+# Per-scope settings (git repo, work/log dirs, NAS feed path) come from config/regression.json via
+# config_loader.regression_scope_config(body.scope); each endpoint resolves them for the caller's scope.
 # A step in_progress longer than this is treated as possibly-stuck (crash between start + result):
 # the lock stops blocking it and the UI offers a logged "Unlock" so the run isn't deadlocked forever.
-STEP_STALE_SECS = int(os.getenv("REGRESSION_STEP_STALE_MINUTES", "30") or "30") * 60
+STEP_STALE_SECS = config_loader.regression_defaults()["step_stale_minutes"] * 60
 
 
 # ---- request models --------------------------------------------------------
+# Every request carries `scope` (cib | retail | group) — set by each scope's frontend service — which
+# selects that app's per-scope config + separate regression state. Inheriting Caller adds it everywhere.
 class Caller(BaseModel):
     caller: str
+    scope: str = "cib"
 
 
-class MarkBody(BaseModel):
-    caller: str
+class MarkBody(Caller):
     run_id: int
     step_key: str
     status: str                    # in_progress | complete | error | forced
@@ -54,31 +57,26 @@ class MarkBody(BaseModel):
     details: str | None = None
 
 
-class RefreshBody(BaseModel):
-    caller: str
+class RefreshBody(Caller):
     run_id: int
     dbs: list[str] = []            # databases to refresh (all 5 selectable)
 
 
-class CompleteBody(BaseModel):
-    caller: str
+class CompleteBody(Caller):
     run_id: int
     status: str = "complete"
 
 
-class UnlockBody(BaseModel):
-    caller: str
+class UnlockBody(Caller):
     run_id: int
     step_key: str
 
 
-class PullBody(BaseModel):
-    caller: str
+class PullBody(Caller):
     branch: str
 
 
-class RunSqlBody(BaseModel):
-    caller: str
+class RunSqlBody(Caller):
     run_id: int
     step_key: str                  # apply_db | reset | trigger
     scripts: list[str]
@@ -86,29 +84,24 @@ class RunSqlBody(BaseModel):
     business_line: str | None = None
 
 
-class LogBody(BaseModel):
-    caller: str
+class LogBody(Caller):
     log_file: str
 
 
-class FileBody(BaseModel):
-    caller: str
+class FileBody(Caller):
     path: str
 
 
-class CopyBody(BaseModel):
-    caller: str
+class CopyBody(Caller):
     run_id: int
     items: list[dict]
 
 
-class MonitorBody(BaseModel):
-    caller: str
+class MonitorBody(Caller):
     db: str = DEFAULT_DB
 
 
-class ActivityBody(BaseModel):
-    caller: str
+class ActivityBody(Caller):
     run_id: int | None = None
 
 
@@ -160,7 +153,7 @@ def _mark_in_progress(cfg: Any, run_id: int, step_key: str, caller: str) -> None
     writes its complete/error result."""
     if cfg is None:
         return
-    database.regression_log_write(cfg, run_id, step_key, "start", "in_progress", caller, started_on=datetime.now())
+    database.regression_log_write(cfg, run_id, step_key, "start", "in_progress", caller, start_time=datetime.now())
 
 
 # ---- run + steps -----------------------------------------------------------
@@ -192,8 +185,8 @@ def step_mark(request: Request, body: MarkBody) -> dict:
         cfg, body.run_id, body.step_key,
         action=("forced" if body.forced else body.status), status=body.status,
         performed_by=body.caller, business_line=body.business_line,
-        forced_by=(body.caller if body.forced else None), details=body.details,
-        started_on=now, finished_on=now,
+        forced_by=(body.caller if body.forced else None), comments=body.details,
+        start_time=now, end_time=now,
     )
     return {"status": "success", **(database.regression_run_current(cfg, request.app.state.app_env) or {})}
 
@@ -207,7 +200,7 @@ def step_unlock(request: Request, body: UnlockBody) -> dict:
         return {"status": "success"}
     now = datetime.now()
     database.regression_log_write(cfg, body.run_id, body.step_key, "unlock", "error", body.caller,
-                                  details=f"Stuck in-progress step cleared by {body.caller}.", started_on=now, finished_on=now)
+                                  comments=f"Stuck in-progress step cleared by {body.caller}.", start_time=now, end_time=now)
     return {"status": "success", **(database.regression_run_current(cfg, request.app.state.app_env) or {})}
 
 
@@ -219,11 +212,12 @@ def refresh_db(request: Request, body: RefreshBody) -> dict:
     _mark_in_progress(cfg, body.run_id, "refresh_db", body.caller)
     started = datetime.now()
     dbs = body.dbs or []
-    detail = f"Refresh API: {REFRESH_URL or '(dummy stub — not configured)'} — DB(s): {', '.join(dbs) or '(none)'}"
-    result_status = "complete"       # dummy always succeeds; wire REFRESH_URL later
+    refresh_url = config_loader.regression_scope_config(body.scope)["refresh_url"]
+    detail = f"Refresh API: {refresh_url or '(dummy stub — not configured)'} — DB(s): {', '.join(dbs) or '(none)'}"
+    result_status = "complete"       # dummy always succeeds; wire the scope's refresh_url later
     if not REGRESSION_USE_DUMMY:
         database.regression_log_write(cfg, body.run_id, "refresh_db", "refresh", result_status,
-                                      body.caller, details=detail, started_on=started, finished_on=datetime.now())
+                                      body.caller, comments=detail, start_time=started, end_time=datetime.now())
     return {"status": "success",
             "result": {"status": result_status, "message": f"Refresh triggered for {len(dbs)} database(s) (dummy).", "details": detail}}
 
@@ -236,7 +230,7 @@ def run_complete(request: Request, body: CompleteBody) -> dict:
         return {"status": "success"}
     now = datetime.now()
     database.regression_log_write(cfg, body.run_id, "run", "complete", body.status, body.caller,
-                                  details="Regression run completed", started_on=now, finished_on=now)
+                                  comments="Regression run completed", start_time=now, end_time=now)
     database.regression_run_finish(cfg, body.run_id, body.status)
     return {"status": "success", **(database.regression_run_current(cfg, request.app.state.app_env) or {"run": None, "steps": {}})}
 
@@ -248,7 +242,7 @@ def git_branches(request: Request, body: Caller) -> dict:
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "branches": ["release/20260828", "release/20260815"]}
     try:
-        return {"status": "success", "branches": ops.list_release_branches()}
+        return {"status": "success", "branches": ops.list_release_branches(config_loader.regression_scope_config(body.scope))}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -258,9 +252,10 @@ def git_pull(request: Request, body: PullBody) -> dict:
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "scripts": ["apply/CHG_20260828.sql", "apply/CHG_20260828_MISC1.sql", "reset/reset_batches.sql", "trigger/trigger_all.sql"]}
+    cfg = config_loader.regression_scope_config(body.scope)
     try:
-        ops.git_pull_branch(body.branch)
-        return {"status": "success", "scripts": ops.list_branch_scripts()}
+        ops.git_pull_branch(cfg, body.branch)
+        return {"status": "success", "scripts": ops.list_branch_scripts(cfg)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -270,7 +265,7 @@ def git_scripts(request: Request, body: Caller) -> dict:
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "scripts": ["apply/CHG_20260828.sql", "reset/reset_batches.sql", "trigger/trigger_all.sql"]}
-    return {"status": "success", "scripts": ops.list_branch_scripts()}
+    return {"status": "success", "scripts": ops.list_branch_scripts(config_loader.regression_scope_config(body.scope))}
 
 
 @router.post("/git/tree")
@@ -284,7 +279,8 @@ def git_tree(request: Request, body: Caller) -> dict:
                           "db/package/lam/abc.pck", "db/package/lam/xyz.pck", "db/package/cb/cb_valuation.pck",
                           "db/procedure/lam/load_positions.prc", "reset/reset_batches.sql",
                           "trigger/trigger_all.sql", "trigger/trigger_CB.sql", "README.md"]}
-    return {"status": "success", **ops.repo_info(), "files": ops.list_repo_tree()}
+    cfg = config_loader.regression_scope_config(body.scope)
+    return {"status": "success", **ops.repo_info(cfg), "files": ops.list_repo_tree(cfg)}
 
 
 @router.post("/git/file")
@@ -295,7 +291,8 @@ def git_file(request: Request, body: FileBody) -> dict:
         return {"status": "success", "path": body.path,
                 "content": f"-- {body.path}\nCREATE OR REPLACE PACKAGE BODY abc AS\n  PROCEDURE run IS BEGIN NULL; END;\nEND abc;\n/"}
     try:
-        return {"status": "success", "path": body.path, "content": ops.read_repo_file(body.path)}
+        return {"status": "success", "path": body.path,
+                "content": ops.read_repo_file(config_loader.regression_scope_config(body.scope), body.path)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -313,24 +310,25 @@ def run_sql(request: Request, body: RunSqlBody) -> dict:
                     "tail": f"Connected to {d}.\n@{s}\nPL/SQL procedure successfully completed.\nSpool off."}
                    for s in body.scripts for d in body.dbs]
         return {"status": "success", "results": results, "step_status": "complete"}
+    rcfg = config_loader.regression_scope_config(body.scope)
     results, any_error = [], False
     for s in body.scripts:
         for d in body.dbs:
             started = datetime.now()
             try:
-                r = ops.run_sqlplus(_db_config(request, d), d, s)
+                r = ops.run_sqlplus(rcfg, _db_config(request, d), d, s)
             except Exception as exc:  # noqa: BLE001
                 r = {"status": "error", "script": s, "db": d, "log_file": "", "tail": str(exc)}
             any_error = any_error or r["status"] != "complete"
             database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", r["status"],
                                           body.caller, business_line=body.business_line,
-                                          details=f"{s} on {d} -> {r['status']} (log: {r.get('log_file','')})",
-                                          started_on=started, finished_on=datetime.now())
+                                          comments=f"{s} on {d} -> {r['status']} (log: {r.get('log_file','')})",
+                                          start_time=started, end_time=datetime.now())
             results.append(r)
     step_status = "error" if any_error else "complete"
     database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                   body.caller, business_line=body.business_line,
-                                  details=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
+                                  comments=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
     return {"status": "success", "results": results, "step_status": step_status}
 
 
@@ -349,6 +347,7 @@ def run_sql_stream(request: Request, body: RunSqlBody):
     _require_step_free(cfg, body.run_id, body.step_key)
     _mark_in_progress(cfg, body.run_id, body.step_key, body.caller)
     combos = [(s, d) for s in body.scripts for d in body.dbs]
+    rcfg = config_loader.regression_scope_config(body.scope)
 
     def gen():
         any_error = False
@@ -366,7 +365,7 @@ def run_sql_stream(request: Request, body: RunSqlBody):
                 status = "error" if is_err else "complete"
             else:
                 try:
-                    for ev in ops.run_sqlplus_stream(_db_config(request, d), d, s):
+                    for ev in ops.run_sqlplus_stream(rcfg, _db_config(request, d), d, s):
                         if ev.get("type") == "line":
                             yield _sse("line", {"text": ev["text"]})
                         else:
@@ -376,15 +375,15 @@ def run_sql_stream(request: Request, body: RunSqlBody):
                     yield _sse("line", {"text": str(exc)})
                 database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", status,
                                               body.caller, business_line=body.business_line,
-                                              details=f"{s} on {d} -> {status} (log: {log_file})",
-                                              started_on=started, finished_on=datetime.now())
+                                              comments=f"{s} on {d} -> {status} (log: {log_file})",
+                                              start_time=started, end_time=datetime.now())
             any_error = any_error or status != "complete"
             yield _sse("result", {"script": s, "db": d, "status": status, "log_file": log_file})
         step_status = "error" if any_error else "complete"
         if not REGRESSION_USE_DUMMY:
             database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                           body.caller, business_line=body.business_line,
-                                          details=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
+                                          comments=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
         yield _sse("step", {"step_status": step_status})
 
     return StreamingResponse(gen(), media_type="text/event-stream",
@@ -397,7 +396,7 @@ def log_read(request: Request, body: LogBody) -> dict:
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "content": "Dummy log content.\nConnected.\nPL/SQL procedure successfully completed."}
     try:
-        return {"status": "success", "content": ops.read_log(body.log_file)}
+        return {"status": "success", "content": ops.read_log(config_loader.regression_scope_config(body.scope), body.log_file)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -411,10 +410,11 @@ def file_copy_manifest(request: Request, body: Caller) -> dict:
             {"source": "\\\\eur17\\d$\\release\\cib\\app.config", "destination": "\\\\eur34\\e$\\apps\\cib\\app.config"},
             {"source": "\\\\eur17\\d$\\release\\cib\\scripts\\*", "destination": "\\\\eur34\\e$\\apps\\cib\\scripts"},
         ]}
-    if not FILECOPY_MANIFEST:
-        raise HTTPException(status_code=400, detail="REGRESSION_FILECOPY_MANIFEST is not configured.")
+    manifest = config_loader.regression_scope_config(body.scope)["filecopy_manifest"]
+    if not manifest:
+        raise HTTPException(status_code=400, detail="No file-copy manifest configured for this scope (config/regression.json).")
     try:
-        return {"status": "success", "items": ops.read_manifest(FILECOPY_MANIFEST)}
+        return {"status": "success", "items": ops.read_manifest(manifest)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not read the file-copy manifest: {exc}")
 
@@ -467,14 +467,14 @@ def file_copy_run(request: Request, body: CopyBody) -> dict:
         r = ops.copy_items([item])[0]
         database.regression_log_write(cfg, body.run_id, "file_copy", "copy_item",
                                       "complete" if r.get("ok") else "error", body.caller,
-                                      details=_copy_details([r]), started_on=started, finished_on=datetime.now())
+                                      comments=_copy_details([r]), start_time=started, end_time=datetime.now())
         results.append(r)
     ok = all(r.get("ok") for r in results)
     fails = sum(1 for r in results if not r.get("ok"))
     copied = sum((r.get("count") or 0) for r in results if r.get("ok"))
     summary = f"{copied} file(s) across {len(results) - fails} item(s)" + (f"; {fails} item(s) FAILED" if fails else "")
     database.regression_log_write(cfg, body.run_id, "file_copy", "copy", "complete" if ok else "error",
-                                  body.caller, details=f"{summary}\n{_copy_details(results)}")
+                                  body.caller, comments=f"{summary}\n{_copy_details(results)}")
     return {"status": "success", "results": results}
 
 

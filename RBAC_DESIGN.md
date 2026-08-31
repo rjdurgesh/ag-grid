@@ -57,7 +57,7 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 | Column | Meaning |
 |---|---|
 | `USERNAME` | the user (matched case-insensitively) |
-| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `APP` \| `DB` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` |
+| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `APP` \| `DB` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` \| `REGRESSION` |
 | `RESOURCE_SCOPE` | the screen/scope the resource lives in (see below) |
 | `RESOURCE_KEY` | the specific resource id, or `*` for "all in scope". `APP` keys: `OLS_GROUP`/`OLS_CIB`/`OLS_RETAIL`/`POSEIDON`. `DB` keys: `group`/`cib_batch`/`cib_reporting`/`retail_batch`/`retail_reporting` |
 | `ACCESS_LEVEL` | `READ` \| `WRITE` \| `DENY` |
@@ -67,7 +67,19 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 
 **`RESOURCE_SCOPE` values:** `log_analytics`, `config_ops:group`, `config_ops:cib`,
 `config_ops:retail`, `infra_health`, `service_console`, `oracle_command_center`
-(and `oracle_command_center:<db>` for a per-DB `SECTION` deny).
+(and `oracle_command_center:<db>` for a per-DB `SECTION` deny). For `REGRESSION`, the scope is the
+bare config scope (`cib` / `retail` / `group`) or `config_ops:<scope>`.
+
+**Regression tab (per scope):** the Config Ops → Regression tab is hidden unless the user has a
+`REGRESSION` grant for that scope (and the screen is DEV/STG) — a per-`ols_app_access` grant, deliberately
+NOT on the `ols_ops_access` table (which stays only for User Management + S-Studio). It's independent of
+the config-scope grant, so the user still needs `config_ops:<scope>` to reach the screen the tab lives in.
+`rbac.regressionVisible(scope)`; ADMIN always. Example grant: `REGRESSION` / `cib` / `*` / `READ`.
+
+**Config scope route guard:** the sidebar hides non-granted scopes (`configScopeVisible`), and
+`configScopeGuard` on the `group`/`cib`/`retail` routes hard-blocks a direct URL to a non-granted scope
+(redirects to the first visible scope) — closing the bookmark/typed-URL gap. (Backend still re-checks every
+read/write per `config_ops:<scope>`.)
 
 ### DDL + sample grants — runnable script
 
@@ -79,7 +91,7 @@ is reproduced here for reference:
 ```sql
 CREATE TABLE ols_app_access (
   username       VARCHAR2(64)  NOT NULL,
-  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION
+  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION
   resource_scope VARCHAR2(64)  NOT NULL,
   resource_key   VARCHAR2(128) DEFAULT '*' NOT NULL,
   access_level   VARCHAR2(10)  NOT NULL,   -- READ | WRITE | DENY
@@ -107,6 +119,7 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
 | **Infra Health** | **always (ungated)** — every active user | — | **No RBAC** — all apps shown to everyone |
 | **Service Console** | a `SCREEN` or `APP` grant | `SCREEN … WRITE` → start/stop buttons | **Apps opt-in** — an `APP / service_console` grant limits which apps' services show (`SCREEN` grant = all apps) |
 | **Oracle Command Center** | a `DB` grant (or `SCREEN / oracle_command_center` = all DBs) | **per-DB** — kill/apply on a DB needs `DB … WRITE` for that DB | **DBs opt-in + per-DB level** (READ tab = view-only, WRITE tab = killable). **Sections**: `SECTION … DENY` hides a panel — scope `oracle_command_center` = every DB, `oracle_command_center:<db>` = that DB only. Section keys: space / top / topidx / idxhealth / locks / blocking / temp / sessions / sql_intelligence |
+| **Documentation Center** | a `SCREEN / docs` (User Guide) and/or `SCREEN / docs_technical` (Technical Guide) grant | (read-only screens) | **Two screens opt-in** — grant either or both; **no docs grant → the whole Docs group is hidden**. ADMIN / `SCREEN / * / *` sees both. Each guide holds both wiki links and local `.md` files for its audience |
 
 ### Exclusion — "all EXCEPT these" (`DENY`)
 Grant `*` (all) on a resource, then add a `DENY` row per key to carve out exceptions. `DENY` **wins**
@@ -194,9 +207,48 @@ VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','PROD','ADMIN1');
 | A new Log Analytics server | One `SERVER` INSERT per user (opt-in → invisible until granted) | **None** |
 | A new OCC section | Wrap it once with `*olsIfSection`; deny via `SECTION` rows | 1 line |
 | A whole new screen | Register its key in `rbac.config.ts` + `data.screen` on the route (the one line you write to create any screen) | 1 line |
+| A new Config-Ops tab (per scope) | Add a resource_type + gate it (Regression pattern) — see §7.1 | small |
 | Grant / revoke for a user | INSERT / flip `IS_ACTIVE` — or use the **User Management** screen (§11) | **None** |
 
-The grant table never needs an `ALTER` — the permission *vocabulary is data*.
+The grant table never needs an `ALTER` — the permission *vocabulary is data* (the one exception: a new
+**per-user capability flag** on `ols_ops_access`, like `can_sql`, which adds a column — see §7.1 case C).
+
+## 7.1 Checklist — adding a new screen / tab / section (RBAC)
+
+> Keep this list current whenever the RBAC surface changes. **Golden rule:** UI hiding is never the
+> security boundary — every screen's endpoints MUST re-check access server-side from the SSO token (§9).
+
+**Case A — a whole new SCREEN** (new sidebar item, e.g. `reports`):
+- *UI:* (1) `auth/rbac.config.ts` — add the key to `ScreenKey`, `ALL_SCREENS`, `SCREEN_ROUTES`, and
+  `screenForNavUrl()`. (2) Route — `canActivate: [rbacGuard]`, `data: { screen: '<key>' }`. (3) Nav —
+  add the item in `layout/default-layout/_nav.ts` (auto-hidden by `filterNav` → `canView`). (4) If it has
+  write actions: gate them with `*olsCanWrite="'<key>'"` (or `rbac.canWrite('<key>')`).
+- *Python:* `access_api.py` — add the key to `SCREEN_KEYS`, and to `WRITE_CAPABLE_SCREENS` if it has
+  writes. `build_snapshot` already resolves generic `SCREEN` grants; the dummy/`DEV_SCENARIOS` snapshot
+  should include the key where relevant.
+- *Grant:* `SCREEN` / `<key>` / `*` / READ|WRITE. Backend endpoints re-check the grant.
+
+**Case B — a new TAB inside a scope screen, gated per SCOPE** (the Regression pattern — preferred, keeps
+`ols_ops_access` lean):
+- *Python:* add a resource_type to `_RESOURCE_TYPES`; in `build_snapshot` collect its scopes into the
+  `config` block (e.g. `config.regression`), incl. under the full-access wildcard + the ADMIN early return.
+- *Model:* add the field to `AccessSnapshot.config` (`shared/models.ts`).
+- *UI:* add `rbac.<feature>Visible(scope)` (ADMIN → true, else `config.<feature>.includes(scope)`); gate the
+  tab button + panel with it (plus any env gate, e.g. DEV/STG); add the tab id to `activeTab`/`selectTab`.
+- *Mock:* add the field to `baseActive` + grant it in a `DEV_SCENARIOS` entry so it's on-screen testable.
+- *Grant:* `<TYPE>` / `<scope>` / `*` / READ. The user still needs `config_ops:<scope>` to reach the screen.
+
+**Case C — a new per-USER capability flag** (the S-Studio pattern — cross-scope operator capability):
+- Adds a column to `ols_ops_access` (e.g. `can_sql`) — the ONLY case that ALTERs a table. `database.py`
+  fetch + `build_snapshot(... can_x=)`; snapshot flag; `rbac.canX()`; gate the control; toggle in User
+  Management (`/admin/ops` action). Use this only for capabilities that aren't per-scope.
+
+**Case D — a new SECTION within a screen** (an OCC-style collapsible panel):
+- *UI:* wrap it with `*olsIfSection="{ screen: '<screen>', key: '<key>', db?: activeKey() }"`.
+- *Grant:* deny with `SECTION` / `<screen>` (or `<screen>:<db>`) / `<key>` / DENY. No other code.
+
+**Every case:** if it can WRITE, the write button is gated in the UI AND the write endpoint re-checks
+server-side; and the visibility is verifiable via a `DEV_SCENARIOS` entry (`localStorage['ols.devScenario']`).
 
 ## 8. Verifying access (support)
 

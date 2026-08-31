@@ -16,9 +16,13 @@
 --   * VALIDATE ON SCREEN (dev, no DB needed): run in the browser console
 --       localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
 --     scenarios: admin | defaults_only | not_provisioned | config_group_cib | occ_group_write |
---     service_console | ops_admin | sql_studio   (clear: localStorage.removeItem('ols.devScenario'))
+--       service_console | ops_admin | sql_studio |
+--       config_cib_only | config_group_only | config_retail_only        (one scope, WRITE) |
+--       config_cib_readonly | config_group_readonly | config_retail_readonly  (one scope, READ → no CRUD) |
+--       docs_user_only | docs_technical_only        (Documentation: one guide granted; defaults_only = none)
+--     (clear: localStorage.removeItem('ols.devScenario'))
 --
--- resource_type : SCREEN | APP | DB | TABLE_CATEGORY | TABLE | SECTION
+-- resource_type : SCREEN | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION
 --   (SERVER and APP/infra_health are retired — Log Analytics + Infra Health are ungated defaults.)
 --------------------------------------------------------------------------------
 SET DEFINE OFF;   -- '&' in comments/values is literal, not a substitution prompt
@@ -232,6 +236,62 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','PROD','A
 --   -- Turn S-Studio on/off for an EXISTING operator:
 --   UPDATE ols_ops_access SET can_sql='Y' WHERE UPPER(username)=UPPER('CHANGE_ME'); COMMIT;
 -- (Table + all columns: ops_access_setup.sql.)
+
+
+--==============================================================================
+-- 8) REGRESSION TAB  (Config Ops → Regression; per scope; DEV/STG only)
+--    resource_type='REGRESSION', scope = cib | retail | group (or config_ops:<scope>), key '*'.
+--    Hidden unless granted (does NOT overload ols_ops_access). INDEPENDENT of the config-scope grant:
+--    the user ALSO needs a Config Ops grant (section 2) for that scope, because the tab lives inside
+--    the scope screen. Only shows when the app runs in DEV/STG. ADMIN sees it everywhere already.
+--==============================================================================
+-- Regression on CIB: the config grant (to reach the CIB screen) + the Regression grant (to see the tab)
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','WRITE','DEV','ADMIN','Config: CIB screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','cib','*','READ','DEV','ADMIN','Regression tab on CIB (DEV)');
+
+-- Regression on RETAIL (same pattern)
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:retail','OMT-BOTH','WRITE','DEV','ADMIN','Config: RETAIL screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','retail','*','READ','DEV','ADMIN','Regression tab on RETAIL (DEV)');
+
+-- Regression on GROUP (same pattern)
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','DEV','ADMIN','Config: GROUP screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','group','*','READ','DEV','ADMIN','Regression tab on GROUP (DEV)');
+
+-- (variety) Grant Regression on ALL scopes for STG (one row per scope; app_env STG):
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','cib','*','READ','STG','ADMIN','Regression CIB (STG)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','retail','*','READ','STG','ADMIN','Regression RETAIL (STG)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','group','*','READ','STG','ADMIN','Regression GROUP (STG)');
+
+
+--==============================================================================
+-- 9) DOCUMENTATION CENTER  (two screens; grant-driven; NO grant => Docs is hidden entirely)
+--    resource_type='SCREEN'; resource_scope = docs (User Guide) | docs_technical (Technical Guide).
+--    ADMIN and the full-access wildcard (SCREEN/*/*) see BOTH with no rows here. Each screen holds
+--    both wiki links AND local .md files for its audience (managed in config/docs.json + the docs dir).
+--    These are READ-only screens (no WRITE actions). Grant from User Management or with SQL below.
+--==============================================================================
+-- User Guide only
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs','*','READ','PROD','ADMIN','Docs: User Guide');
+
+-- Technical Guide only
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: Technical Guide');
+
+-- BOTH guides (two rows)
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs','*','READ','PROD','ADMIN','Docs: User Guide');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: Technical Guide');
 
 
 COMMIT;

@@ -38,6 +38,8 @@ import { previousWeekdayIso } from '../../shared/date-utils';
 import { ConfigScope } from '../../shared/api-endpoints';
 import { CellDataType, TableContent, UploadResult } from '../../shared/models';
 import { ConfirmService } from '../confirm/confirm.service';
+import { ErrorReportService } from '../error-report/error-report.service';
+import { environment } from '../../../environments/environment';
 import { DetailRowComponent } from './cell-renderers/detail-row.component';
 import { RefreshHeaderComp, actionsRenderer, arrowRenderer, eyeRenderer } from './grid-cell-renderers';
 import { buildDataColumnDefs } from './grid-columns';
@@ -133,6 +135,7 @@ export class GridDataComponent {
   private readonly destroyRef = inject(DestroyRef);
   private readonly valueModal = inject(ValueModalService);
   private readonly confirm = inject(ConfirmService);
+  private readonly errorReport = inject(ErrorReportService);
 
   // --- inputs ---------------------------------------------------------------
   readonly columns = input<GridColumn[]>([]);
@@ -225,6 +228,8 @@ export class GridDataComponent {
 
   /** The catalogue row the modal was opened for (drives COB extras). */
   readonly modalRow = signal<Record<string, unknown> | null>(null);
+  /** The open table's physical DB (catalogue DB_SOURCE, e.g. ols_cib_reporting) — routes per-table ops. */
+  readonly modalDbSource = computed(() => String(this.modalRow()?.['DB_SOURCE'] ?? this.modalRow()?.['db_source'] ?? ''));
   readonly modalIsCob = computed(() => {
     const row = this.modalRow();
     return !!row && this.isRowCob()(row);
@@ -271,6 +276,19 @@ export class GridDataComponent {
   readonly rollBusy = signal(false);
   readonly rollResult = signal<RollResult | null>(null);
   readonly rollNotice = signal<string | null>(null);
+  /** How many target dates were skipped due to a DB failure (drives the partial-failure banner). */
+  readonly rollFailed = computed(() => this.rollResult()?.targets.filter((t) => t.status === 'failed').length ?? 0);
+  /** Rolled dates whose row count differs from the source (0 rows, doubled, etc.) — worth a second look. */
+  readonly rollWarned = computed(() => {
+    const rr = this.rollResult();
+    if (!rr || rr.source_count == null) { return 0; }
+    return rr.targets.filter((t) => t.status !== 'failed' && t.count != null && t.count !== rr.source_count).length;
+  });
+  /** Whether a target's row count is an anomaly vs the source (used per-row in the template). */
+  rollCountMismatch(t: { status?: string; count?: number | null }): boolean {
+    const rr = this.rollResult();
+    return t.status !== 'failed' && rr?.source_count != null && t.count != null && t.count !== rr.source_count;
+  }
   /** Target (To) dates: the range expanded, or the discrete start/end (deduped, sorted). */
   readonly rollTargets = computed(() => {
     const s = this.rollTo();
@@ -394,7 +412,9 @@ export class GridDataComponent {
     isRowEnabled: (row) => this.isRowActive()(row),
     refreshTable: () => this.refreshRequested.emit(),
     isRowEditing: (row) => this.editingRows().has(String(row[ROW_ID])),
-    isReadOnly: () => this.readOnly()
+    // Per-table write gate (RBAC): respects canWriteRow for the open table, falling back to the scope
+    // readOnly — so a read-only table inside a writable scope shows no per-row Edit/Duplicate/Delete either.
+    isReadOnly: () => !this.modalWritable()
   };
 
   /** Mute rows that are not active so the state is obvious in the grid. */
@@ -729,6 +749,19 @@ export class GridDataComponent {
     this.rollResult.set(null);
     this.rollBusy.set(true);
     this.rollData.emit({ row, tableName: this.modalTitle(), source, targets });
+  }
+
+  /** First line of a (possibly multi-line) roll error, with an ellipsis when there's more to see. */
+  rollErrorSummary(err?: string): string {
+    if (!err) { return ''; }
+    const firstLine = err.split('\n')[0].trim();
+    const clipped = firstLine.length > 160 ? firstLine.slice(0, 160).trimEnd() : firstLine;
+    return (clipped.length < firstLine.length || err.trim().length > firstLine.length) ? clipped + ' …' : clipped;
+  }
+  /** Open the full (multi-line) roll error for one target date in the rich error dialog (Copy + Email). */
+  showRollError(target: { date: string; error?: string }): void {
+    if (!target.error) { return; }
+    this.errorReport.show({ title: `Rollover failed — ${target.date}`, message: target.error, userId: environment.username });
   }
 
   /** Host surfaces the structured roll result. */

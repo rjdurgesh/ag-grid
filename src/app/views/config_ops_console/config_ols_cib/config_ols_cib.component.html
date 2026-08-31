@@ -49,7 +49,7 @@
   } @else if (activeTab() === 'sstudio' && canSql()) {
     <app-sql-studio [scope]="scopeKey" />
   } @else if (activeTab() === 'regression' && showRegression()) {
-    <app-regression />
+    <app-ols-cib-regression />
   } @else {
     <div class="ols-card scope-misc">
       <h3 class="scope-misc__title">MISC Activity</h3>

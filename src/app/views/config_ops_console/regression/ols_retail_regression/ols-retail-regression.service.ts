@@ -1,14 +1,14 @@
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 
-import { ApiDataService } from '../../../shared/api-data.service';
-import { API } from '../../../shared/api-endpoints';
-import { environment } from '../../../../environments/environment';
-import { RbacService } from '../../../auth/rbac.service';
+import { ApiDataService } from '../../../../shared/api-data.service';
+import { API } from '../../../../shared/api-endpoints';
+import { environment } from '../../../../../environments/environment';
+import { RbacService } from '../../../../auth/rbac.service';
 import {
   BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
   RegressionState, RunSqlResult
-} from '../../../shared/models';
+} from '../../../../shared/models';
 
 /** Live-stream callbacks for a run-sql-stream (Apply / Reset / Trigger). */
 export interface RunSqlStreamHandlers {
@@ -24,50 +24,51 @@ export interface RunSqlStreamHandlers {
  * user), which the backend re-checks (DEV/STG + CIB Config access). See regression_api.py.
  */
 @Injectable({ providedIn: 'root' })
-export class RegressionService {
+export class OlsRetailRegressionService {
   private readonly api = inject(ApiDataService);
   private readonly rbac = inject(RbacService);
+  private readonly scope = 'retail';   // this app's regression stream (separate from other scopes)
 
   private caller(): string {
     return this.rbac.snapshot().username || environment.username;
   }
 
   runCurrent(): Observable<RegressionState> {
-    return this.api.post(API.regression.runCurrent, { caller: this.caller() });
+    return this.api.post(API.regression.runCurrent, { caller: this.caller(), scope: this.scope });
   }
   runStart(): Observable<RegressionState> {
-    return this.api.post(API.regression.runStart, { caller: this.caller() });
+    return this.api.post(API.regression.runStart, { caller: this.caller(), scope: this.scope });
   }
   markStep(run_id: number, step_key: string, status: string, forced = false, details?: string): Observable<RegressionState> {
-    return this.api.post(API.regression.stepMark, { caller: this.caller(), run_id, step_key, status, forced, details });
+    return this.api.post(API.regression.stepMark, { caller: this.caller(), scope: this.scope, run_id, step_key, status, forced, details });
   }
   unlockStep(run_id: number, step_key: string): Observable<RegressionState> {
-    return this.api.post(API.regression.stepUnlock, { caller: this.caller(), run_id, step_key });
+    return this.api.post(API.regression.stepUnlock, { caller: this.caller(), scope: this.scope, run_id, step_key });
   }
   refreshDb(run_id: number, dbs: string[]): Observable<{ result: { status: string; message: string; details: string } }> {
-    return this.api.post(API.regression.refreshDb, { caller: this.caller(), run_id, dbs });
+    return this.api.post(API.regression.refreshDb, { caller: this.caller(), scope: this.scope, run_id, dbs });
   }
   completeRun(run_id: number, status: 'complete' | 'abandoned' = 'complete'): Observable<{ status: string }> {
-    return this.api.post(API.regression.runComplete, { caller: this.caller(), run_id, status });
+    return this.api.post(API.regression.runComplete, { caller: this.caller(), scope: this.scope, run_id, status });
   }
   gitBranches(): Observable<{ branches: string[] }> {
-    return this.api.post(API.regression.gitBranches, { caller: this.caller() });
+    return this.api.post(API.regression.gitBranches, { caller: this.caller(), scope: this.scope });
   }
   gitPull(branch: string): Observable<{ scripts: string[] }> {
-    return this.api.post(API.regression.gitPull, { caller: this.caller(), branch });
+    return this.api.post(API.regression.gitPull, { caller: this.caller(), scope: this.scope, branch });
   }
   gitScripts(): Observable<{ scripts: string[] }> {
-    return this.api.post(API.regression.gitScripts, { caller: this.caller() });
+    return this.api.post(API.regression.gitScripts, { caller: this.caller(), scope: this.scope });
   }
   gitTree(): Observable<{ workdir: string; branch: string; files: string[] }> {
-    return this.api.post(API.regression.gitTree, { caller: this.caller() });
+    return this.api.post(API.regression.gitTree, { caller: this.caller(), scope: this.scope });
   }
   gitFile(path: string): Observable<{ path: string; content: string }> {
-    return this.api.post(API.regression.gitFile, { caller: this.caller(), path });
+    return this.api.post(API.regression.gitFile, { caller: this.caller(), scope: this.scope, path });
   }
   runSql(run_id: number, step_key: string, scripts: string[], dbs: string[], business_line?: string):
     Observable<{ results: RunSqlResult[]; step_status: string }> {
-    return this.api.post(API.regression.runSql, { caller: this.caller(), run_id, step_key, scripts, dbs, business_line });
+    return this.api.post(API.regression.runSql, { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, business_line });
   }
 
   /**
@@ -81,7 +82,7 @@ export class RegressionService {
       this.simulateStream(run_id, step_key, scripts, dbs, handlers);
     } else {
       void this.fetchStream(API.regression.runSqlStream,
-        { caller: this.caller(), run_id, step_key, scripts, dbs, business_line }, handlers);
+        { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, business_line }, handlers);
     }
   }
 
@@ -156,18 +157,18 @@ export class RegressionService {
     });
   }
   logRead(log_file: string): Observable<{ content: string }> {
-    return this.api.post(API.regression.logRead, { caller: this.caller(), log_file });
+    return this.api.post(API.regression.logRead, { caller: this.caller(), scope: this.scope, log_file });
   }
   fileCopyManifest(): Observable<{ items: FileCopyItem[] }> {
-    return this.api.post(API.regression.fileCopyManifest, { caller: this.caller() });
+    return this.api.post(API.regression.fileCopyManifest, { caller: this.caller(), scope: this.scope });
   }
   fileCopyRun(run_id: number, items: FileCopyItem[]): Observable<{ results: FileCopyResult[] }> {
-    return this.api.post(API.regression.fileCopyRun, { caller: this.caller(), run_id, items });
+    return this.api.post(API.regression.fileCopyRun, { caller: this.caller(), scope: this.scope, run_id, items });
   }
   batchMonitor(db: string): Observable<BatchMonitorResult> {
-    return this.api.post(API.regression.batchMonitor, { caller: this.caller(), db });
+    return this.api.post(API.regression.batchMonitor, { caller: this.caller(), scope: this.scope, db });
   }
   activity(run_id?: number): Observable<{ rows: RegressionActivityRow[] }> {
-    return this.api.post(API.regression.activity, { caller: this.caller(), run_id });
+    return this.api.post(API.regression.activity, { caller: this.caller(), scope: this.scope, run_id });
   }
 }

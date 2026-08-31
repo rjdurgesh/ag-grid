@@ -50,7 +50,8 @@ ACCESS_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
 # OPT-IN model: a screen is visible only when a grant touches it. These are the grantable
 # non-config screens (a `SCREEN` grant here, or a `SERVER` grant for log_analytics, reveals it).
 # Config Ops is revealed by config-scope grants; Home appears whenever the user has ≥1 feature.
-SCREEN_KEYS = ["log_analytics", "infra_health", "service_console", "oracle_command_center"]
+SCREEN_KEYS = ["log_analytics", "infra_health", "service_console", "oracle_command_center",
+               "docs", "docs_technical"]
 # The three Config Ops sub-screens (scopes).
 CONFIG_SCOPES = ["group", "cib", "retail"]
 # Screens that actually have write actions (so a SCREEN/WRITE grant is meaningful).
@@ -67,6 +68,9 @@ _CONFIG_PREFIX = "config_ops:"
 SCREEN_CATALOGUE = [
     {"key": "service_console", "label": "Service Console", "write_capable": True},
     {"key": "oracle_command_center", "label": "Oracle Command Center", "write_capable": True},
+    # Documentation Center — two read-only, grant-driven screens (User Guide / Technical Guide).
+    {"key": "docs", "label": "Docs — User Guide", "write_capable": False},
+    {"key": "docs_technical", "label": "Docs — Technical Guide", "write_capable": False},
 ]
 CONFIG_SCOPE_CATALOGUE = [
     {"key": "group", "label": "OLS GROUP"},
@@ -219,7 +223,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "username": (identity or {}).get("username", ""),
             "display_name": "", "email": "", "app_env": app_env,
             "screens": [], "write_screens": [],
-            "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": []},
+            "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": [], "regression": []},
             "servers": [], "all_servers": False, "denied_servers": [],
             "infra": {"all_apps": False, "apps": [], "denied_apps": []},
             "service": {"all_apps": False, "apps": [], "denied_apps": []},
@@ -240,10 +244,10 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     if role == "ADMIN":
         base.update({
             "screens": ["home", "log_analytics", "config_ops_console", "infra_health",
-                        "service_console", "oracle_command_center"],
+                        "service_console", "oracle_command_center", "docs", "docs_technical"],
             "write_screens": WRITE_CAPABLE_SCREENS,
             "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
-                       "category_grants": [], "table_grants": []},
+                       "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES)},
             "servers": ["*"], "all_servers": True, "denied_servers": [],
             "infra": {"all_apps": True, "apps": [], "denied_apps": []},
             "service": {"all_apps": True, "apps": [], "denied_apps": []},
@@ -258,6 +262,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     category_grants: list[dict] = []
     table_grants: list[dict] = []
     config_scopes: set[str] = set()
+    regression_scopes: set[str] = set()   # scopes where the Regression tab is granted (DEV/STG only)
     config_all = False
     config_all_level = "READ"
     servers: list[str] = []
@@ -376,6 +381,12 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             if db:
                 entry["db"] = db
             denied_sections.append(entry)
+        elif rtype == "REGRESSION" and level != "DENY":
+            # Regression tab per scope — resource_scope 'cib' or 'config_ops:cib'. Independent of the
+            # config-scope grant (the user still needs config:<scope> to reach the screen the tab lives in).
+            sc = _scope_of(rscope) or (rscope if rscope in CONFIG_SCOPES else None)
+            if sc:
+                regression_scopes.add(sc)
 
     # A Service Console SCREEN grant with no specific APP grants = all apps.
     if service_screen_grant and not service_apps:
@@ -387,6 +398,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         all_servers = all_infra_apps = all_service_apps = all_dbs = True
         config_all = True
         config_scopes.update(CONFIG_SCOPES)
+        regression_scopes.update(CONFIG_SCOPES)
         if full_write:
             config_all_level = "WRITE"
             all_db_level = "WRITE"
@@ -436,6 +448,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "all_level": config_all_level,
             "category_grants": category_grants,
             "table_grants": table_grants,
+            "regression": sorted(regression_scopes),
         },
         "servers": sorted(set(servers)),
         "all_servers": all_servers,
@@ -509,7 +522,7 @@ def access_effective(request: Request, body: EffectiveQuery) -> dict:
 # `granted_by` is the caller (from the token at go-live). See RBAC_DESIGN.md §User Management.
 # ---------------------------------------------------------------------------
 
-_RESOURCE_TYPES = {"SCREEN", "SERVER", "APP", "DB", "TABLE_CATEGORY", "TABLE", "SECTION"}
+_RESOURCE_TYPES = {"SCREEN", "SERVER", "APP", "DB", "TABLE_CATEGORY", "TABLE", "SECTION", "REGRESSION"}
 
 
 def no_ols_user_msg(uid: str) -> str:

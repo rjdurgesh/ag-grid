@@ -1,0 +1,34 @@
+{
+  "_comment": "Regression screen config, PER SCOPE. Copy to regression.json (gitignored, per server). SECRETS are NOT here: the git token stays in .env as REGRESSION_GIT_TOKEN_<SCOPE> (or REGRESSION_GIT_TOKEN). Any key left out falls back to defaults, then to the legacy REGRESSION_* .env var.",
+  "defaults": {
+    "branch_prefix": "release/",
+    "sql_subdir": "",
+    "sqlplus_timeout": 3600,
+    "git_timeout": 120,
+    "step_stale_minutes": 30,
+    "batch_max_rows": 100000
+  },
+  "scopes": {
+    "cib": {
+      "git_url": "https://git.example.com/ols/cib-release.git",
+      "git_workdir": "D:\\ols\\regression\\cib\\work",
+      "log_dir": "D:\\ols\\regression\\cib\\logs",
+      "filecopy_manifest": "\\\\nas\\ols\\cib\\filecopy.json",
+      "refresh_url": ""
+    },
+    "retail": {
+      "git_url": "https://git.example.com/ols/retail-release.git",
+      "git_workdir": "D:\\ols\\regression\\retail\\work",
+      "log_dir": "D:\\ols\\regression\\retail\\logs",
+      "filecopy_manifest": "\\\\nas\\ols\\retail\\filecopy.json",
+      "refresh_url": ""
+    },
+    "group": {
+      "git_url": "https://git.example.com/ols/group-release.git",
+      "git_workdir": "D:\\ols\\regression\\group\\work",
+      "log_dir": "D:\\ols\\regression\\group\\logs",
+      "filecopy_manifest": "\\\\nas\\ols\\group\\filecopy.json",
+      "refresh_url": ""
+    }
+  }
+}

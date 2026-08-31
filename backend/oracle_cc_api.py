@@ -51,18 +51,22 @@ router = APIRouter(prefix="/api/oracle_cc", tags=["oracle_cc"])
 #   ORACLE_CC_WARN/CRIT_PCT   tablespace gauge colour thresholds (percent used).
 #   ORACLE_CC_TOP_CHILD_LIMIT top-N biggest children per drill-down level (partitions have
 #                             hundreds; only the largest space consumers matter).
-ORACLE_CC_USE_DUMMY = env_bool("ORACLE_CC_USE_DUMMY", True)
-WARN_PCT = env_int("ORACLE_CC_WARN_PCT", 85)
-CRIT_PCT = env_int("ORACLE_CC_CRIT_PCT", 90)
-TOP_CHILD_LIMIT = env_int("ORACLE_CC_TOP_CHILD_LIMIT", 10)
-# App schema whose segments/indexes the storage sections report on (the owner-filtered
-# queries bind :owner to this). Set ORACLE_CC_SCHEMA in .env if it isn't OLS.
-OCC_SCHEMA = os.getenv("ORACLE_CC_SCHEMA", "OLS")
-# Dev/demo ONLY: comma-separated scopes to force "unreachable" so you can preview the down UI
-# (grey tab dot + unreachable banner + section read-errors) without a real outage. Leave EMPTY
-# in real deployments — reachability is otherwise driven by the live connection. e.g.
-# ORACLE_CC_FORCE_DOWN=retail_reporting
-_FORCE_DOWN = {s.strip() for s in os.getenv("ORACLE_CC_FORCE_DOWN", "").split(",") if s.strip()}
+# All OCC settings now come from config/occ.json (per server), falling back to the legacy ORACLE_CC_* /
+# SQLI_* .env vars, then built-in defaults. See config_loader.occ_config() + config/occ.example.json.
+import config_loader
+_OCC = config_loader.occ_config()
+
+ORACLE_CC_USE_DUMMY = _OCC["use_dummy"]
+WARN_PCT = _OCC["warn_pct"]
+CRIT_PCT = _OCC["crit_pct"]
+TOP_CHILD_LIMIT = _OCC["top_child_limit"]
+# App schema whose segments/indexes the storage sections report on (the owner-filtered queries bind
+# :owner to this). Set `schema` in config/occ.json (or ORACLE_CC_SCHEMA) if it isn't OLS.
+OCC_SCHEMA = _OCC["schema"]
+# Dev/demo ONLY: scopes to force "unreachable" so you can preview the down UI (grey tab dot +
+# unreachable banner + section read-errors) without a real outage. Empty in real deployments —
+# reachability is otherwise driven by the live connection. e.g. occ.json "force_down": ["retail_reporting"].
+_FORCE_DOWN = set(_OCC["force_down"])
 
 # --- Section 8 · SQL Intelligence tunables -----------------------------------
 #   SQLI_USE_DUMMY     canned SQL-Intelligence data (defaults to the OCC dummy switch).
@@ -73,9 +77,9 @@ _FORCE_DOWN = {s.strip() for s in os.getenv("ORACLE_CC_FORCE_DOWN", "").split(",
 #                      copy-ready SQL is ALWAYS shown to everyone; this flag ONLY controls whether
 #                      the app itself can write the change (via a separate privileged/audited
 #                      connection). Set SQLI_ALLOW_APPLY=0 to make the tool recommend-only.
-SQLI_USE_DUMMY = env_bool("SQLI_USE_DUMMY", ORACLE_CC_USE_DUMMY)
-SQLI_HISTORY_DAYS = env_int("SQLI_HISTORY_DAYS", 5)
-SQLI_ALLOW_APPLY = env_bool("SQLI_ALLOW_APPLY", True)
+SQLI_USE_DUMMY = _OCC["sqli"]["use_dummy"]
+SQLI_HISTORY_DAYS = _OCC["sqli"]["history_days"]
+SQLI_ALLOW_APPLY = _OCC["sqli"]["allow_apply"]
 
 
 # --- config-driven DB targets ------------------------------------------------
@@ -608,8 +612,8 @@ def blocking(request: Request, db: str) -> dict:
 # =============================================================================
 
 # --- Temp tablespace usage (Section 6b) --------------------------------------
-TEMP_WARN_MB = env_int("ORACLE_CC_TEMP_WARN_MB", 1024)   # amber tint at ≥ 1 GB of temp held
-TEMP_CRIT_MB = env_int("ORACLE_CC_TEMP_CRIT_MB", 5120)   # red tint at ≥ 5 GB
+TEMP_WARN_MB = _OCC["temp_warn_mb"]   # amber tint at ≥ 1 GB of temp held (config/occ.json)
+TEMP_CRIT_MB = _OCC["temp_crit_mb"]   # red tint at ≥ 5 GB
 
 _TEMP_COLS = [
     {"key": "sid_serial", "label": "SID,Serial#", "type": "mono"},
@@ -1271,10 +1275,10 @@ _PLAN_STATS_COLS = [
     {"key": "state", "label": "Stats", "type": "chip"},
 ]
 # Flag a plan line only when the volume matters AND the estimate is badly off.
-_MISEST_MIN_ROWS = env_int("SQLI_MISESTIMATE_MIN_ROWS", 1000)
-_MISEST_WARN = env_int("SQLI_MISESTIMATE_WARN", 10)
-_MISEST_CRIT = env_int("SQLI_MISESTIMATE_CRIT", 100)
-_STATS_STALE_DAYS = env_int("SQLI_STATS_STALE_DAYS", 7)
+_MISEST_MIN_ROWS = _OCC["sqli"]["misestimate_min_rows"]
+_MISEST_WARN = _OCC["sqli"]["misestimate_warn"]
+_MISEST_CRIT = _OCC["sqli"]["misestimate_crit"]
+_STATS_STALE_DAYS = _OCC["sqli"]["stats_stale_days"]
 
 
 def _fmt_ratio(ratio: float) -> str:

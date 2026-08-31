@@ -9,7 +9,7 @@ import { RbacService } from '../../../auth/rbac.service';
 import { UploadResponse } from '../../../shared/models';
 
 /** Client for the Config Ops CSV upload endpoint. The reviewed/edited CSV is sent as `file_content`;
- *  the server re-parses + validates + loads it atomically. See UPLOAD_DESIGN.md. */
+ *  the server re-parses + validates + loads it atomically. See GUIDE.md (Config Ops — CSV Upload & Load). */
 @Injectable({ providedIn: 'root' })
 export class ConfigUploadService {
   private readonly api = inject(ApiDataService);
@@ -20,7 +20,7 @@ export class ConfigUploadService {
   }
 
   upload(scope: ConfigScope, table: string,
-         body: { mode: string; delimiter: string; original_filename: string; file_content: string }): Observable<UploadResponse> {
+         body: { mode: string; delimiter: string; original_filename: string; file_content: string; db_source: string }): Observable<UploadResponse> {
     return this.api.post(API.config.upload(scope, table), { caller: this.caller(), ...body });
   }
 }
