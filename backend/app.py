@@ -32,7 +32,12 @@ from utils.logging import configure_logging, get_logger
 configure_logging()
 logger = get_logger(__name__)
 
-app = FastAPI(title="OLS Dashboard API", version="0.1.0")
+# Backend version — shown in the UI footer. Set APP_VERSION in backend/.env per release (falls back to
+# a default if unset). It travels with the deploy the same way APP_ENV does.
+APP_VERSION = os.getenv("APP_VERSION", "1.0.0").strip()
+
+app = FastAPI(title="OLS Dashboard API", version=APP_VERSION)
+app.state.app_version = APP_VERSION
 
 
 def load_db_configs() -> dict[str, dict]:

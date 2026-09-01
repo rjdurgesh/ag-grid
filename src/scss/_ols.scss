@@ -111,8 +111,21 @@
 
 .ols-brand__full {
   display: inline-flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
   line-height: 1.15;
+}
+
+/* Tagline under the brand (moved here from the sidebar footer to keep the footer compact). */
+.ols-brand__sub {
+  margin-top: 2px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #9fb0d6;                 /* light slate — clearly legible on the dark sidebar */
+  white-space: nowrap;
 }
 
 .ols-brand__short {
@@ -123,25 +136,19 @@
 
 // ---- Sidebar footer (fold toggle + command-center tagline) -------------------
 .ols-sidebar-footer {
+  /* Match the right (main) footer height exactly — trim the default 16px vertical padding to 8px. */
+  min-height: 49px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   align-items: center;
   justify-content: center;
   gap: 10px;
 }
 
-.ols-cmd-foot {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .3px;
-  color: rgba(255, 255, 255, .5);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Hide the tagline when the sidebar is folded to icons (also while unfoldable and
+/* Hide the version chip when the sidebar is folded to icons (also while unfoldable and
    not hovered), so only the toggle icon shows in the collapsed rail. */
-.sidebar-narrow .ols-cmd-foot,
-.sidebar-narrow-unfoldable:not(:hover) .ols-cmd-foot {
+.sidebar-narrow .ols-sidebar-footer app-version,
+.sidebar-narrow-unfoldable:not(:hover) .ols-sidebar-footer app-version {
   display: none;
 }
 

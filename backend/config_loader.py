@@ -25,17 +25,42 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-_CONFIG_DIR = Path(os.getenv("OLS_CONFIG_DIR", str(Path(__file__).parent / "config")))
+_BACKEND_DIR = Path(__file__).parent
+# Central config dir (default: backend/config); override the whole location with OLS_CONFIG_DIR.
+_CONFIG_DIR = Path(os.getenv("OLS_CONFIG_DIR", str(_BACKEND_DIR / "config")))
+# Optional PER-FEATURE home, so a screen's ``<name>.json`` can live next to that feature's own folder
+# instead of the central ``config/`` dir. The feature folder is checked FIRST, then the central dir
+# (so nothing breaks if a file is still in ``config/``). A missing folder is simply skipped.
+_FEATURE_DIRS = {
+    "occ": _BACKEND_DIR / "oraclecc",
+    "regression": _BACKEND_DIR / "regression",
+    "config_ops": _BACKEND_DIR / "config_ops",
+    "docs": _BACKEND_DIR / "docs",
+}
 _cache: dict[str, dict] = {}
 
 
+def _config_path(name: str) -> Path | None:
+    """First existing ``<name>.json`` across: the feature folder (``backend/<feature>/``) then the
+    central config dir (``OLS_CONFIG_DIR`` or ``backend/config/``). None if it exists nowhere."""
+    candidates: list[Path] = []
+    feature_dir = _FEATURE_DIRS.get(name)
+    if feature_dir is not None:
+        candidates.append(feature_dir / f"{name}.json")
+    candidates.append(_CONFIG_DIR / f"{name}.json")
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
 def _load(name: str) -> dict:
-    """Load + cache ``config/<name>.json`` (missing/invalid → {})."""
+    """Load + cache a feature's JSON (feature folder first, else the central config dir; missing → {})."""
     if name in _cache:
         return _cache[name]
-    p = _CONFIG_DIR / f"{name}.json"
     data: dict = {}
-    if p.is_file():
+    p = _config_path(name)
+    if p is not None:
         try:
             data = json.loads(p.read_text(encoding="utf-8")) or {}
         except Exception as exc:  # noqa: BLE001

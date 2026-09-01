@@ -14,6 +14,8 @@ export type ApiEnv = 'DEV' | 'STG' | 'PROD';
 
 export interface AppEnvironment {
   production: boolean;
+  /** UI version shown in the footer. Bump this on each frontend release. */
+  uiVersion: string;
   /** true → the in-app mock answers APIs; false → every call hits the real backend. */
   useMock: boolean;
   /** Root of the backend. Every endpoint in api-endpoints.ts is built from this. */
@@ -108,6 +110,8 @@ const RESOLVED_API_BASE = IS_LOCAL ? 'http://localhost:8000' : '';
 
 export const environment: AppEnvironment = {
   production: !IS_LOCAL,
+  // Bump on each UI release — shown in the footer as "UI v…".
+  uiVersion: '1.0.0',
   // Mock ONLY in local dev; every deployed env hits the real backend (same-origin via ui_server).
   useMock: IS_LOCAL,
   // Same-origin when deployed ('' → calls go to /api/… which ui_server proxies); :8000 locally.

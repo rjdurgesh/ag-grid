@@ -1,18 +1,21 @@
 # `backend/config/` — per-feature config files
 
-Screen-specific, **non-secret** settings live here, one JSON file per feature. This keeps the shared
-`backend/.env` lean (globals + secrets only) and lets each screen — and each scope — carry its own
-settings.
+Screen-specific, **non-secret** settings live in one JSON file per feature, in that feature's **own
+folder** next to its code — `oraclecc/occ.json`, `regression/regression.json`,
+`config_ops/config_ops.json`, `docs/docs.json`. (This central `config/` dir stays as a fallback the
+loader checks second, if you'd rather keep a file here.) This keeps the shared `backend/.env` lean
+(globals + secrets only) and lets each screen — and each scope — carry its own settings.
 
 ## Setup (per server)
 
 Each server (DEV / STG / PROD) gets its own copy of these files with that environment's values:
 
 ```bash
-cd backend/config
-cp regression.example.json regression.json
-cp occ.example.json        occ.json
-cp config_ops.example.json config_ops.json
+cd backend
+cp regression/regression.example.json  regression/regression.json
+cp oraclecc/occ.example.json           oraclecc/occ.json
+cp config_ops/config_ops.example.json  config_ops/config_ops.json
+cp docs/docs.example.json              docs/docs.json
 # then edit the .json files for this environment
 ```
 
@@ -25,11 +28,13 @@ import time (same as `.env`; uvicorn `--reload` is unreliable here, hard-restart
 | Where | Holds | Examples |
 |-------|-------|----------|
 | `.env` | GLOBAL + SECRETS + deploy flags | `APP_ENV`, `CYBERARK_*`, `REGRESSION_GIT_TOKEN[_<SCOPE>]`, DB creds, `*_USE_DUMMY` |
-| `config/<feature>.json` | that screen's non-secret settings | paths, URLs, thresholds, per-scope git repos |
+| `<feature>/<feature>.json` (or `config/…`) | that screen's non-secret settings | paths, URLs, thresholds, per-scope git repos |
 
-**Resolution per key (non-breaking):** the JSON value wins → else the legacy `.env` var → else a
-built-in default. So a deployment that still only has `.env` keeps working until it adopts the files.
-Secrets are always read from `.env`, never from these JSON files.
+**File lookup:** the loader checks the **feature folder** (`backend/<feature>/<name>.json` — `oraclecc/`,
+`regression/`, …) first, then this central `config/` dir. Override the whole location with the
+`OLS_CONFIG_DIR` env var. **Resolution per key (non-breaking):** the JSON value wins → else the legacy
+`.env` var → else a built-in default. So a deployment that still only has `.env` keeps working until it
+adopts the files. Secrets are always read from `.env`, never from these JSON files.
 
 Loaded by [`config_loader.py`](../config_loader.py): `occ_config()`, `config_ops_config()`,
 `regression_defaults()`, `regression_scope_config(scope)`.

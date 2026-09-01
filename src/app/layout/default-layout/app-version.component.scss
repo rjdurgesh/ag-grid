@@ -1,0 +1,62 @@
+:host {
+  display: block;
+}
+
+/* Compact version pill, tuned for the DARK sidebar footer (explicit whites, like .ols-cmd-foot). */
+.appver {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  white-space: nowrap;
+  transition: border-color 0.16s ease, background 0.16s ease;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  &__ico {
+    flex: 0 0 auto;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  &__item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  &__k {
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.4);
+  }
+  &__v {
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: rgba(255, 255, 255, 0.85);
+
+    &::before {          /* dimmed "v" prefix → reads v1.0.0 */
+      content: "v";
+      opacity: 0.5;
+      font-weight: 600;
+    }
+  }
+  &__div {
+    width: 1px;
+    height: 10px;
+    background: rgba(255, 255, 255, 0.15);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .appver { transition: none; }
+}

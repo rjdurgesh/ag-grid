@@ -9,5 +9,14 @@ venv/
 .env
 
 # Per-server feature config (paths/URLs per environment) — commit only the *.example.json templates.
+# Applies to the central config/ dir AND the per-feature folders (oraclecc/, regression/, …).
 config/*.json
 !config/*.example.json
+oraclecc/*.json
+!oraclecc/*.example.json
+regression/*.json
+!regression/*.example.json
+config_ops/*.json
+!config_ops/*.example.json
+docs/*.json
+!docs/*.example.json

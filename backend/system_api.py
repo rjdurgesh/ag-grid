@@ -28,6 +28,12 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
+
+@router.get("/version")
+def version(request: Request) -> dict:
+    """Backend version for the UI footer. Source: APP_VERSION in backend/.env (see app.py)."""
+    return {"version": getattr(request.app.state, "app_version", "")}
+
 # How often the SSE stream pushes a fresh snapshot (seconds).
 STREAM_INTERVAL_SECONDS = 2
 

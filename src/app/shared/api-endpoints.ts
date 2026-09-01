@@ -135,7 +135,9 @@ export const API = {
      */
     memoryStream: `${API_BASE_URL}/api/system/memory/stream`,
     /** Name of the database this instance is connected to (shown in the footer). */
-    database: `${API_BASE_URL}/api/system/database`
+    database: `${API_BASE_URL}/api/system/database`,
+    /** Backend version string (footer). GET → `{ version }`. Bumped in backend/app_version.py. */
+    version: `${API_BASE_URL}/api/system/version`
   },
   dashboard: {
     stats: `${API_BASE_URL}/api/dashboard/stats`,
@@ -178,11 +180,18 @@ export const API = {
      * `{ cols, rows }`. Sent in the body (not the URL) so `username` never appears in
      * the query string / logs. `app_env` scopes the catalogue to this environment
      * (`LIVE` is sent to the API as `PROD` — see {@link apiEnv}).
+     *
+     * The master catalogue lives ONLY in the scope's BATCH db, so this call needs no `db_source`.
+     * Instead every returned row carries a **`DB_SOURCE`** column — the table's physical DB
+     * (`ols_group` | `ols_cib_batch` | `ols_cib_reporting` | `ols_retail_batch` | `ols_retail_reporting`,
+     * matching an app.py connection key). Every per-table op below sends that value back so the backend
+     * (`config_api._source_db`) routes the read/write to the correct batch OR reporting DB.
      */
     tables: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/tables`,
     /**
-     * Column detail (down-arrow expand). POST { table_name } → `TabularData`
-     * `{ cols, rows }`. The nested detail grid renders whatever comes back as-is.
+     * Column detail (down-arrow expand). POST { table_name, db_source, caller } → `TabularData`
+     * `{ cols, rows }`. `db_source` (the catalogue row's `DB_SOURCE`) routes to the table's physical DB;
+     * `caller` is the read-gate actor. The nested detail grid renders whatever comes back as-is.
      */
     columnRetrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/columnretrieve`,
     /** Roll (COB) data for a table. POST { rolled_by, table_name, db_source, source_date, target_dates,
@@ -190,8 +199,9 @@ export const API = {
     rollData: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/roll`,
     /**
      * Table content (eye-click). POST
-     * `{ table_name, is_cobdt, start_date, end_date, date_range }` →
+     * `{ table_name, db_source, caller, is_cobdt, start_date, end_date, date_range }` →
      * `TableContentResponse` { cols, cols_data_types, Table_data } (self-describing).
+     * `db_source` (the row's physical DB) routes the read to the right batch/reporting DB.
      * `is_cobdt` ('Y'/'N') comes from the catalogue row. When it is 'Y' the two
      * dates are sent (default: T-1 on both; `date_range` false = just those two
      * days, true = the inclusive range between them). When it is 'N' both dates
@@ -199,21 +209,22 @@ export const API = {
      */
     retrieve: (scope: ConfigScope) => `${API_BASE_URL}/api/config/${scope}/retrieve`,
     /**
-     * INSERT rows. Table name in the URL; body = `{ inserted_by, columns, rows }`
-     * where `rows` are value arrays in `columns` order. Returns `{ inserted: N }`.
+     * INSERT rows. Table name in the URL; body = `{ inserted_by, db_source, columns, rows }`
+     * where `rows` are value arrays in `columns` order. `db_source` routes to the table's physical
+     * DB (batch/reporting). Returns `{ inserted: N }`.
      */
     createRows: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/rows`,
     /**
-     * UPDATE rows. Table name in the URL; body = `{ updated_by, updates:
-     * [{ rowid, values: { COL: val } }] }` (changed columns only). Returns
-     * `{ updated: N }`.
+     * UPDATE rows. Table name in the URL; body = `{ updated_by, db_source, updates:
+     * [{ rowid, values: { COL: val } }] }` (changed columns only). `db_source` routes to the table's
+     * physical DB. Returns `{ updated: N }`.
      */
     updateRows: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/update`,
     /**
-     * DELETE rows. Table name in the URL; body = `{ deleted_by, rowids: [...] }`.
-     * Returns `{ deleted: N }`.
+     * DELETE rows. Table name in the URL; body = `{ deleted_by, db_source, rowids: [...] }`.
+     * `db_source` routes to the table's physical DB. Returns `{ deleted: N }`.
      */
     deleteRows: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`,

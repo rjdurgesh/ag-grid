@@ -325,6 +325,7 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 | `GET /api/system/memory` | – | `MemoryStats` `{ free, used, total, unit, percent }` | One-shot snapshot (real host memory via `psutil`/stdlib) |
 | `GET /api/system/memory/stream` | – | **SSE** stream of `MemoryStats` (one `data:` frame every ~2s) | Header live memory — consumed via `EventSource`, so it's ONE persistent connection (single network-tab entry), not a poll. Bypasses the mock → always the real backend. |
 | `GET /api/system/database` | – | `{ name: string }` | Footer DB name (centered) |
+| `GET /api/system/version` | – | `{ version: string }` | Sidebar-footer version chip (`API v…`); source = `APP_VERSION` in backend/.env. UI version is `environment.uiVersion`. |
 | `GET /api/dashboard/stats` | – | `DashboardStat[]` | Home KPI cards |
 | `GET /api/dashboard/activity` | – | `ActivityItem[]` | Home activity feed |
 | `GET /api/dashboard/memory-trend` | – | `number[]` (last 12 % samples) | Home trend chart |
@@ -409,13 +410,29 @@ CHAR(1) columns and the expand-detail's IS_* columns.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/config/{scope}/tables` | `{ app_env, username }` | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`). Body (not query) so `username` stays out of the URL/logs. |
-| `POST /api/config/{scope}/columnretrieve` | `{ table_name }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
-| `POST /api/config/{scope}/retrieve` | `{ table_name, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
-| `POST /api/config/{scope}/roll` | `{ rolled_by, table_name, db_source, source_date, target_dates[], tablespace }` — `db_source` (the row's physical DB, e.g. `ols_cib_reporting`) routes the op; `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, source_date, source_count, targets:[{date,status,count,error?}] }` — per-date result |
-| `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
-| `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
-| `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |
+| `POST /api/config/{scope}/tables` | `{ app_env, username }` | `TabularData` `{ cols, rows }` — catalogue for that env (`LIVE`→`PROD`). Body (not query) so `username` stays out of the URL/logs. **Returns a `DB_SOURCE` column per row** — no `db_source` in the request (see note below). |
+| `POST /api/config/{scope}/columnretrieve` | `{ table_name, db_source }` | `TabularData` `{ cols, rows }` — **down-arrow expand** detail, rendered as-is |
+| `POST /api/config/{scope}/retrieve` | `{ table_name, db_source, is_cobdt, start_date, end_date, date_range }` | `TableContentResponse` `{ cols, cols_data_types, Table_data }` |
+| `POST /api/config/{scope}/roll` | `{ rolled_by, table_name, db_source, source_date, target_dates[], tablespace }` — `tablespace` = `OLS_RPT32` (group) / `OLS` (cib, retail) | `{ status, source_date, source_count, targets:[{date,status,count,error?}] }` — per-date result |
+| `POST /api/config/{scope}/table/{table}/rows` | `{ inserted_by, db_source, columns, rows: [[…]] }` | `{ inserted: N }` — INSERT |
+| `POST /api/config/{scope}/table/{table}/update` | `{ updated_by, db_source, updates: [ { "<rowid>": { col: val } } ] }` | `{ updated: N }` — UPDATE |
+| `POST /api/config/{scope}/table/{table}/delete` | `{ deleted_by, db_source, rowids: [ "<rowid>", … ] }` | `{ deleted: N }` — DELETE |
+
+**`db_source` routing (batch vs reporting).** Each scope has one or two physical DBs — `ols_group`, or
+`ols_{cib,retail}_batch` + `ols_{cib,retail}_reporting` — matching the **app.py connection keys**. The
+master catalogue table lives ONLY in the scope's **batch** DB but describes tables in BOTH, so it carries
+a **`DB_SOURCE`** column naming each table's physical DB. `/tables` reads the catalogue (batch DB, so it
+needs no `db_source`) and returns that column; **every per-table op** — `columnretrieve`, `retrieve`,
+`roll`, insert / update / delete, and `…/upload` — then sends the row's `DB_SOURCE` back as `db_source`,
+and the backend `config_api._source_db(request, db_source, scope)` opens the matching connection, routing
+the read/write to the correct **batch or reporting** DB. The frontend resolves it via
+`config-scope.base.ts` (`rowDbSource(row)` for ops that have the row; `dbSourceFor(tableName)` — a lookup
+in the loaded catalogue — for insert/update/delete). **Real backend status:** `columnretrieve`, `retrieve`,
+insert/update/delete, `upload` and `roll` are all **implemented** in `config_api.py` + `database.py`
+(reads gated by `_require_config_read`, writes by `_require_config_write`; CRUD casts cells via `_cast`,
+stamps INSERTED_*/UPDATED_* audit columns, and targets rows by **ROWID**; insert reuses
+`config_load_table(mode='append')`). Only the **`/tables` catalogue** is still mock-served (its master-table
+SQL is app-specific). Every real endpoint short-circuits to canned data when `ACCESS_USE_DUMMY=1`.
 
 **Mutation payload shapes** (the backend keys rows by their DB `rowid`):
 - **INSERT** — `rows` are value arrays in `columns` order; new drafts are entered at the

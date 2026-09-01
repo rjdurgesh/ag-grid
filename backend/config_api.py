@@ -46,6 +46,8 @@ MAX_MB = _CFG["max_mb"]
 BATCH_SIZE = _CFG["batch_size"]
 # System/audit columns the load sets itself — never expected in the file.
 AUDIT_COLUMNS = {str(c).strip().upper() for c in _CFG["audit_columns"] if str(c).strip()}
+# Safety cap for the eye-view content grid (the modal virtualises; this bounds one payload).
+CONTENT_MAX_ROWS = 5000
 
 
 class UploadBody(BaseModel):
@@ -66,6 +68,42 @@ class RollBody(BaseModel):
     db_source: str = ""             # the table's physical DB (ols_cib_batch | ols_cib_reporting | …)
 
 
+# --- read + CRUD request bodies (each carries db_source → the table's physical DB) ---------------
+class ColumnDetailBody(BaseModel):
+    table_name: str
+    db_source: str = ""
+    caller: str = ""                # actor (from the SSO token at go-live) for the read gate
+
+
+class ContentBody(BaseModel):
+    table_name: str
+    db_source: str = ""
+    caller: str = ""
+    is_cobdt: str = "N"             # 'Y' → filter by the resolved date column
+    start_date: str | None = None
+    end_date: str | None = None
+    date_range: bool = False
+
+
+class InsertBody(BaseModel):
+    inserted_by: str
+    db_source: str = ""
+    columns: list[str]
+    rows: list[list[Any]]           # value arrays in `columns` order
+
+
+class UpdateBody(BaseModel):
+    updated_by: str
+    db_source: str = ""
+    updates: list[dict[str, dict]]  # [{ "<rowid>": { COL: value } }] — changed columns only
+
+
+class DeleteBody(BaseModel):
+    deleted_by: str
+    db_source: str = ""
+    rowids: list[str]
+
+
 class CellError(Exception):
     def __init__(self, column: str, reason: str):
         self.column = column
@@ -74,8 +112,9 @@ class CellError(Exception):
 
 
 # ---- gate ------------------------------------------------------------------
-def _require_config_write(request: Request, caller: str, scope: str):
-    """Active OLS user with write access to this config scope (admin or config_ops:<scope> grant)."""
+def _require_config_access(request: Request, caller: str, scope: str, action: str = "write"):
+    """Active OLS user with access to this config scope (admin or a ``config_ops:<scope>`` grant). Reads
+    and writes use the same scope-visibility check today; ``action`` only tunes the 403 message."""
     if CONFIG_USE_DUMMY:
         return None
     cfg = getattr(request.app.state, "app_db_config", None)
@@ -87,8 +126,16 @@ def _require_config_write(request: Request, caller: str, scope: str):
         grants = database.fetch_user_grants(cfg, caller, getattr(request.app.state, "app_env", "PROD"))
         want = f"config_ops:{scope}".lower()
         if not any((g.get("resource_scope") or "").lower() == want for g in grants):
-            raise HTTPException(status_code=403, detail=f"Write access to {scope.upper()} config is required.")
+            raise HTTPException(status_code=403, detail=f"{action.capitalize()} access to {scope.upper()} config is required.")
     return cfg
+
+
+def _require_config_write(request: Request, caller: str, scope: str):
+    return _require_config_access(request, caller, scope, "write")
+
+
+def _require_config_read(request: Request, caller: str, scope: str):
+    return _require_config_access(request, caller, scope, "read")
 
 
 _DB_SOURCE_RE = re.compile(r"^ols_[a-z0-9_]+$")
@@ -317,3 +364,147 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
         "load_id": load_id, "mode": body.mode, "rows_loaded": result["rows_loaded"],
         "rows_deleted": result["rows_deleted"], "rows_rejected": len(rejects),
         "cob_dt": (cob_dt.isoformat() if cob_dt else None), "archived": archived}}
+
+
+# ---- read: column detail (expand) + table content (eye) --------------------
+@router.post("/{scope}/columnretrieve")
+def config_columnretrieve(scope: str, request: Request, body: ColumnDetailBody) -> dict:
+    """Down-arrow expand → the table's column definitions as `{cols, rows}` (rendered as-is)."""
+    _require_config_read(request, body.caller, scope)
+    if CONFIG_USE_DUMMY:
+        return {"cols": ["COLUMN_NAME", "DATA_TYPE", "NULLABLE", "DATA_LENGTH", "DATA_PRECISION", "DATA_SCALE"], "rows": []}
+    dbcfg = _source_db(request, body.db_source, scope)
+    try:
+        return database.config_column_detail(dbcfg, body.table_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/{scope}/retrieve")
+def config_retrieve(scope: str, request: Request, body: ContentBody) -> dict:
+    """Eye-click → self-describing content `{cols, cols_data_types, Table_data}` (each row carries a
+    hidden rowid for update/delete). For a COB table the resolved date column is filtered by the chosen
+    date(s)/range; a non-COB table returns the whole table (capped at CONTENT_MAX_ROWS)."""
+    _require_config_read(request, body.caller, scope)
+    if CONFIG_USE_DUMMY:
+        return {"cols": [], "cols_data_types": [], "Table_data": []}
+    dbcfg = _source_db(request, body.db_source, scope)
+    is_cob = str(body.is_cobdt or "").strip().upper() == "Y"
+    date_col = start = end = None
+    if is_cob:
+        date_col = database.config_date_column(dbcfg, body.table_name)
+        try:
+            if body.start_date:
+                start = _parse_dt(body.start_date, False)
+            if body.end_date:
+                end = _parse_dt(body.end_date, False)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Dates must be YYYY-MM-DD ({exc}).")
+    try:
+        return database.config_table_content(
+            dbcfg, table=body.table_name, date_col=date_col, is_cob=is_cob,
+            start_date=start, end_date=end, date_range=body.date_range, row_cap=CONTENT_MAX_ROWS)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---- write: insert / update / delete (rowid-based CRUD) --------------------
+def _cast_by_name(coldefs: list[dict], colname: str, cell: Any):
+    """Cast one cell to its column's Oracle type, keyed by name. Raises HTTPException(400) on a bad cell."""
+    col = next((c for c in coldefs if c["name"].upper() == str(colname).upper()), None)
+    if not col:
+        raise HTTPException(status_code=400, detail=f"Unknown column '{colname}'.")
+    try:
+        return _cast("" if cell is None else str(cell), col)
+    except CellError as ce:
+        raise HTTPException(status_code=400, detail=f"{ce.column}: {ce.reason}")
+
+
+def _audit_defaults(coldefs: list[dict], actor: str, prefix: str) -> dict:
+    """{col: value} for the audit columns of one action that actually exist on the table:
+    prefix='INSERTED' → INSERTED_BY/DATE/ON; 'UPDATED' → UPDATED_BY/DATE/ON."""
+    now = datetime.now()
+    present = {c["name"].upper() for c in coldefs} & AUDIT_COLUMNS
+    out: dict[str, Any] = {}
+    if f"{prefix}_BY" in present:
+        out[f"{prefix}_BY"] = actor
+    if f"{prefix}_DATE" in present:
+        out[f"{prefix}_DATE"] = now
+    if f"{prefix}_ON" in present:
+        out[f"{prefix}_ON"] = now
+    return out
+
+
+@router.post("/{scope}/table/{table}/rows")
+def config_insert(scope: str, table: str, request: Request, body: InsertBody) -> dict:
+    """INSERT rows — cells type-cast per the table schema, INSERTED_* audit stamped server-side. Reuses
+    the atomic append path of ``config_load_table``."""
+    _require_config_write(request, body.inserted_by, scope)
+    if not body.columns or not body.rows:
+        raise HTTPException(status_code=400, detail="columns and rows are required.")
+    if CONFIG_USE_DUMMY:
+        return {"inserted": len(body.rows)}
+    dbcfg = _source_db(request, body.db_source, scope)
+    coldefs = database.config_table_columns(dbcfg, table)
+    if not coldefs:
+        raise HTTPException(status_code=404, detail=f"Unknown table '{table}'.")
+    cast_rows = []
+    for rn, raw in enumerate(body.rows, start=1):
+        try:
+            cast_rows.append([_cast_by_name(coldefs, body.columns[i], raw[i] if i < len(raw) else "")
+                              for i in range(len(body.columns))])
+        except HTTPException as he:
+            raise HTTPException(status_code=he.status_code, detail=f"Row {rn}: {he.detail}")
+    try:
+        result = database.config_load_table(
+            dbcfg, table=table, columns=list(body.columns), rows=cast_rows, mode="append",
+            system_defaults=_audit_defaults(coldefs, body.inserted_by, "INSERTED"), batch_size=BATCH_SIZE)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"inserted": result["rows_loaded"]}
+
+
+@router.post("/{scope}/table/{table}/update")
+def config_update(scope: str, table: str, request: Request, body: UpdateBody) -> dict:
+    """UPDATE rows by rowid — changed columns only, type-cast; UPDATED_* audit stamped server-side."""
+    _require_config_write(request, body.updated_by, scope)
+    if not body.updates:
+        raise HTTPException(status_code=400, detail="updates are required.")
+    if CONFIG_USE_DUMMY:
+        return {"updated": len(body.updates)}
+    dbcfg = _source_db(request, body.db_source, scope)
+    coldefs = database.config_table_columns(dbcfg, table)
+    if not coldefs:
+        raise HTTPException(status_code=404, detail=f"Unknown table '{table}'.")
+    cast_updates = []
+    for upd in body.updates:
+        if not upd:
+            continue
+        rowid, changes = next(iter(upd.items()))
+        cast_updates.append({str(rowid): {c: _cast_by_name(coldefs, c, v) for c, v in (changes or {}).items()}})
+    try:
+        updated = database.config_update_rows(dbcfg, table=table, updates=cast_updates,
+                                              audit=_audit_defaults(coldefs, body.updated_by, "UPDATED"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"updated": updated}
+
+
+@router.post("/{scope}/table/{table}/delete")
+def config_delete(scope: str, table: str, request: Request, body: DeleteBody) -> dict:
+    """DELETE rows by rowid (atomic; DELETE not TRUNCATE)."""
+    _require_config_write(request, body.deleted_by, scope)
+    if not body.rowids:
+        raise HTTPException(status_code=400, detail="rowids are required.")
+    if CONFIG_USE_DUMMY:
+        return {"deleted": len(body.rowids)}
+    dbcfg = _source_db(request, body.db_source, scope)
+    try:
+        deleted = database.config_delete_rows(dbcfg, table=table, rowids=body.rowids)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"deleted": deleted}

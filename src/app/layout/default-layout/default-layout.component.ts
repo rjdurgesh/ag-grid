@@ -16,6 +16,7 @@ import {
 import { RbacService } from '../../auth/rbac.service';
 import { screenForNavUrl } from '../../auth/rbac.config';
 import { DefaultFooterComponent, DefaultHeaderComponent } from './';
+import { AppVersionComponent } from './app-version.component';
 import { navItems as NAV_ITEMS } from './_nav';
 
 function isOverflown(element: HTMLElement) {
@@ -38,6 +39,7 @@ function isOverflown(element: HTMLElement) {
     ContainerComponent,
     DefaultFooterComponent,
     DefaultHeaderComponent,
+    AppVersionComponent,
     NgScrollbar,
     RouterOutlet,
     RouterLink,

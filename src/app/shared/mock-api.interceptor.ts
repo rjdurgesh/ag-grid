@@ -61,6 +61,15 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   // interceptor bails out above and the calls appear in the Network tab as usual.
   // eslint-disable-next-line no-console
   console.debug(`[mock-api] ${req.method} ${path}${url.search}`);
+  // Dev aid: every per-table Config Ops call carries `db_source` (the catalogue row's physical DB) so
+  // the backend routes to the right batch/reporting DB — log it so routing is visible while developing.
+  if (path.startsWith('/api/config/')) {
+    const ds = (req.body as { db_source?: string } | null)?.db_source;
+    if (ds !== undefined) {
+      // eslint-disable-next-line no-console
+      console.debug(`[mock-api]   ↳ db_source = ${ds || '(empty)'}`);
+    }
+  }
 
   // --- Auth -----------------------------------------------------------------
   if (path === '/api/auth/login' && req.method === 'POST') {
@@ -201,6 +210,9 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
   if (path === '/api/system/database') {
     return respond({ name: `OLSDB_${environment.appEnv}01` });
+  }
+  if (path === '/api/system/version') {
+    return respond({ version: '1.0.0' });
   }
   if (path === '/api/dashboard/stats') {
     return respond(MOCK_DASHBOARD_STATS);

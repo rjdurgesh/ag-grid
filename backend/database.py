@@ -2319,3 +2319,161 @@ def config_upload_audit_write(db_config: Any, **f) -> int:
             cursor.close()
         if connection is not None and connection is not db_config:
             connection.close()
+
+
+def config_column_detail(db_config: Any, table_name: str) -> dict:
+    """Down-arrow expand detail → the table's **column definitions** from the data dictionary as a plain
+    ``{cols, rows}`` (rendered as-is by the nested grid). Reuses ``config_table_columns``. If your real
+    ``columnretrieve`` should return something else (e.g. related config rows), swap the body here."""
+    coldefs = config_table_columns(db_config, table_name)
+    cols = ["COLUMN_NAME", "DATA_TYPE", "NULLABLE", "DATA_LENGTH", "DATA_PRECISION", "DATA_SCALE"]
+    rows = [[c["name"], c["type"], "Y" if c["nullable"] else "N",
+             c["data_length"], c["data_precision"], c["data_scale"]] for c in coldefs]
+    return {"cols": cols, "rows": rows}
+
+
+def _content_scalar(v: Any):
+    """Make a fetched cell JSON-safe for the self-describing content response: datetimes → ISO strings,
+    BLOB/RAW bytes → a short base64 preview (the grid shows a token anyway), Decimal → float. CLOBs are
+    already converted to str by the connection's LOB output handler; JSON columns come back as dict/list."""
+    if v is None or isinstance(v, (str, int, float, bool, dict, list)):
+        return v
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.isoformat()
+    if isinstance(v, bytes):
+        import base64
+        return "data:application/octet-stream;base64," + base64.b64encode(v[:4096]).decode("ascii")
+    from decimal import Decimal
+    if isinstance(v, Decimal):
+        return float(v)
+    return str(v)
+
+
+def config_table_content(db_config: Any, *, table: str, date_col: str | None = None, is_cob: bool = False,
+                         start_date: Any = None, end_date: Any = None, date_range: bool = False,
+                         row_cap: int = 5000) -> dict:
+    """Read a config table's rows for the eye-view — **self-describing** ``{cols, cols_data_types,
+    Table_data}``. Each ``Table_data`` record is keyed by column name PLUS a hidden ``rowid`` (used by
+    update/delete). For a COB table the resolved ``date_col`` is filtered by the chosen date(s): a
+    ``date_range`` uses ``>= start AND < end+1``; otherwise the two discrete days are matched. Non-COB
+    tables return the whole table, capped at ``row_cap`` (day boundaries computed in Python so the
+    predicate stays index/partition friendly)."""
+    if not _is_ident(table):
+        raise ValueError(f"Invalid table name: {table}")
+    where = ""
+    binds: dict = {}
+    if is_cob and date_col and start_date is not None:
+        if not _is_ident(date_col):
+            raise ValueError(f"Invalid date column: {date_col}")
+        d1 = start_date
+        d2 = end_date if end_date is not None else start_date
+        one = datetime.timedelta(days=1)
+        if date_range:
+            where = f" WHERE {date_col} >= :d1 AND {date_col} < :d2"
+            binds = {"d1": d1, "d2": d2 + one}
+        else:
+            where = (f" WHERE ({date_col} >= :d1 AND {date_col} < :d1e)"
+                     f" OR ({date_col} >= :d2 AND {date_col} < :d2e)")
+            binds = {"d1": d1, "d1e": d1 + one, "d2": d2, "d2e": d2 + one}
+    cap = int(row_cap) if (row_cap and int(row_cap) > 0) else 5000
+    sql = f"SELECT t.ROWID AS OLS_ROWID, t.* FROM {table} t{where} FETCH FIRST {cap} ROWS ONLY"
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(sql, binds)
+        names = [d[0] for d in cursor.description]           # [OLS_ROWID, col1, col2, …]
+        cols = names[1:]
+        cols_types = [str(d[1]) for d in cursor.description[1:]]
+        table_data = []
+        for row in cursor.fetchall():
+            rec = {names[i]: _content_scalar(row[i]) for i in range(1, len(names))}
+            rec["rowid"] = str(row[0])
+            table_data.append(rec)
+        return {"cols": cols, "cols_data_types": cols_types, "Table_data": table_data}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_update_rows(db_config: Any, *, table: str, updates: list, audit: dict | None = None) -> int:
+    """UPDATE rows **by ROWID** in one transaction. ``updates`` = ``[{ "<rowid>": { COL: value } }]``
+    (values already type-cast by the API layer). ``audit`` = {col: value} merged into every SET (e.g.
+    UPDATED_BY/UPDATED_DATE, for the audit columns that exist). Rolls back on any error. Returns the
+    number of rows updated."""
+    if not _is_ident(table):
+        raise ValueError(f"Invalid table name: {table}")
+    audit = audit or {}
+    for c in audit:
+        if not _is_ident(c):
+            raise ValueError(f"Invalid audit column: {c}")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        total = 0
+        for upd in updates:
+            if not upd:
+                continue
+            rowid, changes = next(iter(upd.items()))
+            change_cols = list(changes.keys())
+            for c in change_cols:
+                if not _is_ident(c):
+                    raise ValueError(f"Invalid column name: {c}")
+            set_cols = change_cols + list(audit.keys())
+            if not set_cols:
+                continue
+            set_sql = ", ".join(f"{c} = :{i + 1}" for i, c in enumerate(set_cols))
+            binds = [changes[c] for c in change_cols] + [audit[c] for c in audit]
+            binds.append(str(rowid))                      # WHERE ROWID = :<last>
+            cursor.execute(f"UPDATE {table} SET {set_sql} WHERE ROWID = :{len(set_cols) + 1}", binds)
+            total += cursor.rowcount or 0
+        connection.commit()
+        return total
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_delete_rows(db_config: Any, *, table: str, rowids: list) -> int:
+    """DELETE rows **by ROWID** in one transaction (batched). Rolls back on any error. Returns the
+    number of rows deleted. (DELETE, never TRUNCATE — atomic + rollback-safe.)"""
+    if not _is_ident(table):
+        raise ValueError(f"Invalid table name: {table}")
+    ids = [(str(r),) for r in rowids if r not in (None, "")]
+    if not ids:
+        return 0
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.executemany(f"DELETE FROM {table} WHERE ROWID = :1", ids)
+        deleted = cursor.rowcount or 0
+        connection.commit()
+        return deleted
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()

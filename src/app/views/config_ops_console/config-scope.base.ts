@@ -258,7 +258,11 @@ export abstract class ConfigScopeBase implements OnInit {
    */
   getExpand = (row: Record<string, unknown>): Observable<TableContent> => {
     return this.api
-      .post<TabularData>(API.config.columnRetrieve(this.scope), { table_name: String(row[this.tableNameKey]) })
+      .post<TabularData>(API.config.columnRetrieve(this.scope), {
+        table_name: String(row[this.tableNameKey]),
+        db_source: this.rowDbSource(row),
+        caller: this.actor
+      })
       .pipe(map(tabularToContent));
   };
 
@@ -270,7 +274,7 @@ export abstract class ConfigScopeBase implements OnInit {
   getDetail = (row: Record<string, unknown>): Observable<TableContent> => {
     const tableName = String(row[this.tableNameKey]);
     const isCob = isFlagSet(row[this.cobKey]);
-    return this.loadContent(tableName, isCob, defaultDates());
+    return this.loadContent(tableName, isCob, defaultDates(), this.rowDbSource(row));
   };
 
   /**
@@ -282,14 +286,17 @@ export abstract class ConfigScopeBase implements OnInit {
   private loadContent(
     tableName: string,
     isCob: boolean,
-    dates: { start: string; end: string; range: boolean }
+    dates: { start: string; end: string; range: boolean },
+    dbSource: string
   ): Observable<TableContent> {
     const body = {
       table_name: tableName,
       is_cobdt: isCob ? 'Y' : 'N',
       start_date: isCob ? dates.start : null,
       end_date: isCob ? dates.end : null,
-      date_range: dates.range
+      date_range: dates.range,
+      db_source: dbSource,
+      caller: this.actor
     };
     return this.api.post<TableContentResponse>(API.config.retrieve(this.scope), body).pipe(map(buildContent));
   }
@@ -299,6 +306,21 @@ export abstract class ConfigScopeBase implements OnInit {
 
   /** IS_COBDT flag — COB tables get the date bar + Upload / Roll Data extras. */
   isRowCob = (row: Record<string, unknown>): boolean => isFlagSet(row[this.cobKey]);
+
+  /** The table's physical DB (`DB_SOURCE`, e.g. `ols_cib_reporting`) straight off a catalogue row.
+   *  Matches an app.py connection key (case-insensitive) — the backend `_source_db` routes on it. */
+  private rowDbSource(row: Record<string, unknown>): string {
+    return String(row['DB_SOURCE'] ?? row['db_source'] ?? '');
+  }
+
+  /** `DB_SOURCE` for a table looked up BY NAME in the loaded catalogue — for the per-table ops that
+   *  only carry the table name (insert / update / delete). Every per-table operation routes to its
+   *  physical DB (batch OR reporting) via this, since the master catalogue lives only in the batch DB. */
+  private dbSourceFor(tableName: string): string {
+    const key = (tableName || '').toLowerCase();
+    const row = this.rows().find((r) => String(r[this.tableNameKey] ?? '').toLowerCase() === key);
+    return row ? this.rowDbSource(row) : '';
+  }
 
   /** Refresh icon in the first column header. */
   reload(): void {
@@ -319,7 +341,7 @@ export abstract class ConfigScopeBase implements OnInit {
   onRetrieve(event: RetrieveEvent, grid: GridDataComponent): void {
     grid.setModalLoading(true);
     const isCob = isFlagSet(event.row[this.cobKey]);
-    this.loadContent(event.tableName, isCob, { start: event.start, end: event.end, range: event.range }).subscribe({
+    this.loadContent(event.tableName, isCob, { start: event.start, end: event.end, range: event.range }, this.rowDbSource(event.row)).subscribe({
       next: (content) => grid.applyModalContent(content),
       error: () => grid.setModalLoading(false)
     });
@@ -330,6 +352,7 @@ export abstract class ConfigScopeBase implements OnInit {
     this.api
       .post<{ inserted?: number }>(API.config.createRows(this.scope, event.tableName), {
         inserted_by: this.actor,
+        db_source: this.dbSourceFor(event.tableName),
         columns: event.columns,
         rows: event.rows
       })
@@ -348,6 +371,7 @@ export abstract class ConfigScopeBase implements OnInit {
     this.api
       .post<{ updated?: number }>(API.config.updateRows(this.scope, event.tableName), {
         updated_by: this.actor,
+        db_source: this.dbSourceFor(event.tableName),
         updates
       })
       .subscribe({
@@ -361,6 +385,7 @@ export abstract class ConfigScopeBase implements OnInit {
     this.api
       .post<{ deleted?: number }>(API.config.deleteRows(this.scope, event.tableName), {
         deleted_by: this.actor,
+        db_source: this.dbSourceFor(event.tableName),
         rowids: event.rowids
       })
       .subscribe({
@@ -415,7 +440,7 @@ export abstract class ConfigScopeBase implements OnInit {
         rolled_by: this.actor,
         tablespace: this.scope === 'group' ? 'OLS_RPT32' : 'OLS',
         table_name: event.tableName,
-        db_source: String(event.row['DB_SOURCE'] ?? event.row['db_source'] ?? ''),
+        db_source: this.rowDbSource(event.row),
         source_date: event.source,
         target_dates: event.targets
       })
