@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import json
 import os
 import re
 from typing import Any
@@ -2399,41 +2400,49 @@ def config_table_content(db_config: Any, *, table: str, date_col: str | None = N
             connection.close()
 
 
-def config_update_rows(db_config: Any, *, table: str, updates: list, audit: dict | None = None) -> int:
-    """UPDATE rows **by ROWID** in one transaction. ``updates`` = ``[{ "<rowid>": { COL: value } }]``
-    (values already type-cast by the API layer). ``audit`` = {col: value} merged into every SET (e.g.
-    UPDATED_BY/UPDATED_DATE, for the audit columns that exist). Rolls back on any error. Returns the
-    number of rows updated."""
+# PL/SQL procedure that applies config-table UPDATEs from a JSON CLOB. SET THIS to your
+# package.procedure. Expected signature (a PROCEDURE with an OUT row count):
+#   PROCEDURE config_update_rows(p_table      IN  VARCHAR2,
+#                                p_updates    IN  CLOB,      -- the JSON payload below
+#                                p_updated_by IN  VARCHAR2,  -- the proc stamps UPDATED_BY/UPDATED_DATE
+#                                p_updated    OUT NUMBER);   -- rows updated
+CONFIG_UPDATE_PROC = "OLS_UTIL.CONFIG_UPDATE_ROWS"
+
+
+def config_update_rows(db_config: Any, *, table: str, updates: list, updated_by: str) -> int:
+    """Apply row updates via the PL/SQL procedure ``CONFIG_UPDATE_PROC``, passing the changes as a
+    **JSON CLOB** (the whole ``updates`` payload) rather than building UPDATE statements here.
+
+    JSON shape sent to the proc::
+
+        [ { "rowid": "<ROWID>", "values": { "COL": <value>, ... } }, ... ]
+
+    The proc parses the JSON, updates each row **BY ROWID** with the given columns, stamps
+    ``UPDATED_BY = p_updated_by`` / ``UPDATED_DATE = SYSDATE`` itself, and returns the number of rows
+    updated in its OUT parameter. Values are sent as-is (strings/numbers/bools from the client); the
+    proc/DB is responsible for any TO_DATE/TO_NUMBER conversion. Rolls back on any error."""
     if not _is_ident(table):
         raise ValueError(f"Invalid table name: {table}")
-    audit = audit or {}
-    for c in audit:
-        if not _is_ident(c):
-            raise ValueError(f"Invalid audit column: {c}")
+    # Reshape [{ "<rowid>": {col: val} }] → [{ "rowid": ..., "values": {...} }] for easy JSON_TABLE parsing.
+    rows = []
+    for upd in updates:
+        if not upd:
+            continue
+        rowid, changes = next(iter(upd.items()))
+        rows.append({"rowid": str(rowid), "values": changes or {}})
+    payload = json.dumps(rows, default=str)   # default=str: any stray date/Decimal → string for the proc
+
+    import oracledb                            # lazy (same as connect); not needed in dummy mode
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        total = 0
-        for upd in updates:
-            if not upd:
-                continue
-            rowid, changes = next(iter(upd.items()))
-            change_cols = list(changes.keys())
-            for c in change_cols:
-                if not _is_ident(c):
-                    raise ValueError(f"Invalid column name: {c}")
-            set_cols = change_cols + list(audit.keys())
-            if not set_cols:
-                continue
-            set_sql = ", ".join(f"{c} = :{i + 1}" for i, c in enumerate(set_cols))
-            binds = [changes[c] for c in change_cols] + [audit[c] for c in audit]
-            binds.append(str(rowid))                      # WHERE ROWID = :<last>
-            cursor.execute(f"UPDATE {table} SET {set_sql} WHERE ROWID = :{len(set_cols) + 1}", binds)
-            total += cursor.rowcount or 0
+        out_count = cursor.var(oracledb.NUMBER)
+        # p_updates is a CLOB IN param — python-oracledb binds the JSON string to it directly.
+        cursor.callproc(CONFIG_UPDATE_PROC, [table, payload, updated_by, out_count])
         connection.commit()
-        return total
+        return int(out_count.getvalue() or 0)
     except Exception:
         if connection is not None:
             try:

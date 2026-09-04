@@ -334,7 +334,7 @@ All paths are relative to `API_BASE_URL`. Shapes are defined in
 |---|---|---|---|
 | `GET /api/system/memory` | – | `MemoryStats` `{ free, used, total, unit, percent }` | One-shot snapshot (real host memory via `psutil`/stdlib) |
 | `GET /api/system/memory/stream` | – | **SSE** stream of `MemoryStats` (one `data:` frame every ~2s) | Header live memory — consumed via `EventSource`, so it's ONE persistent connection (single network-tab entry), not a poll. Bypasses the mock → always the real backend. |
-| `GET /api/system/database` | – | `{ name: string }` | Footer DB name (centered) |
+| `GET /api/system/database` | – | `{ databases: string[] }` | Footer DB names (centered), joined with ` \| `; source = the **keys of `app.state.db_configs`** (single source of truth). Implemented in `system_api.py` alongside `/version`. |
 | `GET /api/system/version` | – | `{ version: string }` | Sidebar-footer version chip (`API v…`); source = `APP_VERSION` in backend/.env. UI version is `environment.uiVersion`. |
 | `GET /api/dashboard/stats` | – | `DashboardStat[]` | Home KPI cards |
 | `GET /api/dashboard/activity` | – | `ActivityItem[]` | Home activity feed |
@@ -439,15 +439,21 @@ the read/write to the correct **batch or reporting** DB. The frontend resolves i
 `config-scope.base.ts` (`rowDbSource(row)` for ops that have the row; `dbSourceFor(tableName)` — a lookup
 in the loaded catalogue — for insert/update/delete). **Real backend status:** `columnretrieve`, `retrieve`,
 insert/update/delete, `upload` and `roll` are all **implemented** in `config_api.py` + `database.py`
-(reads gated by `_require_config_read`, writes by `_require_config_write`; CRUD casts cells via `_cast`,
-stamps INSERTED_*/UPDATED_* audit columns, and targets rows by **ROWID**; insert reuses
-`config_load_table(mode='append')`). Only the **`/tables` catalogue** is still mock-served (its master-table
-SQL is app-specific). Every real endpoint short-circuits to canned data when `ACCESS_USE_DUMMY=1`.
+(reads gated by `_require_config_read`, writes by `_require_config_write`; INSERT/DELETE cast cells via
+`_cast`, stamp INSERTED_* audit, and target rows by **ROWID**; insert reuses
+`config_load_table(mode='append')`). **UPDATE** is routed to a **PL/SQL procedure** (`CONFIG_UPDATE_PROC`
+in `database.py`, default `OLS_UTIL.CONFIG_UPDATE_ROWS`): `config_update_rows` sends the whole `updates`
+payload as a **JSON CLOB** `[{rowid, values}]` plus `updated_by`; the proc applies the changes by ROWID and
+stamps `UPDATED_BY`/`UPDATED_DATE` itself (so no Python casting/audit for update). Only the **`/tables`
+catalogue** is still mock-served (its master-table SQL is app-specific). Every real endpoint short-circuits
+to canned data when `ACCESS_USE_DUMMY=1`.
 
 **Mutation payload shapes** (the backend keys rows by their DB `rowid`):
 - **INSERT** — `rows` are value arrays in `columns` order; new drafts are entered at the
   **top of the first page** (so pagination never hides them). Save persists only the ticked drafts.
-- **UPDATE** — `updates` is an array of `{ "<rowid>": { onlyChangedColumn: value } }` objects.
+- **UPDATE** — `updates` is an array of `{ "<rowid>": { onlyChangedColumn: value } }` objects (the wire
+  shape from the grid). The backend reshapes it to `[{rowid, values}]` and hands it to the PL/SQL proc as a
+  JSON CLOB (see above) — the proc applies the changes and stamps the UPDATED_* audit.
 - **DELETE** — `rowids` is an array of the DB rowids. (A just-inserted row has no rowid until
   the grid is refreshed — refresh before editing/deleting a row you just added.)
 
@@ -567,6 +573,15 @@ Both modes apply to **every** table type; only the DELETE scope differs.
 
 - **Date tables: exactly ONE distinct date per file, enforced** (client + server). >1 distinct date →
   block: *"This file has N dates (…). Upload one date per file."*
+- **COB flag drives the date rules.** The upload body carries **`is_cobdt`** (from the catalogue row);
+  the server resolves the date column (and applies the required-column / single-date / partition checks)
+  **only when `is_cobdt='Y'`**. `is_cobdt` means the table is **date/COB-managed** — *not* merely "has a
+  date column": a table can have a DATE column yet not be COB-managed (`is_cobdt='N'`), and it's then
+  uploaded like any other table (no date rules). This matters because `config_date_column` always returns
+  a default (`COB_DT`), which would otherwise force the date rules on a non-COB table.
+- **Export keeps ORIGINAL headers.** Export Data writes the raw column names (`COB_DT`, not the prettified
+  "COB DT") as the CSV header (`toCsv` uses `c.field`), so an exported file uploads straight back and
+  passes header validation.
 - **`DELETE`, never `TRUNCATE`** — TRUNCATE is DDL, auto-commits, can't roll back; a failed insert after
   TRUNCATE would leave the table empty with no undo. DELETE keeps the whole load atomic.
 

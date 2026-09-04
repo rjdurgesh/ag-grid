@@ -88,13 +88,15 @@ function expandDates(start: string, end: string): string[] {
   return out;
 }
 
-/** Serialise table content to RFC-4180 CSV (quotes doubled, fields escaped). */
+/** Serialise table content to RFC-4180 CSV (quotes doubled, fields escaped). Header row uses the
+ *  ORIGINAL column names (`c.field`, e.g. COB_DT) — NOT the prettified display header ("COB DT") —
+ *  so an exported file can be uploaded straight back and pass the upload's header validation. */
 function toCsv(content: TableContent): string {
   const escape = (value: unknown): string => {
     const text = value == null ? '' : String(value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = content.columns.map((c) => escape(c.header ?? c.field)).join(',');
+  const header = content.columns.map((c) => escape(c.field)).join(',');
   const rows = content.rows.map((row) => content.columns.map((c) => escape(row[c.field])).join(','));
   return [header, ...rows].join('\r\n');
 }

@@ -20,7 +20,8 @@ export class ConfigUploadService {
   }
 
   upload(scope: ConfigScope, table: string,
-         body: { mode: string; delimiter: string; original_filename: string; file_content: string; db_source: string }): Observable<UploadResponse> {
+         body: { mode: string; delimiter: string; original_filename: string; file_content: string;
+                 db_source: string; is_cobdt: string }): Observable<UploadResponse> {
     return this.api.post(API.config.upload(scope, table), { caller: this.caller(), ...body });
   }
 }

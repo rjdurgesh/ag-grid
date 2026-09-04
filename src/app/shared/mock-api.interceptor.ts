@@ -209,7 +209,9 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockMemory());
   }
   if (path === '/api/system/database') {
-    return respond({ name: `OLSDB_${environment.appEnv}01` });
+    // Names come from the backend's db_configs keys; the footer joins them with " | ".
+    const env = environment.appEnv;
+    return respond({ databases: [`OLS_GROUP_${env}`, `OLS_CIB_${env}`, `OLS_RETAIL_${env}`] });
   }
   if (path === '/api/system/version') {
     return respond({ version: '1.0.0' });

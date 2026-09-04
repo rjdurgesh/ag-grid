@@ -57,6 +57,7 @@ class UploadBody(BaseModel):
     original_filename: str = "upload.csv"
     file_content: str               # the reviewed/edited CSV (header + valid rows)
     db_source: str = ""             # the table's physical DB (ols_cib_batch | ols_cib_reporting | …)
+    is_cobdt: str = "N"             # 'Y' → the table is date-partitioned; apply the date-column rules
 
 
 class RollBody(BaseModel):
@@ -286,7 +287,13 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
     columns = database.config_table_columns(dbcfg, table)
     if not columns:
         raise HTTPException(status_code=404, detail=f"Unknown table '{table}'.")
-    date_col = database.config_date_column(dbcfg, table)
+    # `is_cobdt` is the catalogue's declaration that this table is DATE/COB-managed — i.e. the upload's
+    # date rules (required date column, one date per file, partition check) should apply. It is NOT the
+    # same as "physically has a date column": a table can have a DATE column yet not be COB-managed, and
+    # such a table must be uploaded like any other. `config_date_column` always returns a default
+    # ('COB_DT'), so resolve/enforce the date column ONLY when the catalogue marks the table COB.
+    is_cob = str(body.is_cobdt or "").strip().upper() == "Y"
+    date_col = database.config_date_column(dbcfg, table) if is_cob else None
     loadable = [c for c in columns if c["name"].upper() not in AUDIT_COLUMNS]
 
     header, data_rows = _parse_csv(body.file_content, body.delimiter)
@@ -485,7 +492,9 @@ def config_insert(scope: str, table: str, request: Request, body: InsertBody) ->
 
 @router.post("/{scope}/table/{table}/update")
 def config_update(scope: str, table: str, request: Request, body: UpdateBody) -> dict:
-    """UPDATE rows by rowid — changed columns only, type-cast; UPDATED_* audit stamped server-side."""
+    """UPDATE rows by rowid. The whole `updates` payload is handed to the PL/SQL procedure as a JSON
+    CLOB (see `database.config_update_rows` / `CONFIG_UPDATE_PROC`); the proc applies the changes by
+    ROWID and stamps UPDATED_BY/UPDATED_DATE itself — so no per-cell casting or audit stamping here."""
     _require_config_write(request, body.updated_by, scope)
     if not body.updates:
         raise HTTPException(status_code=400, detail="Nothing to update — no rows were changed.")
@@ -500,18 +509,11 @@ def config_update(scope: str, table: str, request: Request, body: UpdateBody) ->
     if CONFIG_USE_DUMMY:
         return {"updated": len(body.updates)}
     dbcfg = _source_db(request, body.db_source, scope)
-    coldefs = database.config_table_columns(dbcfg, table)
-    if not coldefs:
-        raise HTTPException(status_code=404, detail=f"Unknown table '{table}'.")
-    cast_updates = []
-    for upd in body.updates:
-        if not upd:
-            continue
-        rowid, changes = next(iter(upd.items()))
-        cast_updates.append({str(rowid): {c: _cast_by_name(coldefs, c, v) for c, v in (changes or {}).items()}})
     try:
-        updated = database.config_update_rows(dbcfg, table=table, updates=cast_updates,
-                                              audit=_audit_defaults(coldefs, body.updated_by, "UPDATED"))
+        updated = database.config_update_rows(dbcfg, table=table, updates=body.updates,
+                                              updated_by=body.updated_by)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc))
     return {"updated": updated}

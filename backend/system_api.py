@@ -34,6 +34,15 @@ def version(request: Request) -> dict:
     """Backend version for the UI footer. Source: APP_VERSION in backend/.env (see app.py)."""
     return {"version": getattr(request.app.state, "app_version", "")}
 
+
+@router.get("/database")
+def database(request: Request) -> dict:
+    """Names of the databases this backend is configured for — the UI footer joins them with ' | '.
+    Source: the keys of ``app.state.db_configs`` (the single source of truth; see app.py). Returns
+    `{ databases: string[] }`."""
+    cfgs = getattr(request.app.state, "db_configs", {}) or {}
+    return {"databases": list(cfgs.keys())}
+
 # How often the SSE stream pushes a fresh snapshot (seconds).
 STREAM_INTERVAL_SECONDS = 2
 

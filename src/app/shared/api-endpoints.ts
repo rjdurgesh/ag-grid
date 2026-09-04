@@ -229,8 +229,10 @@ export const API = {
     deleteRows: (scope: ConfigScope, table: string) =>
       `${API_BASE_URL}/api/config/${scope}/table/${encodeURIComponent(table)}/delete`,
     /**
-     * CSV UPLOAD & LOAD. Body = `{ caller, mode, delimiter, original_filename, file_content, db_source }`.
-     * `db_source` (the row's physical DB, e.g. ols_cib_reporting) routes the load to the right DB.
+     * CSV UPLOAD & LOAD. Body = `{ caller, mode, delimiter, original_filename, file_content, db_source,
+     * is_cobdt }`. `db_source` (the row's physical DB, e.g. ols_cib_reporting) routes the load to the
+     * right DB. `is_cobdt` ('Y'/'N', from the catalogue row) tells the server whether to apply the
+     * date-column rules (single-date-per-file, partition check) — a non-COB table skips them.
      * Append = insert only; Replace = delete-then-insert (whole table, or by the single COB date).
      * See GUIDE.md (Config Ops — CSV Upload & Load).
      */

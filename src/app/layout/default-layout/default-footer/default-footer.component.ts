@@ -15,14 +15,14 @@ export class DefaultFooterComponent extends FooterComponent {
   private readonly api = inject(ApiDataService);
   private readonly destroyRef = inject(DestroyRef);
 
-  /** Connected database name, fetched from the backend. */
+  /** Configured database names, joined for display (e.g. "OLS1 | OLS2 | OLS3"). */
   readonly dbName = signal<string>('');
 
   constructor() {
     super();
     this.api
-      .get<{ name: string }>(API.system.database)
+      .get<{ databases: string[] }>(API.system.database)
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe((res) => this.dbName.set(res?.name ?? ''));
+      .subscribe((res) => this.dbName.set((res?.databases ?? []).join(' | ')));
   }
 }

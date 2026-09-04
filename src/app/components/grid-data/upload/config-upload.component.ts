@@ -245,6 +245,7 @@ export class ConfigUploadComponent {
     this.loading.set(true);
     this.svc.upload(this.scope(), this.tableName(), {
       mode: this.mode(), delimiter: this.usedDelimiter(), db_source: this.dbSource(),
+      is_cobdt: this.isCob() ? 'Y' : 'N',
       original_filename: this.fileName() || 'upload.csv', file_content: csv
     }).subscribe({
       next: (resp) => {
