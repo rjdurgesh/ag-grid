@@ -29,6 +29,8 @@ export class SqlStudioComponent implements OnInit {
   readonly databases = signal<SqlDatabase[]>([]);
   readonly selectedDb = signal('');
   readonly loadingDbs = signal(true);
+  /** Set when the database list itself fails to load (auth/API/DB error) — shown as a banner. */
+  readonly dbError = signal('');
   readonly sql = signal('');
   readonly running = signal(false);
   readonly result = signal<SqlResult | null>(null);
@@ -44,7 +46,7 @@ export class SqlStudioComponent implements OnInit {
         this.databases.set(dbs);
         if (dbs.length) { this.selectedDb.set(dbs[0].key); }
       },
-      error: () => this.loadingDbs.set(false)
+      error: (e) => { this.loadingDbs.set(false); this.dbError.set(this.errText(e)); }
     });
   }
 

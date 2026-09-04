@@ -101,7 +101,9 @@ class UpdateBody(BaseModel):
 class DeleteBody(BaseModel):
     deleted_by: str
     db_source: str = ""
-    rowids: list[str]
+    # `Any` (not `list[str]`) so a null/blank id isn't rejected by Pydantic with a cryptic
+    # 422 — the handler validates each id via `_valid_rowid` and returns a clear 400 instead.
+    rowids: list[Any]
 
 
 class CellError(Exception):
@@ -439,13 +441,26 @@ def _audit_defaults(coldefs: list[dict], actor: str, prefix: str) -> dict:
     return out
 
 
+# Tokens that mean "no usable row id": an empty/whitespace value, or the string a
+# frontend produces from a null/undefined id (String(null) / String(undefined)).
+_MISSING_ROWID = {"", "none", "null", "undefined"}
+
+
+def _valid_rowid(rid: Any) -> bool:
+    """True if ``rid`` can identify a DB row (rowid-based CRUD). Rejects None and the
+    blank/placeholder strings a client sends when the row carried no id."""
+    return rid is not None and str(rid).strip().lower() not in _MISSING_ROWID
+
+
 @router.post("/{scope}/table/{table}/rows")
 def config_insert(scope: str, table: str, request: Request, body: InsertBody) -> dict:
     """INSERT rows — cells type-cast per the table schema, INSERTED_* audit stamped server-side. Reuses
     the atomic append path of ``config_load_table``."""
     _require_config_write(request, body.inserted_by, scope)
     if not body.columns or not body.rows:
-        raise HTTPException(status_code=400, detail="columns and rows are required.")
+        raise HTTPException(status_code=400, detail="Nothing to insert — provide at least one row of column values.")
+    if all(all(c is None or str(c).strip() == "" for c in (row or [])) for row in body.rows):
+        raise HTTPException(status_code=400, detail="Nothing to insert — every row is empty.")
     if CONFIG_USE_DUMMY:
         return {"inserted": len(body.rows)}
     dbcfg = _source_db(request, body.db_source, scope)
@@ -473,7 +488,15 @@ def config_update(scope: str, table: str, request: Request, body: UpdateBody) ->
     """UPDATE rows by rowid — changed columns only, type-cast; UPDATED_* audit stamped server-side."""
     _require_config_write(request, body.updated_by, scope)
     if not body.updates:
-        raise HTTPException(status_code=400, detail="updates are required.")
+        raise HTTPException(status_code=400, detail="Nothing to update — no rows were changed.")
+    for upd in body.updates:
+        if not upd:
+            continue
+        rid, changes = next(iter(upd.items()))
+        if not _valid_rowid(rid):
+            raise HTTPException(status_code=400, detail="Row id missing — cannot identify the row to update.")
+        if not changes:
+            raise HTTPException(status_code=400, detail="No changed columns to update for the selected row.")
     if CONFIG_USE_DUMMY:
         return {"updated": len(body.updates)}
     dbcfg = _source_db(request, body.db_source, scope)
@@ -499,7 +522,9 @@ def config_delete(scope: str, table: str, request: Request, body: DeleteBody) ->
     """DELETE rows by rowid (atomic; DELETE not TRUNCATE)."""
     _require_config_write(request, body.deleted_by, scope)
     if not body.rowids:
-        raise HTTPException(status_code=400, detail="rowids are required.")
+        raise HTTPException(status_code=400, detail="No rows selected to delete.")
+    if any(not _valid_rowid(r) for r in body.rowids):
+        raise HTTPException(status_code=400, detail="Row id missing — cannot identify the row(s) to delete.")
     if CONFIG_USE_DUMMY:
         return {"deleted": len(body.rowids)}
     dbcfg = _source_db(request, body.db_source, scope)

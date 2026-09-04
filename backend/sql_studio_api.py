@@ -78,9 +78,21 @@ def sql_databases(request: Request, body: DbQuery) -> dict:
         {"key": k, "label": access_api.OCC_DB_LABELS.get(k, k.replace("_", " ").title())} for k in keys]}
 
 
+def _db_error_text(exc: Exception) -> str:
+    """A UI-ready message from a DB/driver exception. oracledb errors already read
+    'ORA-xxxxx: …' (e.g. ORA-12660 for a Native Network Encryption mismatch); fall back
+    to the exception class name when the message is empty."""
+    return str(exc).strip() or exc.__class__.__name__
+
+
 @router.post("/execute")
 def sql_execute(request: Request, body: ExecBody) -> dict:
-    """Run the operator's SQL against the chosen database and return the result."""
+    """Run the operator's SQL against the chosen database and return the result.
+
+    Errors are always surfaced to the operator (S-Studio is admin-only, so the raw Oracle text is
+    appropriate and needed to debug): a statement/connection failure comes back as a `kind:'error'`
+    result with the ORA-xxxxx text; a DB that never connected at startup returns a 503 carrying the
+    captured reason (see `app.state.db_config_errors`)."""
     _require_sql_admin(request, body.caller)
     if SQL_USE_DUMMY:
         return {"status": "success", "result": _dummy_execute(body.db, body.sql)}
@@ -93,12 +105,17 @@ def sql_execute(request: Request, body: ExecBody) -> dict:
         raise HTTPException(status_code=400, detail=f"Unknown database '{body.db}'")
     db_config = db_cfgs.get(body.db)
     if db_config is None:
-        raise HTTPException(status_code=503, detail=f"Database '{body.db}' is not reachable")
+        # The DB failed to connect at startup (NNE/encryption mismatch, listener down, bad creds, …).
+        # Surface the reason the loader captured, if any; otherwise point to the server log.
+        reason = (getattr(request.app.state, "db_config_errors", {}) or {}).get(body.db)
+        detail = f"Database '{body.db}' could not be reached — it failed to connect at startup"
+        detail += f": {reason}" if reason else " (check the server log for the reason)."
+        raise HTTPException(status_code=503, detail=detail)
     try:
         result = database.execute_sql(db_config, body.sql)
-    except Exception:
+    except Exception as exc:  # safety net — execute_sql already maps DB errors to {kind:'error'}
         logger.exception("S-Studio execute failed on %s", body.db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        result = {"kind": "error", "error": _db_error_text(exc)}
     return {"status": "success", "result": result}
 
 

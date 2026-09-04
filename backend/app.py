@@ -58,6 +58,7 @@ def load_db_configs() -> dict[str, dict]:
             except Exception as exc:
                 logger.warning("DB '%s' unavailable at startup: %s", scope, exc)
                 cfgs[scope] = None                        # keeps the tab, shown grey/unreachable
+                DB_CONFIG_ERRORS[scope] = str(exc)        # so S-Studio can show the real reason (e.g. ORA-12660 NNE)
         return cfgs
 
     Each value holds whatever your DB layer needs (dsn, user, password, pool, or a live
@@ -73,11 +74,21 @@ def load_db_configs() -> dict[str, dict]:
     return {scope: {} for scope in scopes}
 
 
+# Per-scope startup connection failures {scope_key: reason}. The real loader (above) records the
+# exception text here when a DB can't be reached at startup; S-Studio reads it so an operator sees the
+# actual reason (e.g. ORA-12660 for a Native Network Encryption mismatch) instead of a bare
+# "not reachable". Empty in dev (dummy endpoints never open a connection).
+DB_CONFIG_ERRORS: dict[str, str] = {}
+
+
 # Exposed on the app so any request can read it via ``request.app.state.db_configs``
 # (see log_analytics/dependencies.py → ``group_db_config``). For real connection
 # *pools* you'd open them in a lifespan handler and close them on shutdown; a plain
 # config dict needs nothing more than this.
 app.state.db_configs = load_db_configs()
+# Reason each scope failed to connect at startup, if any (populated by load_db_configs). Read by
+# sql_studio_api to surface the real cause on the S-Studio panel instead of a generic message.
+app.state.db_config_errors = DB_CONFIG_ERRORS
 
 # The Oracle Command Center routes read `request.app.state.db_configs.get(db)` directly and pass
 # it to the `database.py` data layer, which opens the connection. Nothing else to wire here.

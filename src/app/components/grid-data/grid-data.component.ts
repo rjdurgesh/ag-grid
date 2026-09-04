@@ -1088,6 +1088,27 @@ export class GridDataComponent {
   }
 
   /**
+   * The actual key holding a row's DB identifier. Prefers the configured `rowIdField`
+   * (default 'rowid' — what the mock and the update/delete payloads use), but falls
+   * back to a CASE-INSENSITIVE match so a backend that returns the id as `ROWID` /
+   * `OLS_ROWID` still resolves. Returns undefined if the row carries no id at all.
+   */
+  private rowIdKey(row: Record<string, unknown>): string | undefined {
+    const field = this.rowIdField();
+    if (field in row) {
+      return field;
+    }
+    const aliases = new Set([field.toLowerCase(), 'rowid', 'ols_rowid']);
+    return Object.keys(row).find((k) => aliases.has(k.toLowerCase()));
+  }
+
+  /** The DB identifier value for a row (via {@link rowIdKey}), or undefined if absent. */
+  private rowIdOf(row: Record<string, unknown>): unknown {
+    const key = this.rowIdKey(row);
+    return key === undefined ? undefined : row[key];
+  }
+
+  /**
    * Commit edited saved rows → emit an UPDATE carrying each row's DB rowid and
    * only the columns whose value changed (diffed against the pre-edit snapshot).
    */
@@ -1102,7 +1123,7 @@ export class GridDataComponent {
           values[f] = row[f];
         }
       }
-      return { rowid: row[this.rowIdField()], values };
+      return { rowid: this.rowIdOf(row), values };
     });
     // Leave edit mode for these rows.
     this.editingRows.update((map) => {
@@ -1156,7 +1177,10 @@ export class GridDataComponent {
       const clone: Record<string, unknown> = { ...r };
       clone[ROW_ID] = `draft-${++this.draftSeq}`;
       clone[NEW_FLAG] = true;
-      delete clone[this.rowIdField()]; // a fresh row has no DB rowid yet
+      const idKey = this.rowIdKey(clone); // a fresh row has no DB rowid yet
+      if (idKey) {
+        delete clone[idKey];
+      }
       return clone;
     });
     // Deselect just the originals (keep any other draft ticks intact).
@@ -1222,7 +1246,7 @@ export class GridDataComponent {
       }
       // Delete is its own operation — clear any pending insert/update first.
       this.clearPending();
-      this.rowsDeleted.emit({ tableName: this.modalTitle(), rowids: [row[this.rowIdField()]] });
+      this.rowsDeleted.emit({ tableName: this.modalTitle(), rowids: [this.rowIdOf(row)] });
       this.removeRows([row[ROW_ID]]);
       this.syncContentFromRows();
       return;
@@ -1251,7 +1275,7 @@ export class GridDataComponent {
     }
     // Delete is its own operation — clear any pending insert/update first.
     this.clearPending();
-    const rowids = saved.map((r) => r[this.rowIdField()]);
+    const rowids = saved.map((r) => this.rowIdOf(r));
     this.removeRows(saved.map((r) => r[ROW_ID]));
     this.rowsDeleted.emit({ tableName: this.modalTitle(), rowids });
     setTimeout(() => this.recountSelection());

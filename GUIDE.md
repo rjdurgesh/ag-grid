@@ -229,6 +229,16 @@ SELECT → results grid; DML/DDL/PL-SQL → status; **Oracle errors show in the 
 → `database.execute_sql` on a **privileged** connection (`app.state.sql_db_configs`, separate from the
 read-only OCC monitor). Full detail: RBAC_DESIGN.md §12.
 
+**Error surfacing** — every failure reaches the operator (S-Studio is admin-only, so the raw Oracle text
+is appropriate): `execute_sql` maps any statement/connection failure — including **connection-level** ones
+like `ORA-12660` (Native Network Encryption mismatch), a down listener, or bad creds — to a
+`{kind:'error', error}` result rendered in the panel `<pre>`. The API wrapper no longer collapses an
+escaped exception into a generic *"Internal server error"*; it surfaces the real message the same way. A DB
+that **failed to connect at startup** (config is `None`) returns a `503` whose detail carries the captured
+reason from **`app.state.db_config_errors`** (`{scope: reason}`, populated by `load_db_configs`' except block
+in [`app.py`](backend/app.py)) — so e.g. an NNE failure at boot shows the actual `ORA-12660`, not just
+"not reachable". Frontend `errText` reads `error.detail` (FastAPI) → falls back to `message`.
+
 **CSV Upload & Load** (Config Ops grid modal → 3-dot → **Upload Data**, gated by per-table write RBAC) loads a
 CSV into the open table. Client: pick file → auto/override **delimiter** → RFC-4180 parse → **strict header
 validation** (name + order; **trailing columns may be omitted → NULL**) → **editable, virtualized AG-Grid
@@ -442,10 +452,20 @@ SQL is app-specific). Every real endpoint short-circuits to canned data when `AC
   the grid is refreshed — refresh before editing/deleting a row you just added.)
 
 **Errors** — INSERT/UPDATE/DELETE failures open the rich **error popup**: the FULL server
-message (`error.details` from Oracle, or `error.message`), scrollable, with **Email / Copy /
-OK / Close**. *Email* opens a pre-filled report to `SUPPORT_EMAIL` (`api-endpoints.ts`, single
-source) — subject `"<UserID>: Issue with OLS Operations Dashboard - DD-Mon-YYYY"`. Success still
-shows the simple "N rows …" notice. *(Dev: submit a cell value of `ERR` to trigger a mock ORA error.)*
+message, scrollable, with **Email / Copy / OK / Close**. `notifyErr` reads the message from
+`error.detail` (FastAPI's `HTTPException` shape — **singular**), falling back to `error.details`
+/ `error.message` / the transport error, so both the real backend and the mock display cleanly.
+*Email* opens a pre-filled report to `SUPPORT_EMAIL` (`api-endpoints.ts`, single source) — subject
+`"<UserID>: Issue with OLS Operations Dashboard - DD-Mon-YYYY"`. Success still shows the simple
+"N rows …" notice. *(Dev: submit a cell value of `ERR` to trigger a mock ORA error.)*
+
+**Server-side validation** (`config_api.py`, runs even under `ACCESS_USE_DUMMY`, returns `400 {detail}`):
+INSERT rejects an empty/all-blank payload; UPDATE rejects a missing/blank `rowid` ("Row id missing —
+cannot identify the row to update") or a no-change edit; DELETE rejects an empty selection or any
+missing/blank `rowid`. `DeleteBody.rowids` is typed `list[Any]` (not `list[str]`) so a null id yields
+this clean 400 instead of a cryptic Pydantic 422. The UI resolves the `rowid` **case-insensitively**
+(`rowid` / `ROWID` / `OLS_ROWID`) in `grid-data.component.ts` (`rowIdOf`), so a backend that returns the
+id under any of those casings still drives update/delete.
 
 **Down-arrow (expand) flow:** clicking a row's ▾ calls **`columnretrieve`** with that
 row's `table_name` and renders the returned `{ cols, rows }` verbatim in a full-width

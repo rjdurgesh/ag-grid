@@ -411,14 +411,15 @@ export abstract class ConfigScopeBase implements OnInit {
    */
   private notifyErr(op: string, err: unknown): void {
     const e = err as {
-      error?: { details?: string; message?: string } | string;
+      error?: { detail?: string; details?: string; message?: string } | string;
       message?: string;
       statusText?: string;
     };
     const body = e?.error;
     const msg =
       (typeof body === 'string' && body) ||
-      (typeof body === 'object' && (body?.details || body?.message)) ||
+      // FastAPI returns `{ detail }` (singular); also accept `{ details }` / `{ message }`.
+      (typeof body === 'object' && (body?.detail || body?.details || body?.message)) ||
       e?.message ||
       e?.statusText ||
       `The ${op} could not be completed.`;
