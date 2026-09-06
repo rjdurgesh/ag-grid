@@ -64,6 +64,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
       [this.idxHealth(), this.idxHealthError()],
       [this.locks(), this.locksError()],
       [this.blocking(), this.blockingError()],
+      [this.mviews(), this.mviewsError()],
       [this.sessions(), this.sessionsError()],
     ];
     if (sec.some(([d, e]) => d !== null && !e)) {
@@ -145,6 +146,16 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly tempLoading = signal(false);
   readonly tempError = signal(false);
 
+  // --- Section 6c: materialized views ---
+  readonly mviews = signal<DynTable | null>(null);
+  readonly mviewsLoading = signal(false);
+  readonly mviewsError = signal(false);
+
+  // --- Section 6d: action history (gather stats / MV refresh runs) ---
+  readonly actions = signal<DynTable | null>(null);
+  readonly actionsLoading = signal(false);
+  readonly actionsError = signal(false);
+
   // --- Section 7: sessions & deep-dive ---
   readonly sessionFilters: { key: SessionFilter; label: string }[] = [
     { key: 'active', label: 'Active' },
@@ -185,7 +196,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   /** Collapse state per section (all expanded by default). */
   readonly collapsed = signal<Record<string, boolean>>({
     space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false,
-    temp: false, sessions: false, sqli: false
+    temp: false, mviews: false, actions: false, sessions: false, sqli: false
   });
 
   ngOnInit(): void {
@@ -241,6 +252,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.locks.set(null);
     this.blocking.set(null);
     this.tempUsage.set(null);
+    this.mviews.set(null);
+    this.actions.set(null);
     this.sessions.set(null);
     this.stamps.set({});
     if (this.detailOpen()) {
@@ -257,14 +270,16 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   /** True while ANY section is fetching → spins the masthead "Refresh all" button. */
   readonly anyLoading = computed(() =>
     this.spaceLoading() || this.topSegLoading() || this.topIdxLoading() || this.idxHealthLoading()
-    || this.locksLoading() || this.blockingLoading() || this.tempLoading() || this.sessionsLoading());
+    || this.locksLoading() || this.blockingLoading() || this.tempLoading() || this.mviewsLoading()
+    || this.actionsLoading() || this.sessionsLoading());
 
   /** Per-section loading flag by stamp key — drives the "Refreshing…" label in each header. */
   sectionLoading(key: string): boolean {
     return ({
       space: this.spaceLoading(), top: this.topSegLoading(), topidx: this.topIdxLoading(),
       idxhealth: this.idxHealthLoading(), locks: this.locksLoading(),
-      blocking: this.blockingLoading(), temp: this.tempLoading(), sessions: this.sessionsLoading(),
+      blocking: this.blockingLoading(), temp: this.tempLoading(), mviews: this.mviewsLoading(),
+      actions: this.actionsLoading(), sessions: this.sessionsLoading(),
     } as Record<string, boolean>)[key] ?? false;
   }
 
@@ -276,6 +291,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.loadLocks();
     this.loadBlocking();
     this.loadTempUsage();
+    this.loadMviews();
+    this.loadActions();
     this.loadSessions();
     this.lastRefreshed.set(new Date());
   }
@@ -376,6 +393,167 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.svc.tempUsage(db).subscribe({
       next: (d) => { this.tempUsage.set(d); this.tempLoading.set(false); this.markStamp('temp'); },
       error: () => { this.tempError.set(true); this.tempLoading.set(false); }
+    });
+  }
+
+  // --- Section 6c: materialized views ---------------------------------------
+  loadMviews(): void {
+    const db = this.activeKey();
+    if (!db) {
+      return;
+    }
+    this.mviewsLoading.set(true);
+    this.mviewsError.set(false);
+    this.svc.mviews(db).subscribe({
+      next: (d) => { this.mviews.set(d); this.mviewsLoading.set(false); this.markStamp('mviews'); },
+      error: () => { this.mviewsError.set(true); this.mviewsLoading.set(false); }
+    });
+  }
+
+  // --- Section 6d: action history -------------------------------------------
+  loadActions(): void {
+    const db = this.activeKey();
+    if (!db) {
+      return;
+    }
+    this.actionsLoading.set(true);
+    this.actionsError.set(false);
+    this.svc.actions(db).subscribe({
+      next: (d) => { this.actions.set(d); this.actionsLoading.set(false); this.markStamp('actions'); },
+      error: () => { this.actionsError.set(true); this.actionsLoading.set(false); }
+    });
+  }
+
+  private actor(): string {
+    return this.rbac.snapshot().username || environment.username;
+  }
+
+  /** MV refresh actions — the user picks the method per row (Force / Full / Incremental). WRITE only. */
+  readonly mviewActions: DynAction[] = [
+    { key: 'mv_force', label: 'Force', tone: 'primary', title: 'Force: fast if possible, else a full/complete refresh (DBMS_MVIEW ?)' },
+    { key: 'mv_complete', label: 'Full', tone: 'primary', title: 'Complete (full) rebuild — DBMS_MVIEW C' },
+    { key: 'mv_fast', label: 'Incremental', tone: 'primary', title: 'Fast (incremental) refresh — needs a materialized view log — DBMS_MVIEW F' },
+  ];
+  private readonly MV_METHOD: Record<string, { code: string; label: string }> = {
+    mv_force: { code: 'force', label: 'Force (fast if possible, else full)' },
+    mv_complete: { code: 'complete', label: 'Full (complete rebuild)' },
+    mv_fast: { code: 'fast', label: 'Incremental (fast) refresh' },
+  };
+
+  async onMviewAction(evt: { key: string; row: Record<string, unknown> }): Promise<void> {
+    const m = this.MV_METHOD[evt.key];
+    if (!m || !this.canKill()) {
+      return;
+    }
+    const db = this.activeKey();
+    const owner = String(evt.row['owner'] ?? '');
+    const mview = String(evt.row['mview_name'] ?? evt.row['mview'] ?? '');
+    if (!db || !owner || !mview) {
+      return;
+    }
+    const dbName = this.activeTarget()?.instance ?? db;
+    const ok = await this.confirm.ask({
+      title: 'Refresh materialized view',
+      message: `Refresh ${owner}.${mview} on ${dbName}?\n\nMethod: ${m.label}. A complete refresh can be`
+        + ' expensive on a large MV.',
+      confirmLabel: 'Refresh', cancelLabel: 'Cancel', tone: 'danger'
+    });
+    if (!ok) {
+      return;
+    }
+    this.svc.mviewRefresh(db, owner, mview, m.code, this.actor()).subscribe({
+      next: (res) => {
+        this.notify(true, res.message || `${owner}.${mview} refresh submitted — running in the background.`);
+        this.loadActions();
+        this.pollAction(db, res.action_id, `${owner}.${mview}`, 'Refresh materialized view', dbName, 'mv');
+      },
+      error: (err) => this.showActionError('Refresh materialized view', `${owner}.${mview}`, dbName, err)
+    });
+  }
+
+  /** Gather-stats action (Session Details → Object Statistics panel). WRITE only. */
+  readonly gatherActions: DynAction[] = [
+    { key: 'gather', label: 'Gather stats', tone: 'primary', title: 'Gather optimizer statistics for this object' }
+  ];
+
+  async onStatsAction(evt: { key: string; row: Record<string, unknown> }): Promise<void> {
+    if (evt.key !== 'gather' || !this.canKill()) {
+      return;
+    }
+    const db = this.activeKey();
+    const owner = String(evt.row['owner'] ?? '');
+    const table = String(evt.row['table'] ?? evt.row['object'] ?? '');
+    if (!db || !owner || !table) {
+      return;
+    }
+    const dbName = this.activeTarget()?.instance ?? db;
+    const ok = await this.confirm.ask({
+      title: 'Gather statistics',
+      message: `Gather optimizer statistics for ${owner}.${table} on ${dbName}?\n\n`
+        + 'The right granularity (subpartition / partition / table) is chosen automatically. This can'
+        + ' be heavy on a large object.',
+      confirmLabel: 'Gather stats', cancelLabel: 'Cancel', tone: 'danger'
+    });
+    if (!ok) {
+      return;
+    }
+    this.svc.gatherStats(db, owner, table, this.actor()).subscribe({
+      next: (res) => {
+        this.notify(true, res.message || `Statistics gather submitted for ${owner}.${table} — running in the background.`);
+        this.loadActions();
+        this.pollAction(db, res.action_id, `${owner}.${table}`, 'Gather statistics', dbName, 'stats');
+      },
+      error: (err) => this.showActionError('Gather statistics', `${owner}.${table}`, dbName, err)
+    });
+  }
+
+  /**
+   * Poll a submitted background action until it finishes (~every 3s, capped at ~2 min), then update
+   * the toast and Action History (and reload the MV list on a successful MV refresh). If the user
+   * switches DB, polling stops. Long ops that outrun the cap fall back to the history panel.
+   */
+  private pollAction(db: string, actionId: number | undefined, label: string, opTitle: string,
+                     dbName: string, kind: 'mv' | 'stats'): void {
+    if (actionId == null || db !== this.activeKey()) {
+      return;
+    }
+    let tries = 0;
+    const tick = (): void => {
+      if (db !== this.activeKey()) {
+        return;   // the drawer/tab moved on — stop polling the old DB's action
+      }
+      this.svc.actionStatus(db, actionId).subscribe({
+        next: (a) => {
+          const state = (a.state || '').toUpperCase();
+          if (state === 'RUNNING' && tries++ < 40) {
+            setTimeout(tick, 3000);
+            return;
+          }
+          this.loadActions();
+          if (state === 'SUCCESS') {
+            this.notify(true, `${label}: completed successfully${a.duration ? ' (' + a.duration + ')' : ''}.`);
+            if (kind === 'mv') { this.loadMviews(); }
+          } else if (state === 'FAILED') {
+            this.showActionError(opTitle, label, dbName, { error: { detail: a.error || a.message || 'The operation failed.' } });
+          } else if (state === 'RUNNING') {
+            this.notify(true, `${label}: still running — check Action History for the result.`);
+          }
+        },
+        error: () => { /* transient poll failure — Action History stays the source of truth */ }
+      });
+    };
+    setTimeout(tick, 3000);
+  }
+
+  private showActionError(title: string, subject: string, dbName: string, err: unknown): void {
+    const e = err as { error?: { detail?: string; message?: string } | string; message?: string };
+    const b = e?.error;
+    const detail = (typeof b === 'string' && b) || (typeof b === 'object' && (b?.detail || b?.message))
+      || e?.message || 'The request could not be completed.';
+    this.errorReport.show({
+      title: `${title} failed`,
+      message: `${subject} on ${dbName}: ${detail}\n\nPlease reach out to OLS Team on ${this.supportEmail}.`,
+      userId: environment.username
     });
   }
 

@@ -67,6 +67,32 @@ export class OracleCcService {
     return this.api.post<DynTable>(API.oracle.tempUsage(db), {});
   }
 
+  /** Section 6c — materialized views + refresh/staleness health (each force-refreshable). */
+  mviews(db: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.mviews(db), {});
+  }
+
+  /** WRITE — **submit** a force-refresh of one MV as a background job (DB-write + confirm gated).
+   *  `method` = complete|fast|force. Returns `{ action_id, state }` (poll `actionStatus`). */
+  mviewRefresh(db: string, owner: string, mview: string, method: string, caller: string): Observable<ActionSubmit> {
+    return this.api.post<ActionSubmit>(API.oracle.mviewRefresh(db), { owner, mview, method, caller });
+  }
+
+  /** WRITE — **submit** an optimizer-stats gather as a background job. Returns `{ action_id, state }`. */
+  gatherStats(db: string, owner: string, table: string, caller: string): Observable<ActionSubmit> {
+    return this.api.post<ActionSubmit>(API.oracle.gatherStats(db), { owner, table, caller });
+  }
+
+  /** Live status of one submitted action (poll until `state` != RUNNING). */
+  actionStatus(db: string, actionId: number): Observable<ActionStatus> {
+    return this.api.post<ActionStatus>(API.oracle.actionStatus(db), { action_id: actionId });
+  }
+
+  /** Recent gather-stats / MV-refresh actions (Action History panel). */
+  actions(db: string): Observable<DynTable> {
+    return this.api.post<DynTable>(API.oracle.actions(db), {});
+  }
+
   /** Section 7 — session inventory filtered by state (summary carries full per-state counts). */
   sessions(db: string, status: SessionFilter): Observable<DynTable> {
     return this.api.post<DynTable>(API.oracle.sessions(db), { status });
@@ -159,4 +185,23 @@ export interface KillResult {
   message: string;
   /** True when the session had already ended — a success no-op (nothing was killed, not an error). */
   gone?: boolean;
+}
+
+/** Result of submitting a privileged action (MV refresh / gather stats) as a background job. */
+export interface ActionSubmit {
+  status?: string;
+  action_id: number;
+  state: string;        // 'RUNNING'
+  message: string;
+}
+
+/** Live status of a submitted action (polled). */
+export interface ActionStatus {
+  status?: string;
+  action_id: number;
+  state: string;        // RUNNING | SUCCESS | FAILED | UNKNOWN
+  object?: string;
+  duration?: string;
+  error?: string;
+  message?: string;
 }

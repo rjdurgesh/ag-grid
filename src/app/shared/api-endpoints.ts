@@ -291,6 +291,19 @@ export const API = {
     /** Section 4 — blocking session tree. */
     blocking: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/blocking`,
     tempUsage: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/temp-usage`,
+    /** Section 6c — materialized views + refresh/staleness health. */
+    mviews: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/mviews`,
+    /** Force-refresh one MV (RBAC DB-write + confirm). POST `{ owner, mview, method }` (method =
+     *  complete|fast|force). Runs a PL/SQL proc on a privileged connection. */
+    mviewRefresh: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/mview-refresh`,
+    /** Gather optimizer stats for one object (RBAC DB-write + confirm). POST `{ owner, table, caller }`
+     *  → `{ action_id, state:'RUNNING' }` (async background job). A PL/SQL proc picks the
+     *  partition/subpartition/table granularity. Privileged connection. */
+    gatherStats: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/gather-stats`,
+    /** Live status of one submitted action (poll until `state` != RUNNING). POST `{ action_id }`. */
+    actionStatus: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/action-status`,
+    /** Recent gather-stats / MV-refresh actions (Action History panel). POST `{}`. */
+    actions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/actions`,
     /** Section 5 — sessions list (`?status=active|inactive|all`). */
     sessions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/sessions`,
     /** Section 5 — full deep-dive for one SID/SQL_ID. */

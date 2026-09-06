@@ -504,32 +504,55 @@ def fetch_temp_usage(db_config: Any) -> list[dict]:
 # Section 7 — sessions inventory + per-state counts
 # =============================================================================
 
+def _sess_col_type(desc_type: Any) -> str:
+    """Map an oracledb column type → the DynTable cell type (num / clob / text)."""
+    name = (getattr(desc_type, "name", None) or str(desc_type)).upper()
+    if "NUMBER" in name or "BINARY_FLOAT" in name or "BINARY_DOUBLE" in name:
+        return "num"
+    if "CLOB" in name:
+        return "clob"
+    return "text"
+
+
 def fetch_sessions(db_config: Any, status: str) -> dict:
-    """Inventory rows (filtered by state) + the full per-state counts — two queries, one
-    connection, returned together as {rows, counts}."""
+    """Rich session inventory (filtered active|inactive|killed|all) + per-state counts. The SQL lives
+    in the DB proc **``ols_util.occ_sessions``** (see sql/occ_sessions_setup.sql) — a DBA can tune it
+    or add/remove columns without an app redeploy. The proc returns two ``SYS_REFCURSOR``s (the list +
+    the per-state counts) and resolves the two OPTIONAL lookups (user names, batch job) itself: the
+    candidate table names are owned by the proc; the first that exists is used, else that column is
+    NULL and the join is dropped. Still **self-describing** — columns come from the cursor's
+    ``description``, so a column added in the proc auto-displays. **No row cap — every matching
+    session is returned.** Returns ``{columns:[{key,type}], rows:[dict], counts:[{st,c}]}``."""
+    import oracledb
     connection = None
     cursor = None
+    rows_rc = None
+    counts_rc = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
+        rows_var = cursor.var(oracledb.DB_TYPE_CURSOR)
+        counts_var = cursor.var(oracledb.DB_TYPE_CURSOR)
+        cursor.callproc("ols_util.occ_sessions", [status, rows_var, counts_var])
 
-        cursor.execute("""
-            SELECT s.sid, s.serial# AS serial, s.username, s.status, s.machine, s.program,
-                   s.sql_id, NVL(s.event, 'ON CPU') AS event, s.last_call_et AS secs
-              FROM v$session s
-             WHERE s.type = 'USER'
-               AND (:status = 'all' OR LOWER(s.status) = :status)
-             ORDER BY DECODE(s.status,'ACTIVE',0,'INACTIVE',1,2), s.last_call_et DESC
-        """, {"status": status})
-        cols = [c[0].lower() for c in cursor.description]
-        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        rows_rc = rows_var.getvalue()
+        names = [d[0].lower() for d in rows_rc.description]
+        columns = [{"key": names[i], "type": _sess_col_type(rows_rc.description[i][1])}
+                   for i in range(len(names))]
+        rows = [dict(zip(names, [_cell(v) for v in row])) for row in rows_rc]
 
-        cursor.execute("SELECT LOWER(status) AS st, COUNT(*) AS c FROM v$session WHERE type='USER' GROUP BY LOWER(status)")
-        cols = [c[0].lower() for c in cursor.description]
-        counts = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        counts_rc = counts_var.getvalue()
+        cnames = [d[0].lower() for d in counts_rc.description]
+        counts = [dict(zip(cnames, row)) for row in counts_rc]
 
-        return {"rows": rows, "counts": counts}
+        return {"columns": columns, "rows": rows, "counts": counts}
     finally:
+        for rc in (rows_rc, counts_rc):
+            try:
+                if rc is not None:
+                    rc.close()
+            except Exception:  # noqa: BLE001
+                pass
         if cursor:
             cursor.close()
         if connection is not None and connection is not db_config:
@@ -707,12 +730,134 @@ def fetch_session_stats(db_config: Any, owner: str, sql_id: str | None) -> list:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
+            SELECT owner, table_name, num_rows, stale_stats, TO_CHAR(last_analyzed,'DD-Mon HH24:MI') AS last_analyzed
               FROM dba_tab_statistics
              WHERE owner = :owner AND object_type = 'TABLE'
                AND table_name IN (SELECT object_name FROM v$sql_plan
                                    WHERE sql_id = :s AND object_owner = :owner AND object_type LIKE 'TABLE%')
         """, {"owner": owner, "s": sql_id or ""})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# Oracle Command Center — Materialized Views + privileged actions (gather stats /
+# MV refresh). The two WRITE actions call customer PL/SQL procs (ols_util.*) so the
+# gather-granularity and refresh-method logic lives in the DB, auditable and testable
+# on its own. Reference DDL: sql/occ_actions_setup.sql.
+# =============================================================================
+
+def fetch_mviews(db_config: Any, owner: str) -> list[dict]:
+    """Every materialized view in the monitored schema with its refresh + staleness health
+    (DBA_MVIEWS). One row per MV; the API massages it and attaches the Force-refresh action."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT owner, mview_name, refresh_mode, refresh_method, last_refresh_type,
+                   TO_CHAR(last_refresh_date, 'DD-Mon-YYYY HH24:MI') AS last_refresh_date,
+                   staleness, compile_state
+              FROM dba_mviews
+             WHERE owner = :owner
+             ORDER BY mview_name
+        """, {"owner": owner})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def refresh_mview(db_config: Any, *, owner: str, mview: str, method: str, requested_by: str) -> int:
+    """**Submit** a force-refresh of one MV as a background job via ``ols_util.occ_submit_mv_refresh``
+    and return the ``action_id`` (does NOT wait for completion — the refresh can run for minutes; the
+    UI polls its status). ``method`` is a single DBMS_MVIEW code: 'C' complete, 'F' fast, '?' force.
+    Runs on a PRIVILEGED connection."""
+    if method not in ("C", "F", "?"):
+        raise ValueError(f"Invalid refresh method: {method}")
+    return _occ_submit(db_config, "ols_util.occ_submit_mv_refresh", [owner, mview, method, requested_by])
+
+
+def gather_object_stats(db_config: Any, *, owner: str, table: str, requested_by: str) -> int:
+    """**Submit** an optimizer-stats gather for one object as a background job via
+    ``ols_util.occ_submit_gather`` and return the ``action_id`` (does NOT wait — DBMS_STATS can run
+    for minutes; the UI polls its status). The job's worker picks the granularity — subpartition **and**
+    partition when both exist, partition when only partitioned, else the whole table. PRIVILEGED conn."""
+    return _occ_submit(db_config, "ols_util.occ_submit_gather", [owner, table, requested_by])
+
+
+def _occ_submit(db_config: Any, proc: str, args: list) -> int:
+    """Call one of the occ_submit_* procs (positional binds + a trailing NUMBER OUT action_id) and
+    return the generated action_id. The proc inserts a RUNNING row and creates the background job."""
+    import oracledb
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        out_id = cursor.var(oracledb.NUMBER)
+        cursor.callproc(proc, args + [out_id])
+        connection.commit()
+        return int(out_id.getvalue() or 0)
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+_OCC_ACTION_SELECT = """
+    SELECT action_id, action_type, object_owner, object_name, method, requested_by, status,
+           TO_CHAR(submitted_on, 'DD-Mon HH24:MI:SS') AS submitted_on,
+           TO_CHAR(finished_on, 'DD-Mon HH24:MI:SS')  AS finished_on,
+           duration_secs, error_text
+      FROM ols_occ_action_log
+"""
+
+
+def fetch_occ_action(db_config: Any, action_id: int) -> dict | None:
+    """One action-log row (for live status polling), or None if it's gone."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(_OCC_ACTION_SELECT + " WHERE action_id = :id", {"id": action_id})
+        cols = [c[0].lower() for c in cursor.description]
+        row = cursor.fetchone()
+        return dict(zip(cols, row)) if row else None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_occ_actions(db_config: Any, limit: int = 50) -> list[dict]:
+    """Recent action-log rows, newest first (for the Action History panel)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(_OCC_ACTION_SELECT + " ORDER BY submitted_on DESC FETCH FIRST :n ROWS ONLY",
+                       {"n": int(limit)})
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
     finally:
@@ -2313,7 +2458,11 @@ def config_upload_audit_write(db_config: Any, **f) -> int:
         params["p_load_id"] = load_id = cursor.var(oracledb.DB_TYPE_NUMBER)
         if "p_error_desc" in params:
             cursor.setinputsizes(p_error_desc=oracledb.DB_TYPE_CLOB)
-        cursor.callproc("ols_upload_audit_write", keyword_parameters=params)
+        # Call with ALL-NAMED binds (p_x => :p_x) via an explicit anonymous block. `callproc`'s
+        # keyword_parameters path combined with a named `setinputsizes` makes python-oracledb raise
+        # "positional and named binds cannot be intermixed"; building the call ourselves avoids that.
+        args = ", ".join(f"{name} => :{name}" for name in params)
+        cursor.execute(f"BEGIN ols_upload_audit_write({args}); END;", params)
         return int(load_id.getvalue())
     finally:
         if cursor:

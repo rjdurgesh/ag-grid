@@ -287,6 +287,71 @@
     </section>
   </div>
 
+  <!-- ============= ROW 5c : Materialized Views ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'mviews', db: activeKey() }" [class.is-collapsed]="isCollapsed('mviews')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">▦</span>
+        <h2 class="occ-panel__title">Materialized Views</h2>
+        @if (mviews()?.summary; as s) {
+          @if ($any(s).mviews) { <span class="occ-badge occ-badge--muted">{{ $any(s).mviews }} MV(s)</span> }
+          @if ($any(s).stale) { <span class="occ-badge occ-badge--warn">{{ $any(s).stale }} not fresh</span> }
+        }
+        <span class="occ-panel__spacer"></span>
+        @if (sectionLoading('mviews')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('mviews')) { <span class="occ-hstamp">{{ stampAbs('mviews') }} · {{ stampRel('mviews') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="mviewsLoading()" title="Refresh section" (click)="loadMviews(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('mviews')" (click)="toggle('mviews')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('mviews')) {
+        <div class="occ-panel__body">
+          @if (mviewsLoading() && !mviews()) { <app-loader variant="skeleton" [rows]="3" message="Reading materialized views…" /> }
+          @else if (mviewsError()) { <div class="occ-empty occ-empty--err">Couldn't read materialized views. Try refresh.</div> }
+          @else if (mviews(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
+                filterPlaceholder="Filter materialized views — name, staleness, method…"
+                [columnFilters]="true"
+                [actions]="canKill() ? mviewActions : []" (action)="onMviewAction($event)" />
+              <p class="occ-note"><b>Note:</b> all materialized views in the monitored schema with their last-refresh + staleness. @if (canKill()) { Pick <b>Force</b> (fast, else complete), <b>Complete</b>, or <b>Fast</b> to refresh a view. } @else { Refreshing a view requires an admin role. }</p>
+            } @else { <div class="occ-empty">No materialized views in this schema. ✓</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
+  <!-- ============= ROW 5d : Action History ============= -->
+  <div class="occ__row">
+    <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'actions', db: activeKey() }" [class.is-collapsed]="isCollapsed('actions')">
+      <div class="occ-panel__head">
+        <span class="occ-panel__ic">⧗</span>
+        <h2 class="occ-panel__title">Action History</h2>
+        @if (actions()?.summary; as s) {
+          @if ($any(s).running) { <span class="occ-badge occ-badge--muted">{{ $any(s).running }} running</span> }
+        }
+        <span class="occ-panel__spacer"></span>
+        @if (sectionLoading('actions')) { <span class="occ-hstamp occ-hstamp--load">Refreshing…</span> }
+        @else if (hasStamp('actions')) { <span class="occ-hstamp">{{ stampAbs('actions') }} · {{ stampRel('actions') }}</span> }
+        <button type="button" class="occ-ibtn" [class.is-spin]="actionsLoading()" title="Refresh section" (click)="loadActions(); $event.stopPropagation()"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="occ-ibtn occ-chev" [attr.aria-expanded]="!isCollapsed('actions')" (click)="toggle('actions')" aria-label="Collapse or expand"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      @if (!isCollapsed('actions')) {
+        <div class="occ-panel__body">
+          @if (actionsLoading() && !actions()) { <app-loader variant="skeleton" [rows]="3" message="Reading action history…" /> }
+          @else if (actionsError()) { <div class="occ-empty occ-empty--err">Couldn't read action history. Try refresh.</div> }
+          @else if (actions(); as d) {
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="15" [filterable]="true"
+                filterPlaceholder="Filter actions — object, type, status, user…" [columnFilters]="true" />
+              <p class="occ-note"><b>Note:</b> gather-stats / MV-refresh runs on this database — status, duration and any error. A running action updates here when it finishes (the panel also refreshes each cycle).</p>
+            } @else { <div class="occ-empty">No gather-stats or MV-refresh actions yet.</div> }
+          }
+        </div>
+      }
+    </section>
+  </div>
+
   <!-- ============= ROW 6 : Sessions Detail ============= -->
   <div class="occ__row">
     <section class="occ-panel" *olsIfSection="{ screen: 'oracle_command_center', key: 'sessions', db: activeKey() }" [class.is-collapsed]="isCollapsed('sessions')">
@@ -797,7 +862,11 @@
               <details class="occ-rawplan"><summary>Raw plan text (DBMS_XPLAN)</summary><pre class="occ-pre">{{ p.text }}</pre></details>
             }
           } @else if (p.table) {
-            <app-dyn-table [model]="p.table" />
+            <app-dyn-table [model]="p.table"
+              [actions]="p.key === 'stats' && canKill() ? gatherActions : []" (action)="onStatsAction($event)" />
+            @if (p.key === 'stats' && p.table.rows.length) {
+              <p class="occ-note"><b>Note:</b> stale stats mislead the optimizer. @if (canKill()) { <b>Gather stats</b> refreshes them at the right partition/subpartition/table level. } @else { Gathering stats requires an admin role. }</p>
+            }
           }
           }
         }

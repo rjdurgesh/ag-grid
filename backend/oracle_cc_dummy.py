@@ -11,6 +11,7 @@ exist) and calls them when ``ORACLE_CC_USE_DUMMY`` is on.
 
 from __future__ import annotations
 
+import time
 from typing import Any  # noqa: F401  (used in annotations)
 
 from fastapi import Request  # noqa: F401  (used in annotations)
@@ -18,10 +19,16 @@ from fastapi import Request  # noqa: F401  (used in annotations)
 from oracle_cc_api import (
     TARGET_CATALOG,
     KillRequest,
+    GatherStatsRequest,
+    MviewRefreshRequest,
     OracleTarget,
     SessionDetailQuery,
     SqlFinderQuery,
     SqlFixApply,
+    _ACTION_COLS,
+    _MV_COLS,
+    _action_view,
+    _mv_row,
     _SQLI_ASH_COLS,
     _SQLI_BINDS_COLS,
     _SQLI_FINDER_COLS,
@@ -36,7 +43,6 @@ from oracle_cc_api import (
     _sqli_timeline_payload,
     _IDXH_COLS,
     _IDX_COLS,
-    _SESS_COLS,
     _TEMP_COLS,
     _TOP_COLS,
     _temp_row,
@@ -49,7 +55,6 @@ from oracle_cc_api import (
     _monitor_tiles,
     _panel_table,
     _panel_text,
-    _sess_row,
     _sev_for,
     _space_payload,
     _stats_cell,
@@ -195,6 +200,91 @@ def temp_usage_dummy(t: OracleTarget) -> dict:
             "summary": {"sessions": len(rows), "total_mb": total_mb}}
 
 
+def mviews_dummy(t: OracleTarget) -> dict:
+    # Raw rows shaped like database.fetch_mviews → massaged via _mv_row. A mix of FRESH / STALE /
+    # NEEDS_COMPILE and fast/complete last-refresh types, so the chips + row tints are exercised.
+    raw = [
+        {"owner": "OLS", "mview_name": "MV_POSITION_SUMMARY", "refresh_mode": "DEMAND",
+         "refresh_method": "FORCE", "last_refresh_type": "FAST",
+         "last_refresh_date": "16-Aug-2026 02:10", "staleness": "FRESH", "compile_state": "VALID"},
+        {"owner": "OLS", "mview_name": "MV_DAILY_PNL", "refresh_mode": "DEMAND",
+         "refresh_method": "COMPLETE", "last_refresh_type": "COMPLETE",
+         "last_refresh_date": "12-Aug-2026 22:40", "staleness": "STALE", "compile_state": "VALID"},
+        {"owner": "OLS", "mview_name": "MV_INSTRUMENT_XREF", "refresh_mode": "COMMIT",
+         "refresh_method": "FAST", "last_refresh_type": "FAST",
+         "last_refresh_date": "16-Aug-2026 06:55", "staleness": "FRESH", "compile_state": "VALID"},
+        {"owner": "OLS", "mview_name": "MV_RISK_ROLLUP", "refresh_mode": "DEMAND",
+         "refresh_method": "FORCE", "last_refresh_type": "COMPLETE",
+         "last_refresh_date": "01-Aug-2026 01:00", "staleness": "NEEDS_COMPILE", "compile_state": "NEEDS_COMPILE"},
+    ]
+    rows = [_mv_row(r) for r in raw]
+    stale = sum(1 for r in rows if r.get("staleness") != "FRESH")
+    return {"status": "success", "columns": _MV_COLS, "rows": rows,
+            "summary": {"mviews": len(rows), "stale": stale}}
+
+
+# In-memory action store for the async dummy flow: submit → RUNNING for ~6s → SUCCESS (or FAILED when
+# the object name contains FAILME, to exercise the error path). Keyed by db|action_id.
+_DUMMY_ACTIONS: dict[str, dict] = {}
+_DUMMY_SEQ = [1000]
+_DUMMY_RUN_SECS = 6.0
+
+
+def _dummy_submit(t: OracleTarget, action_type: str, owner: str, obj: str, method: str | None, by: str) -> int:
+    _DUMMY_SEQ[0] += 1
+    aid = _DUMMY_SEQ[0]
+    _DUMMY_ACTIONS[f"{t.key}|{aid}"] = {
+        "action_id": aid, "action_type": action_type, "object_owner": owner, "object_name": obj,
+        "method": method, "requested_by": by or "dev.user", "submitted": time.time(),
+    }
+    return aid
+
+
+def _dummy_action_row(a: dict) -> dict:
+    """Compute a live status from elapsed time so the UI's poll shows RUNNING → SUCCESS/FAILED."""
+    elapsed = time.time() - a["submitted"]
+    if elapsed < _DUMMY_RUN_SECS:
+        status, dur, err = "RUNNING", None, None
+    elif "FAILME" in (a["object_name"] or "").upper():
+        status, dur, err = "FAILED", int(elapsed), "ORA-20001: dummy failure (object name contains FAILME)"
+    else:
+        status, dur, err = "SUCCESS", int(elapsed), None
+    ts = time.strftime("%d-%b %H:%M:%S", time.localtime(a["submitted"]))
+    return {"action_id": a["action_id"], "action_type": a["action_type"], "object_owner": a["object_owner"],
+            "object_name": a["object_name"], "method": a["method"], "requested_by": a["requested_by"],
+            "status": status, "submitted_on": ts, "finished_on": None, "duration_secs": dur, "error_text": err}
+
+
+def mview_refresh_dummy(t: OracleTarget, body: MviewRefreshRequest, code: str) -> dict:
+    aid = _dummy_submit(t, "MV_REFRESH", body.owner, body.mview, code, body.caller)
+    logger.info("DUMMY mview-refresh submit #%s %s.%s on %s (method=%s / %s)", aid, body.owner, body.mview, t.key, body.method, code)
+    return {"status": "success", "action_id": aid, "state": "RUNNING",
+            "message": f"{body.owner}.{body.mview} refresh submitted ({body.method}) on {t.instance} — running in the background."}
+
+
+def gather_stats_dummy(t: OracleTarget, body: GatherStatsRequest) -> dict:
+    aid = _dummy_submit(t, "GATHER_STATS", body.owner, body.table, None, body.caller)
+    logger.info("DUMMY gather-stats submit #%s %s.%s on %s", aid, body.owner, body.table, t.key)
+    return {"status": "success", "action_id": aid, "state": "RUNNING",
+            "message": f"Statistics gather submitted for {body.owner}.{body.table} on {t.instance} — running in the background."}
+
+
+def action_status_dummy(t: OracleTarget, action_id: int) -> dict:
+    a = _DUMMY_ACTIONS.get(f"{t.key}|{action_id}")
+    if not a:
+        return {"status": "success", "state": "UNKNOWN", "action_id": action_id}
+    return {"status": "success", **_action_view(_dummy_action_row(a))}
+
+
+def actions_dummy(t: OracleTarget) -> dict:
+    mine = [v for k, v in _DUMMY_ACTIONS.items() if k.startswith(f"{t.key}|")]
+    mine.sort(key=lambda a: a["submitted"], reverse=True)
+    rows = [_action_view(_dummy_action_row(a)) for a in mine[:50]]
+    running = sum(1 for r in rows if r.get("state") == "RUNNING")
+    return {"status": "success", "columns": _ACTION_COLS, "rows": rows,
+            "summary": {"actions": len(rows), "running": running}}
+
+
 def kill_session_dummy(t: OracleTarget, body: KillRequest) -> dict:
     logger.info("DUMMY kill-session %s,%s on %s (immediate=%s)", body.sid, body.serial, t.key, body.immediate)
     # Session already gone (closed before the kill landed) → success no-op, not an error. Mirrors the
@@ -241,28 +331,59 @@ def blocking_dummy(t: OracleTarget) -> dict:
     return _blocking_payload([_blk_row(r) for r in raw])
 
 
+# Representative subset of the rich sessions query — enough columns to demo the pass-through grid
+# (prod returns ~70). (key, type) drives the self-describing columns; rows carry exactly these keys
+# (+ last_call, which session_detail_dummy reads).
+_DUMMY_SESS_COLS = [
+    ("status", "text"), ("job_desc", "text"), ("parent", "num"), ("sid", "num"), ("serial#", "num"),
+    ("waiting_for", "num"), ("username", "text"), ("sql_id", "text"), ("plan_hash_value", "num"),
+    ("osuser", "text"), ("ols_user", "text"), ("service_name", "text"), ("module", "text"),
+    ("machine", "text"), ("program", "text"), ("current_wait", "text"), ("wait_class", "text"),
+    ("sql_elapsed", "text"), ("cpu", "num"), ("pga_memory_mb", "num"), ("logon_time", "text"),
+    ("last_call", "text"),
+]
+
+
+def _ds(sid, serial, status, username, osuser, ols_user, machine, program, sql_id, wait, wait_class,
+        cpu, pga_mb, elapsed, last_call, job_desc=None, waiting_for=None, parent=None) -> dict:
+    return {
+        "status": status, "job_desc": job_desc, "parent": parent, "sid": sid, "serial#": serial,
+        "waiting_for": waiting_for, "username": username, "sql_id": sql_id,
+        "plan_hash_value": 3106586606 if sql_id else None, "osuser": osuser, "ols_user": ols_user,
+        "service_name": "OLSSRV", "module": "COB_TRADE_UPDATE", "machine": machine, "program": program,
+        "current_wait": wait, "wait_class": wait_class, "sql_elapsed": elapsed, "cpu": cpu,
+        "pga_memory_mb": pga_mb, "logon_time": "16-AUG-2026 13:31:02", "last_call": last_call,
+    }
+
+
 def _all_sessions() -> list[dict]:
     return [
-        _sess_row(845, 22931, "OLS_BATCH", "ACTIVE", "batch07", "sqlplus@batch07", "7ymz9qk4d3n1a", "ON CPU", "14m 20s", 860),
-        _sess_row(512, 10233, "OLS_APP", "ACTIVE", "wildfly02", "JDBC Thin Client", "7ymz9qk4d3n1a", "enq: TX - row lock contention", "13m 55s", 835),
-        _sess_row(233, 4021, "OLS", "ACTIVE", "etl01", "ETL_Loader", "9ab77tzp0q2mx", "db file scattered read", "00m 42s", 42),
-        _sess_row(760, 882, "OLS_APP", "INACTIVE", "wildfly03", "JDBC Thin Client", None, "SQL*Net message from client", "22m 10s", 1330),
-        _sess_row(611, 5567, "OLS_RPT", "INACTIVE", "rpt02", "BIPublisher", None, "SQL*Net message from client", "48m 03s", 2883),
-        _sess_row(1002, 7781, "OLS_RPT", "KILLED", "rpt01", "BIPublisher", "3xk9p1v7c2rba", "KILLED — PMON cleanup", "01m 12s", 72),
+        _ds(845, 22931, "ACTIVE", "OLS_BATCH", "olsbatch", "Ravi Menon", "batch07", "sqlplus@batch07",
+            "7ymz9qk4d3n1a", "ON CPU", "CPU", 92.4, 512.0, "00:14:20", "14m 20s", job_desc="COB_TRADE_ROLLUP"),
+        _ds(512, 10233, "ACTIVE", "OLS_APP", "appsvc", "Aisha Khan", "wildfly02", "JDBC Thin Client",
+            "7ymz9qk4d3n1a", "enq: TX - row lock contention", "Application", 3.1, 88.5, "00:13:55", "13m 55s",
+            waiting_for=845),
+        _ds(233, 4021, "ACTIVE", "OLS", "etl", None, "etl01", "ETL_Loader", "9ab77tzp0q2mx",
+            "db file scattered read", "User I/O", 12.7, 240.2, "00:00:42", "00m 42s"),
+        _ds(760, 882, "INACTIVE", "OLS_APP", "appsvc", "Aisha Khan", "wildfly03", "JDBC Thin Client",
+            None, "SQL*Net message from client", "Idle", 0.0, 12.0, None, "22m 10s"),
+        _ds(611, 5567, "INACTIVE", "OLS_RPT", "rptsvc", None, "rpt02", "BIPublisher",
+            None, "SQL*Net message from client", "Idle", 0.0, 8.4, None, "48m 03s"),
+        _ds(1002, 7781, "KILLED", "OLS_RPT", "rptsvc", None, "rpt01", "BIPublisher",
+            "3xk9p1v7c2rba", "KILLED — PMON cleanup", "Other", 0.0, 4.1, "00:01:12", "01m 12s"),
     ]
 
 
 def sessions_dummy(t: OracleTarget, status: str) -> dict:
+    """Raw shape {columns, rows, counts} — the API's `_sessions_payload` massages it (same as the real
+    path), so the dummy exercises the pass-through + injected Kill/Deep-dive/chip metadata."""
     rows = _all_sessions()
-    counts = {
-        "active": sum(1 for r in rows if r["status"] == "ACTIVE"),
-        "inactive": sum(1 for r in rows if r["status"] == "INACTIVE"),
-        "killed": sum(1 for r in rows if r["status"] == "KILLED"),
-        "total": len(rows),
-    }
+    counts = [{"st": st, "c": sum(1 for r in rows if (r["status"] or "").lower() == st)}
+              for st in ("active", "inactive", "killed")]
     if status != "all":
-        rows = [r for r in rows if r["status"] == status.upper()]
-    return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
+        rows = [r for r in rows if (r["status"] or "").lower() == status]
+    columns = [{"key": k, "type": ty} for (k, ty) in _DUMMY_SESS_COLS]
+    return {"columns": columns, "rows": rows, "counts": counts}
 
 
 def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
@@ -377,9 +498,12 @@ def session_detail_dummy(t: OracleTarget, q: SessionDetailQuery) -> dict:
         {"key": "last_analyzed", "label": "Last analyzed", "type": "text"},
         {"key": "state", "label": "Stats", "type": "chip"},
     ]
+    # `owner`/`table` + `__actions:['gather']` drive the WRITE-gated "Gather stats" row action.
     stats_rows = [
-        {"object": "TRADE_EVENTS", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "STALE", "state__sev": "warn"},
-        {"object": "PK_TRADE_EV", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "FRESH", "state__sev": "ok"},
+        {"object": "TRADE_EVENTS", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "STALE",
+         "state__sev": "warn", "owner": "OLS", "table": "TRADE_EVENTS", "__actions": ["gather"]},
+        {"object": "PK_TRADE_EV", "num_rows": 4120400000, "last_analyzed": "14-Aug 02:10", "state": "FRESH",
+         "state__sev": "ok", "owner": "OLS", "table": "PK_TRADE_EV", "__actions": ["gather"]},
     ]
 
     locks_cols = [

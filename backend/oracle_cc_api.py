@@ -671,6 +671,207 @@ def temp_usage(request: Request, db: str) -> dict:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# --- Materialized Views (Section 6c — after Temp, before Sessions) ------------
+_MV_COLS = [
+    {"key": "mview", "label": "Materialized View", "type": "mono"},
+    {"key": "last_refresh", "label": "Last refresh", "type": "text"},
+    {"key": "last_type", "label": "Last type", "type": "text"},
+    {"key": "refresh_method", "label": "Method", "type": "text"},
+    {"key": "refresh_mode", "label": "Mode", "type": "text"},
+    {"key": "compile", "label": "Compile", "type": "chip"},
+    {"key": "staleness", "label": "Staleness", "type": "chip"},
+]
+
+# Staleness values from DBA_MVIEWS.STALENESS → severity tint.
+_MV_STALE_SEV = {"FRESH": "ok", "STALE": "warn", "UNUSABLE": "crit", "NEEDS_COMPILE": "warn",
+                 "NEEDS COMPILE": "warn", "UNKNOWN": "muted", "UNDEFINED": "muted", "COMPILATION_ERROR": "crit"}
+
+
+def _mv_row(r: dict) -> dict:
+    """One DBA_MVIEWS row → the contract. `owner`/`mview_name` ride along for the refresh action;
+    the row tints amber/red when the MV is stale/unusable. Each row is force-refreshable."""
+    stale = (r.get("staleness") or "UNKNOWN")
+    comp = (r.get("compile_state") or "—")
+    sev = _MV_STALE_SEV.get(stale, "muted")
+    return {
+        "mview": r.get("mview_name") or "—",
+        "last_refresh": r.get("last_refresh_date") or "never",
+        "last_type": r.get("last_refresh_type") or "—",
+        "refresh_method": r.get("refresh_method") or "—",
+        "refresh_mode": r.get("refresh_mode") or "—",
+        "compile": comp, "compile__sev": "ok" if comp == "VALID" else "warn",
+        "staleness": stale, "staleness__sev": sev,
+        "__sev": sev if sev in ("warn", "crit") else "",
+        "__actions": ["mv_force", "mv_complete", "mv_fast"],
+        "owner": r.get("owner") or OCC_SCHEMA, "mview_name": r.get("mview_name"),
+    }
+
+
+@router.post("/{db}/mviews")
+def mviews(request: Request, db: str) -> dict:
+    """Materialized views in the monitored schema with refresh + staleness health (DBA_MVIEWS). Each
+    row is force-refreshable (WRITE, UI-gated). `summary` counts total + non-fresh. Massages
+    `database.fetch_mviews`."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return mviews_dummy(t)
+    try:
+        rows = [_mv_row(r) for r in database.fetch_mviews(request.app.state.db_configs.get(db), OCC_SCHEMA)]
+        stale = sum(1 for r in rows if r.get("staleness") != "FRESH")
+        return {"status": "success", "columns": _MV_COLS, "rows": rows,
+                "summary": {"mviews": len(rows), "stale": stale}}
+    except Exception:
+        logger.exception("mviews failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- Privileged write actions (gather stats / MV refresh) --------------------
+def _priv_cfg(request: Request, db: str):
+    """The PRIVILEGED connection for OCC write actions (gather stats / MV refresh) — NOT the
+    read-only monitor. Prefer app.state.sql_db_configs (same keys as db_configs, wired for S-Studio);
+    fall back to the monitor with a warning if a privileged config isn't wired for this DB."""
+    priv = getattr(request.app.state, "sql_db_configs", None) or {}
+    cfg = priv.get(db)
+    if cfg is None:
+        logger.warning("OCC write action using db_configs for %s (no privileged sql_db_configs wired)", db)
+        cfg = request.app.state.db_configs.get(db)
+    return cfg
+
+
+_MV_METHODS = {"complete": "C", "fast": "F", "force": "?"}
+
+
+class MviewRefreshRequest(BaseModel):
+    owner: str
+    mview: str
+    method: str = "force"          # complete | fast | force (user-chosen)
+    caller: str = ""               # requesting operator (for the action log)
+
+
+@router.post("/{db}/mview-refresh")
+def mview_refresh(request: Request, db: str, body: MviewRefreshRequest) -> dict:
+    """**Submit** a force-refresh of one materialized view as a BACKGROUND job (WRITE — UI-gated
+    behind DB-write + confirm). Returns immediately with `action_id` + `state:'RUNNING'`; the UI polls
+    `action-status`. Runs `ols_util.occ_submit_mv_refresh` on a PRIVILEGED connection. `method`:
+    complete | fast | force (user-chosen; mapped to DBMS_MVIEW C | F | ?)."""
+    t = _target(db)
+    code = _MV_METHODS.get((body.method or "").lower())
+    if not code:
+        raise HTTPException(status_code=400, detail="method must be complete, fast, or force.")
+    if ORACLE_CC_USE_DUMMY:
+        return mview_refresh_dummy(t, body, code)
+    try:
+        action_id = database.refresh_mview(_priv_cfg(request, db), owner=body.owner, mview=body.mview,
+                                           method=code, requested_by=body.caller or "unknown")
+    except Exception as exc:  # noqa: BLE001 — surface the real ORA text to the (admin) operator
+        logger.exception("mview-refresh submit failed for %s.%s on %s", body.owner, body.mview, db)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "success", "action_id": action_id, "state": "RUNNING",
+            "message": f"{body.owner}.{body.mview} refresh submitted ({body.method}) — running in the background."}
+
+
+class GatherStatsRequest(BaseModel):
+    owner: str
+    table: str
+    caller: str = ""               # requesting operator (for the action log)
+
+
+@router.post("/{db}/gather-stats")
+def gather_stats(request: Request, db: str, body: GatherStatsRequest) -> dict:
+    """**Submit** an optimizer-stats gather for one object as a BACKGROUND job (WRITE — UI-gated
+    behind DB-write + confirm). Returns immediately with `action_id` + `state:'RUNNING'`; the UI polls
+    `action-status`. Runs `ols_util.occ_submit_gather` on a PRIVILEGED connection; its worker picks
+    the granularity (subpartition+partition / partition / table)."""
+    t = _target(db)
+    if not (body.owner or "").strip() or not (body.table or "").strip():
+        raise HTTPException(status_code=400, detail="owner and table are required.")
+    if ORACLE_CC_USE_DUMMY:
+        return gather_stats_dummy(t, body)
+    try:
+        action_id = database.gather_object_stats(_priv_cfg(request, db), owner=body.owner,
+                                                 table=body.table, requested_by=body.caller or "unknown")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("gather-stats submit failed for %s.%s on %s", body.owner, body.table, db)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "success", "action_id": action_id, "state": "RUNNING",
+            "message": f"Statistics gather submitted for {body.owner}.{body.table} — running in the background."}
+
+
+# --- Action status (live poll) + history -------------------------------------
+_ACTION_LABEL = {"GATHER_STATS": "Gather stats", "MV_REFRESH": "MV refresh"}
+_ACTION_STATE_SEV = {"RUNNING": "muted", "SUCCESS": "ok", "FAILED": "crit"}
+
+_ACTION_COLS = [
+    {"key": "type", "label": "Action", "type": "text"},
+    {"key": "object", "label": "Object", "type": "mono"},
+    {"key": "method", "label": "Method", "type": "text"},
+    {"key": "requested_by", "label": "By", "type": "mono"},
+    {"key": "state", "label": "Status", "type": "chip"},
+    {"key": "submitted", "label": "Submitted", "type": "text"},
+    {"key": "duration", "label": "Duration", "type": "text"},
+    {"key": "error", "label": "Error", "type": "clob"},
+]
+
+_MV_CODE_LABEL = {"C": "complete", "F": "fast", "?": "force"}
+
+
+def _action_view(r: dict) -> dict:
+    """One ols_occ_action_log row → UI shape. `state` chip drives the row tint; `error` shows in the
+    clob popup on a failure."""
+    state = (r.get("status") or "RUNNING")
+    secs = r.get("duration_secs")
+    method = r.get("method")
+    return {
+        "action_id": r.get("action_id"),
+        "type": _ACTION_LABEL.get(r.get("action_type"), r.get("action_type") or "—"),
+        "object": f"{r.get('object_owner')}.{r.get('object_name')}" if r.get("object_owner") else (r.get("object_name") or "—"),
+        "method": _MV_CODE_LABEL.get(method, method or "—"),
+        "requested_by": r.get("requested_by") or "—",
+        "state": state, "state__sev": _ACTION_STATE_SEV.get(state, "muted"),
+        "submitted": r.get("submitted_on") or "—",
+        "duration": (_fmt_dur(int(secs)) if secs not in (None, "") else ("running…" if state == "RUNNING" else "—")),
+        "error": r.get("error_text") or "",
+        "__sev": "crit" if state == "FAILED" else "",
+    }
+
+
+class ActionStatusRequest(BaseModel):
+    action_id: int
+
+
+@router.post("/{db}/action-status")
+def action_status(request: Request, db: str, body: ActionStatusRequest) -> dict:
+    """Live status of one submitted action (the UI polls this until `state` != RUNNING)."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return action_status_dummy(t, body.action_id)
+    try:
+        row = database.fetch_occ_action(request.app.state.db_configs.get(db), body.action_id)
+    except Exception:
+        logger.exception("action-status failed for %s (%s)", db, body.action_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not row:
+        return {"status": "success", "state": "UNKNOWN", "action_id": body.action_id}
+    return {"status": "success", **_action_view(row)}
+
+
+@router.post("/{db}/actions")
+def actions(request: Request, db: str) -> dict:
+    """Recent OCC actions (gather stats / MV refresh) — the Action History panel. Massages
+    `database.fetch_occ_actions`."""
+    t = _target(db)
+    if ORACLE_CC_USE_DUMMY:
+        return actions_dummy(t)
+    try:
+        rows = [_action_view(r) for r in database.fetch_occ_actions(request.app.state.db_configs.get(db))]
+        running = sum(1 for r in rows if r.get("state") == "RUNNING")
+        return {"status": "success", "columns": _ACTION_COLS, "rows": rows,
+                "summary": {"actions": len(rows), "running": running}}
+    except Exception:
+        logger.exception("actions failed for %s", db)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 class SessionsQuery(BaseModel):
     # active | inactive | killed | all  (UI default = active)
     status: str = "active"
@@ -678,46 +879,70 @@ class SessionsQuery(BaseModel):
 
 @router.post("/{db}/sessions")
 def sessions(request: Request, db: str, body: SessionsQuery | None = None) -> dict:
-    """Session inventory filtered by state; `summary` carries the full per-state counts (for the
-    Active/Inactive/Killed/All tab badges) regardless of the filter. Massages
-    `database.fetch_sessions`."""
+    """Session inventory filtered by state (active|inactive|killed|all). **Self-describing / column
+    pass-through**: every column `database.fetch_sessions` returns is rendered, so adding a column to
+    that SQL shows up with no Angular change. `summary` carries the full per-state counts for the tab
+    badges. Kill / Deep-dive / status-chip still work via injected row metadata (`_sessions_payload`)."""
     t = _target(db)
     status = (body.status if body else "active").lower()
     if ORACLE_CC_USE_DUMMY:
-        return sessions_dummy(t, status)
-    try:
-        raw = database.fetch_sessions(request.app.state.db_configs.get(db), status)
-        rows = [
-            _sess_row(int(r["sid"]), int(r["serial"]), r["username"] or "—", (r["status"] or "").upper(),
-                      r["machine"] or "—", r["program"] or "—", r.get("sql_id"),
-                      r.get("event") or "ON CPU", _fmt_dur(r.get("secs")), int(r.get("secs") or 0))
-            for r in raw.get("rows") or []
-        ]
-        counts = {"active": 0, "inactive": 0, "killed": 0, "total": 0}
-        for c in raw.get("counts") or []:
-            n = int(c["c"] or 0)
-            counts["total"] += n
-            if c["st"] in counts:
-                counts[c["st"]] = n
-        return {"status": "success", "columns": _SESS_COLS, "rows": rows, "summary": counts}
-    except Exception:
-        logger.exception("sessions failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raw = sessions_dummy(t, status)
+    else:
+        try:
+            raw = database.fetch_sessions(request.app.state.db_configs.get(db), status)
+        except Exception:
+            logger.exception("sessions failed for %s", db)
+            raise HTTPException(status_code=500, detail="Internal server error")
+    return _sessions_payload(raw)
 
-
-_SESS_COLS = [
-    {"key": "session", "label": "SID,Serial#", "type": "mono"},
-    {"key": "username", "label": "User", "type": "mono"},
-    {"key": "status", "label": "Status", "type": "chip"},
-    {"key": "running_for", "label": "Running for", "type": "text"},
-    {"key": "machine", "label": "Machine", "type": "text"},
-    {"key": "program", "label": "Program", "type": "text"},
-    {"key": "sql_id", "label": "SQL_ID", "type": "mono"},
-    {"key": "event", "label": "Event / State", "type": "text"},
-    {"key": "last_call", "label": "Last call", "type": "text"},
-]
 
 _SESS_CHIP = {"ACTIVE": "ok", "INACTIVE": "muted", "KILLED": "crit"}
+
+# Column keys that get a specific render regardless of their SQL type (everything else uses the
+# data-layer's inferred num/clob/text).
+_SESS_COL_OVERRIDE = {"status": "chip", "sql_id": "mono", "prev_sql_id": "mono", "sql_text": "clob"}
+# Tokens shown upper-cased in prettified labels.
+_SESS_ACRONYMS = {"sql", "id", "cpu", "pga", "pq", "pdml", "os", "db", "ols", "mb", "sid"}
+
+
+def _sess_label(key: str) -> str:
+    """Prettify a snake/quoted column key into a header label (SQL/CPU/ID… kept upper-case)."""
+    words = key.replace("#", "").replace("_", " ").split()
+    if not words:
+        return key
+    return " ".join(w.upper() if w.lower() in _SESS_ACRONYMS else w[:1].upper() + w[1:] for w in words)
+
+
+def _sessions_payload(raw: dict) -> dict:
+    """Turn the data layer's ``{columns:[{key,type}], rows:[dict], counts}`` into the grid payload:
+    pass every column through (label + render override), and inject per-row metadata so the existing
+    Kill / Deep-dive buttons, status chip and killed-row tint keep working."""
+    columns = [{"key": c["key"], "label": _sess_label(c["key"]),
+                "type": _SESS_COL_OVERRIDE.get(c["key"], c.get("type", "text"))}
+               for c in (raw.get("columns") or [])]
+    rows = []
+    for src in raw.get("rows") or []:
+        row = dict(src)
+        st = str(row.get("status") or "").upper()
+        row["status__sev"] = _SESS_CHIP.get(st, "muted")
+        sid = row.get("sid")
+        serial = row.get("serial#", row.get("serial"))
+        if sid is not None:
+            row["sid"] = int(sid)
+        if serial is not None:
+            row["serial"] = int(serial)                 # kill/deep-dive read row['serial']
+        # A KILLED session can't be killed again — only offer the deep-dive; tint the row red.
+        row["__actions"] = ["detail"] if st == "KILLED" else ["detail", "kill"]
+        if st == "KILLED":
+            row["__sev"] = "crit"
+        rows.append(row)
+    counts = {"active": 0, "inactive": 0, "killed": 0, "total": 0}
+    for c in raw.get("counts") or []:
+        n = int(c.get("c") or 0)
+        counts["total"] += n
+        if c.get("st") in counts:
+            counts[c["st"]] = n
+    return {"status": "success", "columns": columns, "rows": rows, "summary": counts}
 
 
 def _fmt_dur(secs: int | None) -> str:
@@ -728,27 +953,6 @@ def _fmt_dur(secs: int | None) -> str:
     h, rem = divmod(int(secs), 3600)
     m, s = divmod(rem, 60)
     return f"{h}h {m:02d}m" if h else f"{m:02d}m {s:02d}s"
-
-
-def _sess_row(sid: int, serial: int, username: str, status: str, machine: str, program: str,
-              sql_id: str | None, event: str, last_call: str, secs: int) -> dict:
-    # Row severity is a hover-only cue in the UI: killed = red on hover. Long-running ACTIVE
-    # sessions are surfaced by the explicit "Running for" column instead of an amber tint.
-    row_sev = "crit" if status == "KILLED" else ""
-    # "Running for" only makes sense for a session in a call — blank for inactive/killed.
-    running_for = _fmt_dur(secs) if status == "ACTIVE" else "—"
-    # Killed sessions can't be killed again — only offer the deep-dive there.
-    actions = ["detail"] if status == "KILLED" else ["detail", "kill"]
-    r = {
-        "session": f"{sid},{serial}", "username": username, "status": status,
-        "status__sev": _SESS_CHIP.get(status, "muted"), "running_for": running_for,
-        "machine": machine, "program": program, "sql_id": sql_id or "—",
-        "event": event, "last_call": last_call,
-        "__actions": actions, "sid": sid, "serial": serial, "_secs": secs,
-    }
-    if row_sev:
-        r["__sev"] = row_sev
-    return r
 
 
 class SessionDetailQuery(BaseModel):
@@ -903,9 +1107,13 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
     def stats_panel():
         if not got("stats"):
             return _panel_table("stats", "Object Statistics", stats_cols, [], available=False)
+        # `owner`/`table` ride along (not shown as columns) so the WRITE-gated "Gather stats" row
+        # action can call the gather proc, which picks the partition/subpartition/table granularity.
         rows = [{"object": r["table_name"], "num_rows": r.get("num_rows"), "last_analyzed": r.get("last_analyzed") or "—",
                  "state": "STALE" if r.get("stale_stats") == "YES" else "FRESH",
-                 "state__sev": "warn" if r.get("stale_stats") == "YES" else "ok"} for r in raw["stats"]]
+                 "state__sev": "warn" if r.get("stale_stats") == "YES" else "ok",
+                 "owner": r.get("owner") or OCC_SCHEMA, "table": r["table_name"],
+                 "__actions": ["gather"]} for r in raw["stats"]]
         return _panel_table("stats", "Object Statistics", stats_cols, rows)
 
     def locks_panel():
@@ -1736,6 +1944,11 @@ from oracle_cc_dummy import (  # noqa: E402
     kill_session_dummy,
     blocking_dummy,
     temp_usage_dummy,
+    mviews_dummy,
+    mview_refresh_dummy,
+    gather_stats_dummy,
+    action_status_dummy,
+    actions_dummy,
     sessions_dummy,
     session_detail_dummy,
     sqli_finder_dummy,
