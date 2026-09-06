@@ -4,6 +4,7 @@ import { forkJoin } from 'rxjs';
 
 import { GrantInput, UserManagementService } from './user-management.service';
 import { ConfirmService } from '../../components/confirm/confirm.service';
+import { RbacService } from '../../auth/rbac.service';
 import { AccessCatalogue, GrantRow, OpsAdmin, UserLookup } from '../../shared/models';
 
 /** The friendly "grant type" a form row builds (maps to resource_type + scope). */
@@ -32,6 +33,7 @@ const CUSTOM = '__custom__';
 export class UserManagementComponent implements OnInit {
   private readonly svc = inject(UserManagementService);
   private readonly confirm = inject(ConfirmService);
+  private readonly rbac = inject(RbacService);
 
   // --- Catalogue -------------------------------------------------------------
   readonly catalogue = signal<AccessCatalogue | null>(null);
@@ -70,10 +72,43 @@ export class UserManagementComponent implements OnInit {
   /** Copy is enabled only after a successful fetch of an active source with ≥1 grant. */
   readonly canCopy = computed(() => !!this.sourceUser()?.active && this.sourceGrants().length > 0);
 
+  // --- Screen tabs (each has its OWN gate) -----------------------------------
+  /** 'access' = grant/revoke for a user; 'ops' = manage who can use this screen. */
+  readonly activeTab = signal<'access' | 'ops'>('access');
+  /** "User access" tab — grant-driven (ADMIN / SCREEN grant / ops-admin). */
+  readonly canUserTab = computed(() => this.rbac.canView('user_management'));
+  /** "Manage access" tab — the exclusive `ols_ops_access` gate only. */
+  readonly canOpsTab = computed(() => this.rbac.isOpsAdmin());
+  /** Show the tab strip only when BOTH tabs are available (a single-tab strip is just noise). */
+  readonly showTabBar = computed(() => this.canUserTab() && this.canOpsTab());
+  /** The tab actually rendered, clamped to what the user is allowed to see. */
+  readonly effectiveTab = computed<'access' | 'ops'>(() => {
+    const t = this.activeTab();
+    if (t === 'ops' && !this.canOpsTab()) { return 'access'; }
+    if (t === 'access' && !this.canUserTab()) { return 'ops'; }
+    return t;
+  });
+
   // --- Ops-admin gate --------------------------------------------------------
   readonly opsAdmins = signal<OpsAdmin[]>([]);
   readonly opsUidInput = signal('');
   readonly savingOps = signal(false);
+  /** Candidate validated against OLS (shown for verification BEFORE Add is allowed). */
+  readonly opsLookup = signal<UserLookup | null>(null);
+  readonly opsValidating = signal(false);
+  /** Free-text filter over the ops-admin list (username / name / email). */
+  readonly opsFilter = signal('');
+  readonly filteredOps = computed(() => {
+    const q = this.opsFilter().trim().toLowerCase();
+    const list = this.opsAdmins();
+    if (!q) { return list; }
+    return list.filter((o) =>
+      o.username.toLowerCase().includes(q) ||
+      (o.display_name ?? '').toLowerCase().includes(q) ||
+      (o.email ?? '').toLowerCase().includes(q));
+  });
+  /** Add is enabled only once the typed uid is validated as an active OLS user. */
+  readonly canAddOps = computed(() => !!this.opsLookup()?.active);
 
   readonly toast = signal<Toast | null>(null);
 
@@ -175,7 +210,7 @@ export class UserManagementComponent implements OnInit {
   // --- Load a user -----------------------------------------------------------
 
   loadUser(): void {
-    const uid = this.uidInput().trim();
+    const uid = this.uidInput().trim().toUpperCase();
     if (!uid) { return; }
     this.loadingUser.set(true);
     this.toast.set(null);
@@ -275,7 +310,7 @@ export class UserManagementComponent implements OnInit {
 
   /** Editing the source id invalidates any prior fetch, so Copy disables until re-fetched. */
   onCopyUidChange(v: string): void {
-    this.copyFromUid.set(v);
+    this.copyFromUid.set(v.toUpperCase());
     if (this.sourceUser()) { this.sourceUser.set(null); this.sourceGrants.set([]); }
   }
 
@@ -385,12 +420,39 @@ export class UserManagementComponent implements OnInit {
     });
   }
 
-  async addOps(): Promise<void> {
-    const uid = this.opsUidInput().trim();
+  /** Editing the ops uid invalidates a prior validation, so Add disables until re-validated. */
+  onOpsUidChange(v: string): void {
+    this.opsUidInput.set(v.toUpperCase());
+    if (this.opsLookup()) { this.opsLookup.set(null); }
+  }
+
+  /** Look the candidate up in OLS and show their details for verification BEFORE adding. */
+  validateOps(): void {
+    const uid = this.opsUidInput().trim().toUpperCase();
     if (!uid) { return; }
+    this.opsValidating.set(true);
+    this.opsLookup.set(null);
+    this.toast.set(null);
+    this.svc.loadUser(uid).subscribe({
+      next: (r) => {
+        this.opsValidating.set(false);
+        this.opsLookup.set(r.lookup);
+        if (!r.lookup.active) {
+          this.toast.set({ kind: 'err', text: r.lookup.message || `The ${uid} user is not active in OLS.` });
+        }
+      },
+      error: (e) => { this.opsValidating.set(false); this.fail(e, 'Could not validate the user'); }
+    });
+  }
+
+  /** Add the (already-validated, active) candidate as an ops-admin. */
+  async addOps(): Promise<void> {
+    const lk = this.opsLookup();
+    if (!lk || !lk.active) { return; }
+    const uid = lk.username.trim();
     const ok = await this.confirm.ask({
       title: 'Add ops-admin',
-      message: `Give ${uid} access to User Management? They will be able to grant access to any OLS user.`,
+      message: `Give ${lk.display_name || uid} (${uid}) access to User Management? They will be able to grant access to any OLS user.`,
       confirmLabel: 'Add', tone: 'primary'
     });
     if (!ok) { return; }
@@ -400,6 +462,7 @@ export class UserManagementComponent implements OnInit {
         this.savingOps.set(false);
         this.opsAdmins.set(r.ops_admins ?? []);
         this.opsUidInput.set('');
+        this.opsLookup.set(null);
         this.toast.set({ kind: 'ok', text: `${uid} can now use User Management.` });
       },
       error: (e) => { this.savingOps.set(false); this.fail(e, 'Could not add the ops-admin'); }
@@ -428,6 +491,7 @@ export class UserManagementComponent implements OnInit {
 
   /** Grant / revoke User Management (super-admin) for an operator — independent of S-Studio. */
   async toggleUsers(o: OpsAdmin): Promise<void> {
+    if (o.is_active !== 'Y') { return; }   // no privilege changes on a disabled user — enable them first
     const granting = o.can_users !== 'Y';
     const ok = await this.confirm.ask({
       title: granting ? 'Grant User Management' : 'Revoke User Management',
@@ -448,6 +512,7 @@ export class UserManagementComponent implements OnInit {
 
   /** Grant / revoke S-Studio (the SQL console) for an operator — independent of User Management. */
   async toggleSql(o: OpsAdmin): Promise<void> {
+    if (o.is_active !== 'Y') { return; }   // no privilege changes on a disabled user — enable them first
     const granting = o.can_sql !== 'Y';
     const ok = await this.confirm.ask({
       title: granting ? 'Grant S-Studio' : 'Revoke S-Studio',
@@ -483,6 +548,12 @@ export class UserManagementComponent implements OnInit {
   }
 
   // --- Display helpers -------------------------------------------------------
+
+  /** "First Surname" when both are known, else the display name, else the uid. */
+  userFullName(u: { first_name?: string; surname?: string; display_name?: string; username: string }): string {
+    const full = [u.first_name, u.surname].filter(Boolean).join(' ').trim();
+    return full || u.display_name || u.username;
+  }
 
   /** A human-readable one-liner for a grant row (uses catalogue labels where possible). */
   describe(g: GrantRow): string {

@@ -2,7 +2,6 @@ import { Routes } from '@angular/router';
 
 import { authGuard } from './auth/auth.guard';
 import { rbacGuard } from './auth/rbac.guard';
-import { opsAdminGuard } from './auth/ops-admin.guard';
 
 export const routes: Routes = [
   {
@@ -49,9 +48,11 @@ export const routes: Routes = [
         loadChildren: () => import('./views/oracle_command_center/route').then((m) => m.routes)
       },
       {
-        // Super-exclusive: gated by the `ols_ops_access` table via opsAdminGuard (NOT rbacGuard).
+        // Grant-driven like the other screens (rbacGuard → canView: ADMIN / SCREEN grant / ops-admin).
+        // The exclusive "Manage access" tab is gated INSIDE the component by isOpsAdmin(); every admin
+        // endpoint also re-checks the caller server-side.
         path: 'user_management',
-        canActivate: [opsAdminGuard],
+        canActivate: [rbacGuard],
         data: { screen: 'user_management' },
         loadChildren: () => import('./views/user_management/route').then((m) => m.routes)
       },

@@ -51,7 +51,7 @@ ACCESS_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
 # non-config screens (a `SCREEN` grant here, or a `SERVER` grant for log_analytics, reveals it).
 # Config Ops is revealed by config-scope grants; Home appears whenever the user has ≥1 feature.
 SCREEN_KEYS = ["log_analytics", "infra_health", "service_console", "oracle_command_center",
-               "docs", "docs_technical"]
+               "user_management", "docs", "docs_technical"]
 # The three Config Ops sub-screens (scopes).
 CONFIG_SCOPES = ["group", "cib", "retail"]
 # Screens that actually have write actions (so a SCREEN/WRITE grant is meaningful).
@@ -68,6 +68,9 @@ _CONFIG_PREFIX = "config_ops:"
 SCREEN_CATALOGUE = [
     {"key": "service_console", "label": "Service Console", "write_capable": True},
     {"key": "oracle_command_center", "label": "Oracle Command Center", "write_capable": True},
+    # "User access" tab of User Management — grant this to let a user hand out access to others.
+    # The "Manage access" tab (the ops-admin table itself) stays gated by ols_ops_access, NOT a grant.
+    {"key": "user_management", "label": "User Management — User access", "write_capable": False},
     # Documentation Center — two read-only, grant-driven screens (User Guide / Technical Guide).
     {"key": "docs", "label": "Docs — User Guide", "write_capable": False},
     {"key": "docs_technical", "label": "Docs — Technical Guide", "write_capable": False},
@@ -244,7 +247,8 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     if role == "ADMIN":
         base.update({
             "screens": ["home", "log_analytics", "config_ops_console", "infra_health",
-                        "service_console", "oracle_command_center", "docs", "docs_technical"],
+                        "service_console", "oracle_command_center", "user_management",
+                        "docs", "docs_technical"],
             "write_screens": WRITE_CAPABLE_SCREENS,
             "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
                        "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES)},
@@ -532,15 +536,40 @@ def no_ols_user_msg(uid: str) -> str:
 
 
 def _require_ops_admin(request: Request, caller: str):
-    """Confirm `caller` is an active ops-admin, else 403. Returns the app DB config (None in dummy)."""
+    """Confirm `caller` is an active ops-admin (the exclusive `ols_ops_access` gate) — used for the
+    Manage-access surface (/admin/ops). 403 otherwise. Returns the app DB config (None in dummy)."""
     if ACCESS_USE_DUMMY:
         if not _dummy_is_ops_admin(caller):
-            raise HTTPException(status_code=403, detail="User Management is restricted to ops-admins")
+            raise HTTPException(status_code=403, detail="Managing ops-admins is restricted to ops-admins")
         return None
     cfg = getattr(request.app.state, "app_db_config", None)
     if not database.fetch_is_ops_admin(cfg, caller):
-        raise HTTPException(status_code=403, detail="User Management is restricted to ops-admins")
+        raise HTTPException(status_code=403, detail="Managing ops-admins is restricted to ops-admins")
     return cfg
+
+
+def _require_user_admin(request: Request, caller: str):
+    """Confirm `caller` may use the "User access" surface (/admin/catalogue|user|grant|grant/delete):
+    an ops-admin, an ADMIN, OR a user holding a SCREEN/user_management grant. 403 otherwise. This is the
+    grant-driven gate (the Manage-access tab uses the stricter _require_ops_admin). Returns the DB config."""
+    if ACCESS_USE_DUMMY:
+        if _dummy_is_ops_admin(caller) or "ADMIN" in (caller or "").upper():
+            return None
+        raise HTTPException(status_code=403, detail="User access is restricted to granted users")
+    cfg = getattr(request.app.state, "app_db_config", None)
+    if database.fetch_is_ops_admin(cfg, caller):
+        return cfg
+    identity = database.fetch_user_identity(cfg, caller)
+    if _is_active(identity):
+        if _role_of(identity) == "ADMIN":
+            return cfg
+        grants = database.fetch_all_grants(cfg, caller)
+        if any((g.get("resource_type") or "").upper() == "SCREEN"
+               and (g.get("resource_scope") or "") == "user_management"
+               and (g.get("access_level") or "").upper() != "DENY"
+               for g in grants):
+            return cfg
+    raise HTTPException(status_code=403, detail="User access is restricted to granted users")
 
 
 def _lookup_target(cfg, uid: str) -> tuple[bool, dict]:
@@ -555,8 +584,8 @@ def _lookup_target(cfg, uid: str) -> tuple[bool, dict]:
 
 @router.post("/admin/catalogue")
 def admin_catalogue(request: Request, body: AdminQuery) -> dict:
-    """The grantable-resource tree the User Management pickers render (ops-admin only)."""
-    cfg = _require_ops_admin(request, body.caller)
+    """The grantable-resource tree the User Management pickers render (User-access surface)."""
+    cfg = _require_user_admin(request, body.caller)
     if ACCESS_USE_DUMMY:
         return {"status": "success", "catalogue": build_catalogue([], list(OCC_DB_LABELS.keys()))}
     try:
@@ -577,7 +606,7 @@ def admin_catalogue(request: Request, body: AdminQuery) -> dict:
 def admin_user(request: Request, body: AdminUserQuery) -> dict:
     """Look a user up (validated against ols_users) + return their current grants and resolved
     snapshot. `lookup.active=false` → the UI shows the 'raise a request' message, no grants."""
-    cfg = _require_ops_admin(request, body.caller)
+    cfg = _require_user_admin(request, body.caller)
     if ACCESS_USE_DUMMY:
         ident = _dummy_identity(body.uid)
         grants = _dummy_grants(body.uid)
@@ -606,7 +635,7 @@ def admin_user(request: Request, body: AdminUserQuery) -> dict:
 @router.post("/admin/grant")
 def admin_grant(request: Request, body: GrantBody) -> dict:
     """Grant (insert/update) ONE `ols_app_access` row for a user. Target must be an active OLS user."""
-    cfg = _require_ops_admin(request, body.caller)
+    cfg = _require_user_admin(request, body.caller)
     rt = (body.resource_type or "").strip().upper()
     rs = (body.resource_scope or "").strip()
     rk = (body.resource_key or "*").strip() or "*"
@@ -634,7 +663,7 @@ def admin_grant(request: Request, body: GrantBody) -> dict:
 @router.post("/admin/grant/delete")
 def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
     """Revoke (hard-DELETE) ONE `ols_app_access` row by its natural key — no audit kept."""
-    cfg = _require_ops_admin(request, body.caller)
+    cfg = _require_user_admin(request, body.caller)
     if ACCESS_USE_DUMMY:
         return {"status": "success", "dummy": True, "deleted": 1}
     try:

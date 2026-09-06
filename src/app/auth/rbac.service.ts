@@ -88,10 +88,14 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    // User Management has its OWN super-exclusive gate (`ols_ops_access`) — it is NOT part of the
-    // normal opt-in set, and even an ADMIN cannot see it unless listed. Check it before anything else.
+    // User Management is now split into two tabs with DIFFERENT gates (see the component):
+    //  • "User access" (grant/revoke) = grant-driven like the other screens — ADMIN, or an explicit
+    //    SCREEN/user_management grant. This `canView` drives the route + nav + that tab.
+    //  • "Manage access" (the ops-admin table) stays exclusive to `ols_ops_access` → `isOpsAdmin()`.
+    // Ops-admins are super-users, so they always reach the screen (and it's the only door to the
+    // exclusive tab). The Manage-access tab itself is gated separately by isOpsAdmin().
     if (screen === 'user_management') {
-      return this.isOpsAdmin();
+      return s.role === 'ADMIN' || s.screens.includes('user_management') || this.isOpsAdmin();
     }
     // Log Analytics + Infrastructure Health are visible to EVERY active user (ungated — see
     // RBAC_DESIGN §2). They are the default screens a user with no other features still sees.

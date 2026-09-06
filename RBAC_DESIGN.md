@@ -290,17 +290,29 @@ for the ops-admin gate (`is_ops_admin`), so User Management is reachable.
 A dedicated **Administration → User Management** screen lets an *ops-admin* grant/revoke any
 `ols_app_access` row for any active OLS user, and manage the ops-admin list itself — no SQL needed.
 
-**Super-exclusive gate — `ols_ops_access`.** A third, deliberately tiny table of *privileged
-operators* (`username`, `is_active`, **`can_users`**, **`can_sql`**) is the ONLY thing that reveals
-these features. **User Management** shows only when the row is active with **`can_users='Y'`**;
-**everyone else — including full `IS_ADMIN` users — does not.** `can_users` and `can_sql` (S-Studio,
-§12) are **independent** — an operator can have either alone (e.g. S-Studio without super-admin). It
-is independent of the base role. The snapshot carries `is_ops_admin`; `RbacService.canView('user_management')` and `opsAdminGuard`
-(NOT the normal `rbacGuard`) both read it. DDL + bootstrap seed: `backend/sql/ops_access_setup.sql`.
+**Two tabs, two gates.** The screen is split so the day-to-day grant work can be delegated while the
+keys to the kingdom stay locked down:
+
+- **User access** tab (grant/revoke `ols_app_access` for a user) is **grant-driven like any other
+  screen**: an `ADMIN`, a user with a **`SCREEN / user_management`** grant, or any ops-admin sees it.
+  It uses the normal `rbacGuard` (`data.screen: 'user_management'`), `RbacService.canView('user_management')`
+  drives the route/nav/tab, and `user_management` is a grantable screen (`SCREEN_CATALOGUE` / `SCREEN_KEYS`).
+  Because this tab can grant *any* access to *anyone*, treat a `SCREEN/user_management` grant as "may hand
+  out access" and give it sparingly.
+- **Manage access** tab (the ops-admin table itself) stays **super-exclusive** to **`ols_ops_access`**.
+
+**Super-exclusive gate — `ols_ops_access`.** A deliberately tiny table of *privileged operators*
+(`username`, `is_active`, **`can_users`**, **`can_sql`**) gates the exclusive surfaces. **Manage access**
+shows only when the row is active with **`can_users='Y'`** (`is_ops_admin`); `can_users` and `can_sql`
+(S-Studio, §12) are **independent** — an operator can have either alone. The snapshot carries
+`is_ops_admin`; the component gates the Manage-access tab with `isOpsAdmin()`. Server-side,
+`/admin/ops` uses `_require_ops_admin` while `/admin/catalogue|user|grant|grant/delete` use
+`_require_user_admin` (ops-admin OR ADMIN OR a `SCREEN/user_management` grant). `opsAdminGuard` is no
+longer wired to the route (kept for reference). DDL + bootstrap seed: `backend/sql/ops_access_setup.sql`.
 Bootstrap by SQL once (chicken-and-egg is intentional); after that the screen can add more ops-admins.
 
-**What it does** (all `POST /api/access/admin/*`, every call re-checks the caller against
-`ols_ops_access`):
+**What it does** (all `POST /api/access/admin/*`; every call re-checks the caller server-side —
+`_require_user_admin` for the User-access endpoints, `_require_ops_admin` for `/admin/ops`):
 - **Catalogue-driven form** (`/admin/catalogue`) — pickers for screens, config scopes/categories,
   servers, apps, DBs, sections, plus levels & env. Data-driven lists (servers, OCC DBs) populate
   live; config tables are free-text; a new screen/section shows up once it's in its normal registry

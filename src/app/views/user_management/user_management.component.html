@@ -1,8 +1,7 @@
 <section class="ols-view ols-surface um">
   <header class="ols-view__head um__head">
     <div>
-      <span class="ols-view__eyebrow">Access Control</span>
-      <h1 class="ols-view__title">User Management</h1>
+      <h1 class="ols-view__title">Access Control</h1>
       <p class="ols-view__subtitle">Grant or revoke access for any active OLS user, and manage who else can use this screen.</p>
     </div>
     <span class="um__badge" title="You are listed in ols_ops_access">
@@ -20,7 +19,23 @@
     </div>
   }
 
-  <div class="um__grid">
+  @if (showTabBar()) {
+    <div class="um__tabs" role="tablist" aria-label="User Management sections">
+      <button type="button" class="um__tab" role="tab" [class.is-active]="effectiveTab() === 'access'"
+              [attr.aria-selected]="effectiveTab() === 'access'" (click)="activeTab.set('access')">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="8" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        User access
+      </button>
+      <button type="button" class="um__tab" role="tab" [class.is-active]="effectiveTab() === 'ops'"
+              [attr.aria-selected]="effectiveTab() === 'ops'" (click)="activeTab.set('ops')">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Manage access
+      </button>
+    </div>
+  }
+
+  <div class="um__tabpanels">
+    @if (effectiveTab() === 'access' && canUserTab()) {
     <!-- ============ Grant access to a user ============ -->
     <section class="ols-card um__card um__card--main">
       <div class="ols-card__title">
@@ -32,7 +47,7 @@
         <div class="um__search">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <input id="um-uid" type="text" placeholder="Enter OLS user id (e.g. JDOE)" autocomplete="off"
-                 [ngModel]="uidInput()" (ngModelChange)="uidInput.set($event)" (keyup.enter)="loadUser()" />
+                 [ngModel]="uidInput()" (ngModelChange)="uidInput.set($event.toUpperCase())" (keyup.enter)="loadUser()" />
         </div>
         <button type="button" class="um__btn um__btn--primary" (click)="loadUser()" [disabled]="loadingUser() || !uidInput().trim()">
           {{ loadingUser() ? 'Loading…' : 'Load user' }}
@@ -47,10 +62,14 @@
           </div>
         } @else {
           <div class="um__user">
-            <div class="um__avatar">{{ (lk.display_name || lk.username).charAt(0) }}</div>
+            <div class="um__avatar">{{ (lk.first_name || lk.display_name || lk.username).charAt(0) }}</div>
             <div class="um__user-body">
-              <div class="um__user-name">{{ lk.display_name || lk.username }}</div>
-              <div class="um__user-meta">{{ lk.username }}@if (lk.email) {<span> · {{ lk.email }}</span>}</div>
+              <div class="um__user-name">{{ userFullName(lk) }}</div>
+              <dl class="um__user-facts">
+                <div><dt>Username</dt><dd class="um__upper">{{ lk.username }}</dd></div>
+                @if (lk.guid) { <div><dt>GUID</dt><dd class="um__mono um__upper">{{ lk.guid }}</dd></div> }
+                @if (lk.email) { <div class="um__user-facts__wide"><dt>Email ID</dt><dd>{{ lk.email }}</dd></div> }
+              </dl>
             </div>
             <span class="um__user-ok">Active OLS user</span>
           </div>
@@ -173,7 +192,7 @@
                 </div>
               }
 
-              <div class="um__field">
+              <div class="um__field um__field--level">
                 <label>Level</label>
                 <div class="um__seg" role="group" aria-label="Access level">
                   @for (lv of allLevels; track lv) {
@@ -238,7 +257,9 @@
         </div>
       }
     </section>
+    }
 
+    @if (effectiveTab() === 'ops' && canOpsTab()) {
     <!-- ============ Ops-admin gate ============ -->
     <section class="ols-card um__card um__card--ops">
       <div class="ols-card__title">
@@ -248,48 +269,95 @@
       <p class="um__ops-note">These users can open User Management and hand out access. Removing a user takes effect
         immediately — including your own id (there is no self-lockout guard).</p>
 
-      <div class="um__pick um__pick--stack">
+      <!-- Validate a candidate, then add -->
+      <div class="um__addrow">
         <div class="um__search">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           <input id="um-ops" type="text" placeholder="OLS user id (e.g. MSMITH)" autocomplete="off"
-                 [ngModel]="opsUidInput()" (ngModelChange)="opsUidInput.set($event)" (keyup.enter)="addOps()" />
+                 [ngModel]="opsUidInput()" (ngModelChange)="onOpsUidChange($event)" (keyup.enter)="validateOps()" />
         </div>
-        <button type="button" class="um__btn um__btn--primary" (click)="addOps()" [disabled]="savingOps() || !opsUidInput().trim()">
-          {{ savingOps() ? 'Adding…' : 'Add ops-admin' }}
+        <button type="button" class="um__btn" (click)="validateOps()" [disabled]="opsValidating() || !opsUidInput().trim()">
+          {{ opsValidating() ? 'Validating…' : 'Validate' }}
         </button>
       </div>
 
+      @if (opsLookup(); as lk) {
+        @if (!lk.active) {
+          <div class="um__notfound">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.5v5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.05" fill="currentColor"/></svg>
+            <span>{{ lk.message || 'The ' + lk.username + ' user is not active in OLS.' }}</span>
+          </div>
+        } @else {
+          <div class="um__user">
+            <div class="um__avatar">{{ (lk.first_name || lk.display_name || lk.username).charAt(0) }}</div>
+            <div class="um__user-body">
+              <div class="um__user-name">{{ userFullName(lk) }}</div>
+              <dl class="um__user-facts">
+                <div><dt>Username</dt><dd class="um__upper">{{ lk.username }}</dd></div>
+                @if (lk.guid) { <div><dt>GUID</dt><dd class="um__mono um__upper">{{ lk.guid }}</dd></div> }
+                @if (lk.email) { <div class="um__user-facts__wide"><dt>Email ID</dt><dd>{{ lk.email }}</dd></div> }
+              </dl>
+            </div>
+            <span class="um__user-ok">Active OLS user</span>
+          </div>
+          <button type="button" class="um__btn um__btn--primary um__addops" (click)="addOps()" [disabled]="savingOps() || !canAddOps()">
+            {{ savingOps() ? 'Adding…' : 'Add ' + lk.username + ' as ops-admin' }}
+          </button>
+        }
+      } @else {
+        <span class="um__copy-hint">Validate the user id first — this confirms they exist and are an active OLS user, and shows their details before you grant access.</span>
+      }
+
+      <!-- Current ops-admins (searchable) -->
       @if (opsAdmins().length === 0) {
         <p class="um__empty">No ops-admins listed.</p>
       } @else {
-        <ul class="um__ops">
-          @for (o of opsAdmins(); track o.username) {
-            <li class="um__ops-item" [class.is-off]="o.is_active !== 'Y'">
-              <span class="um__ops-avatar">{{ o.username.charAt(0) }}</span>
-              <span class="um__ops-name">{{ o.username }}</span>
-              @if (o.is_active !== 'Y') { <span class="um__ops-off">disabled</span> }
-              <div class="um__ops-actions">
-                <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_users === 'Y'" (click)="toggleUsers(o)"
-                        [title]="o.can_users === 'Y' ? 'User Management granted — click to revoke' : 'Grant User Management (super admin)'">
-                  User Mgmt {{ o.can_users === 'Y' ? '✓' : '✕' }}
-                </button>
-                <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_sql === 'Y'" (click)="toggleSql(o)"
-                        [title]="o.can_sql === 'Y' ? 'S-Studio granted — click to revoke' : 'Grant S-Studio (SQL console)'">
-                  S-Studio {{ o.can_sql === 'Y' ? '✓' : '✕' }}
-                </button>
-                <button type="button" class="um__ops-btn" (click)="editOps(o)"
-                        [title]="o.is_active === 'Y' ? 'Disable (keep the row)' : 'Enable'">
-                  {{ o.is_active === 'Y' ? 'Disable' : 'Enable' }}
-                </button>
-                <button type="button" class="um__ops-btn um__ops-btn--danger" (click)="removeOps(o.username)" title="Remove (hard delete)">
-                  Remove
-                </button>
-              </div>
-            </li>
-          }
-        </ul>
+        <div class="um__sec"><span>Current ops-admins</span><span class="um__count">{{ opsAdmins().length }}</span></div>
+        <div class="um__search um__search--full">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <input type="text" placeholder="Filter by name, id or email…" autocomplete="off"
+                 [ngModel]="opsFilter()" (ngModelChange)="opsFilter.set($event)" />
+        </div>
+
+        @if (filteredOps().length === 0) {
+          <p class="um__empty">No ops-admins match “{{ opsFilter() }}”.</p>
+        } @else {
+          <ul class="um__ops">
+            @for (o of filteredOps(); track o.username) {
+              <li class="um__ops-item" [class.is-off]="o.is_active !== 'Y'">
+                <div class="um__ops-id">
+                  <span class="um__ops-avatar">{{ (o.first_name || o.username).charAt(0) }}</span>
+                  <div class="um__ops-idbody">
+                    <div class="um__ops-name">{{ userFullName(o) }}@if (o.is_active !== 'Y') { <span class="um__ops-off">disabled</span> }</div>
+                    <div class="um__ops-meta"><span class="um__upper">{{ o.username }}</span>@if (o.email) {<span> · {{ o.email }}</span>}</div>
+                  </div>
+                </div>
+                <div class="um__ops-actions">
+                  <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_users === 'Y'" (click)="toggleUsers(o)"
+                          [disabled]="o.is_active !== 'Y'"
+                          [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_users === 'Y' ? 'User Management granted — click to revoke' : 'Grant User Management (super admin)')">
+                    User Mgmt {{ o.can_users === 'Y' ? '✓' : '✕' }}
+                  </button>
+                  <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_sql === 'Y'" (click)="toggleSql(o)"
+                          [disabled]="o.is_active !== 'Y'"
+                          [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_sql === 'Y' ? 'S-Studio granted — click to revoke' : 'Grant S-Studio (SQL console)')">
+                    S-Studio {{ o.can_sql === 'Y' ? '✓' : '✕' }}
+                  </button>
+                  <button type="button" class="um__ops-btn" (click)="editOps(o)"
+                          [title]="o.is_active === 'Y' ? 'Disable (keep the row)' : 'Enable'">
+                    {{ o.is_active === 'Y' ? 'Disable' : 'Enable' }}
+                  </button>
+                  <button type="button" class="um__ops-btn um__ops-btn--danger" (click)="removeOps(o.username)" title="Remove (hard delete)">
+                    Remove
+                  </button>
+                </div>
+              </li>
+            }
+          </ul>
+        }
       }
     </section>
+    }
   </div>
 
   <!-- ============ Source-access preview modal ============ -->

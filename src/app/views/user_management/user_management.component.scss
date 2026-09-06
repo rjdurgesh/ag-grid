@@ -9,6 +9,11 @@
 
   &__head {
     align-items: flex-start;
+    gap: 16px;
+
+    /* Let the subtitle run on one line when there's room (override the shared 68ch cap); it
+       still wraps naturally when the header is narrow. */
+    .ols-view__subtitle { max-width: none; }
   }
 
   /* ---- Ops-admin badge ---- */
@@ -31,23 +36,56 @@
     svg { opacity: 0.95; }
   }
 
-  /* ---- Layout ---- */
-  &__grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.9fr) minmax(290px, 1fr);
-    gap: 20px;
-    align-items: start;
+  /* ---- Tabs ---- */
+  &__tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 18px;
+    padding-bottom: 0;
+    border-bottom: 1px solid var(--cui-border-color, #e4e6ec);
   }
-  @media (max-width: 1000px) {
-    &__grid { grid-template-columns: 1fr; }
+  &__tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    margin-bottom: -1px;                 /* sit the active underline on the container border */
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--cui-secondary-color, #6b7280);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+
+    svg { opacity: 0.85; }
+    &:hover { color: var(--cui-body-color); }
+    &.is-active {
+      color: var(--um-accent);
+      border-bottom-color: var(--um-accent);
+    }
   }
+  &__tab-badge {
+    min-width: 20px;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-align: center;
+    color: #fff;
+    background: var(--um-accent);
+  }
+  &__tabpanels { display: block; }
+  &__tabpanels &__card { max-width: 1200px; }
 
   &__card {
     /* .ols-card gives bg/border/radius/shadow; add a subtle top accent + inner rhythm. */
     position: relative;
     overflow: hidden;
 
-    &--main::before {
+    &--main::before,
+    &--ops::before {
       content: '';
       position: absolute;
       inset: 0 0 auto 0;
@@ -62,6 +100,7 @@
   select {
     width: 100%;
     height: 42px;
+    box-sizing: border-box;   /* keep the real height at 42px so the search icon stays centred */
     padding: 0 0.7rem;
     font-size: 0.9rem;
     color: var(--cui-body-color);
@@ -84,6 +123,7 @@
     position: relative;
     flex: 1 1 220px;
     min-width: 180px;
+    max-width: 340px;   /* keep the id search compact — a full-width box read as "huge" */
 
     input { padding-left: 38px; }
   }
@@ -92,9 +132,22 @@
     left: 12px;
     top: 50%;
     transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
     color: var(--um-accent);
     pointer-events: none;
   }
+  &__search--full { flex: 1 1 100%; width: 100%; min-width: 0; margin-top: 0.6rem; }
+
+  /* Validate-a-candidate row (search + button) in the Manage-access tab */
+  &__addrow {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.9rem;
+  }
+  &__addops { margin-top: 0.9rem; }   /* content width, not full-bleed */
 
   &__pick {
     display: flex;
@@ -207,6 +260,26 @@
   &__user-body { flex: 1 1 auto; min-width: 0; }
   &__user-name { font-weight: 700; color: var(--cui-emphasis-color, #1a1a2e); }
   &__user-meta { font-size: 0.82rem; color: var(--cui-secondary-color, #6b7280); overflow: hidden; text-overflow: ellipsis; }
+  /* Verification facts (username / email / GUID) shown under the loaded name. */
+  &__user-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));   /* Username | GUID on one row */
+    gap: 8px 28px;
+    margin: 6px 0 0;
+
+    > div { min-width: 0; }
+    &__wide { grid-column: 1 / -1; }                     /* Email ID drops to its own row */
+    dt {
+      font-size: 0.64rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+      color: var(--cui-secondary-color, #9aa3b0);
+    }
+    dd {
+      margin: 0; font-size: 0.84rem; color: var(--cui-body-color);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+  }
+  &__mono { font-family: var(--cui-font-monospace, ui-monospace, "Cascadia Code", Menlo, Consolas, monospace); font-size: 0.8rem; }
+  &__upper { text-transform: uppercase; }
   &__user-ok {
     flex: none;
     font-size: 0.68rem;
@@ -437,6 +510,9 @@
     }
     &--wide { flex: 1 1 230px; }
     &--btn { flex: 0 0 auto; }
+    /* Level holds a fixed-width segmented control — size the field to it and never shrink,
+       so the control can't overflow into the next field (e.g. Environment) on a crowded row. */
+    &--level { flex: 0 0 auto; min-width: auto; }
   }
 
   /* Segmented level control */
@@ -555,8 +631,10 @@
   &__ops-item {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.5rem 0.65rem;
+    justify-content: space-between;
+    gap: 0.5rem 0.9rem;
+    flex-wrap: wrap;                     /* actions drop to their own line before Remove can overflow */
+    padding: 0.6rem 0.75rem;
     background: var(--cui-tertiary-bg, #f6f8fa);
     border: 1px solid var(--cui-border-color, #e4e6ec);
     border-radius: 11px;
@@ -564,22 +642,31 @@
     &:hover { border-color: color-mix(in srgb, var(--um-accent) 40%, var(--cui-border-color)); }
     &.is-off { opacity: 0.6; }
   }
+  &__ops-id { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex: 1 1 240px; }
+  &__ops-idbody { min-width: 0; }
   &__ops-avatar {
     flex: none;
-    width: 30px; height: 30px;
+    width: 34px; height: 34px;
     display: grid; place-items: center;
     border-radius: 50%;
-    font-size: 0.8rem; font-weight: 800;
+    font-size: 0.85rem; font-weight: 800;
     text-transform: uppercase;
     color: var(--um-accent);
     background: color-mix(in srgb, var(--um-accent) 14%, transparent);
   }
-  &__ops-name { flex: 1 1 auto; font-weight: 600; color: var(--cui-emphasis-color, #1a1a2e); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  &__ops-name {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-weight: 700; color: var(--cui-emphasis-color, #1a1a2e);
+    min-width: 0;
+    span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
+  &__ops-meta { font-size: 0.78rem; color: var(--cui-secondary-color, #6b7280); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   &__ops-off {
-    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em;
+    flex: none;
+    font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700;
     color: var(--cui-warning, #f9b115);
   }
-  &__ops-actions { flex: none; display: inline-flex; gap: 0.35rem; }
+  &__ops-actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
   &__ops-btn {
     padding: 0.28rem 0.6rem;
     font-size: 0.75rem;
@@ -591,7 +678,8 @@
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 
-    &:hover { border-color: color-mix(in srgb, var(--um-accent) 45%, var(--cui-border-color)); color: var(--um-accent); }
+    &:hover:not(:disabled) { border-color: color-mix(in srgb, var(--um-accent) 45%, var(--cui-border-color)); color: var(--um-accent); }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
     &--danger {
       color: var(--cui-danger, #d13438);
       border-color: color-mix(in srgb, var(--cui-danger, #d13438) 30%, transparent);
@@ -604,7 +692,7 @@
         border-color: color-mix(in srgb, var(--cui-success, #2eb85c) 45%, transparent);
         background: color-mix(in srgb, var(--cui-success, #2eb85c) 10%, transparent);
       }
-      &:hover { color: var(--um-accent); border-color: color-mix(in srgb, var(--um-accent) 45%, var(--cui-border-color)); }
+      &:hover:not(:disabled) { color: var(--um-accent); border-color: color-mix(in srgb, var(--um-accent) 45%, var(--cui-border-color)); }
     }
   }
 

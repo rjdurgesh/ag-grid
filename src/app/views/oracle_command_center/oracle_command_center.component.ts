@@ -216,6 +216,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     if (this.clockTimer) {
       clearInterval(this.clockTimer);
     }
+    this.onDrawerResizeEnd();   // drop any in-flight drawer-resize listeners
   }
 
   // --- DB tabs --------------------------------------------------------------
@@ -625,6 +626,56 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     this.detailOpen.set(false);
     this.detail.set(null);
   }
+
+  /** Deep-dive drawer width (px). DRAWER_MIN is the original design width and acts as a hard floor:
+   *  the user may drag the drawer WIDER but never narrower than this. The choice is remembered per
+   *  browser. Signal-driven so the width binding updates under zoneless change detection. */
+  readonly DRAWER_MIN = 760;
+  readonly drawerWidth = signal<number>(this.readStoredDrawerWidth());
+
+  private readStoredDrawerWidth(): number {
+    try {
+      const v = Number(localStorage.getItem('occ.drawerWidth'));
+      if (Number.isFinite(v) && v >= this.DRAWER_MIN) {
+        return Math.min(v, Math.round(window.innerWidth * 0.98));
+      }
+    } catch { /* storage blocked / no window (SSR) — fall back to the floor */ }
+    return this.DRAWER_MIN;
+  }
+
+  private drawerResizing = false;
+  private drawerStartX = 0;
+  private drawerStartW = 0;
+
+  /** Pointer-down on the drawer's left-edge grip: begin a widen-only drag. */
+  onDrawerResizeStart(ev: PointerEvent): void {
+    ev.preventDefault();
+    this.drawerResizing = true;
+    this.drawerStartX = ev.clientX;
+    this.drawerStartW = this.drawerWidth();
+    window.addEventListener('pointermove', this.onDrawerResizeMove);
+    window.addEventListener('pointerup', this.onDrawerResizeEnd, { once: true });
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ew-resize';
+  }
+
+  private readonly onDrawerResizeMove = (ev: PointerEvent): void => {
+    if (!this.drawerResizing) { return; }
+    // The drawer is anchored to the right, so dragging the grip LEFT (clientX shrinks) widens it.
+    const delta = this.drawerStartX - ev.clientX;
+    const max = Math.round(window.innerWidth * 0.98);
+    const next = Math.min(max, Math.max(this.DRAWER_MIN, this.drawerStartW + delta));
+    this.drawerWidth.set(next);
+  };
+
+  private readonly onDrawerResizeEnd = (): void => {
+    if (!this.drawerResizing) { return; }
+    this.drawerResizing = false;
+    window.removeEventListener('pointermove', this.onDrawerResizeMove);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    try { localStorage.setItem('occ.drawerWidth', String(this.drawerWidth())); } catch { /* ignore */ }
+  };
 
   setPanel(key: string): void {
     this.activePanel.set(key);

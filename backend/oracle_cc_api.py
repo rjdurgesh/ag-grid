@@ -258,8 +258,8 @@ def _space_payload(rows: list[dict]) -> dict:
 
 @router.post("/{db}/top_segments")
 def top_segments(request: Request, db: str) -> dict:
-    """Top tables by segment bytes → their top-N partitions (tree), with a stale-stats chip.
-    Massages `database.fetch_top_segments`."""
+    """Top tables by segment bytes → **3-level tree** (Table → Partition → Subpartition), each node
+    with its own stale-stats chip. Massages `database.fetch_top_segments`."""
     t = _target(db)
     if ORACLE_CC_USE_DUMMY:
         return top_segments_dummy(t)
@@ -268,13 +268,18 @@ def top_segments(request: Request, db: str) -> dict:
         tables = raw.get("tables") or []
         if not tables:
             return {"status": "success", "columns": _TOP_COLS, "rows": []}
-        stats = {(s["table_name"], s.get("partition_name")): s for s in raw.get("stats") or []}
+        # Stats keyed by (table, partition, subpartition) — None for the levels that don't apply.
+        stats = {(s["table_name"], s.get("partition_name"), s.get("subpartition_name")): s
+                 for s in raw.get("stats") or []}
         parts_by_table: dict[str, list[dict]] = {}
         for p in raw.get("partitions") or []:
-            parts_by_table.setdefault(p["segment_name"], []).append(p)
+            parts_by_table.setdefault(p["table_name"], []).append(p)
+        subs_by_part: dict[tuple, list[dict]] = {}
+        for sp in raw.get("subpartitions") or []:
+            subs_by_part.setdefault((sp["table_name"], sp["partition_name"]), []).append(sp)
 
-        def cells(table: str, part: str | None = None) -> dict:
-            s = stats.get((table, part), {})
+        def cells(table: str, part: str | None = None, sub: str | None = None) -> dict:
+            s = stats.get((table, part, sub), {})
             fresh = (s.get("stale_stats") or "NO") != "YES"
             return {"num_rows": s.get("num_rows"), "last_analyzed": s.get("last_analyzed") or "—", **_stats_cell(fresh)}
 
@@ -282,12 +287,20 @@ def top_segments(request: Request, db: str) -> dict:
         for tb in tables:
             seg = tb["segment_name"]
             row = {"object": seg, "kind": "Table", "size_gb": tb["size_gb"], **cells(seg)}
-            children = [
-                {"object": p["partition_name"], "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, p["partition_name"])}
-                for p in parts_by_table.get(seg, [])
-            ]
-            if children:
-                row["__children"] = children
+            parts = []
+            for p in parts_by_table.get(seg, []):
+                pname = p["partition_name"]
+                prow = {"object": pname, "kind": "Partition", "size_gb": p["size_gb"], **cells(seg, pname)}
+                subs = [
+                    {"object": sp["subpartition_name"], "kind": "Subpartition", "size_gb": sp["size_gb"],
+                     **cells(seg, pname, sp["subpartition_name"])}
+                    for sp in subs_by_part.get((seg, pname), [])
+                ]
+                if subs:
+                    prow["__children"] = subs
+                parts.append(prow)
+            if parts:
+                row["__children"] = parts
             rows.append(row)
         return {"status": "success", "columns": _TOP_COLS, "rows": rows}
     except Exception:
@@ -899,8 +912,15 @@ def sessions(request: Request, db: str, body: SessionsQuery | None = None) -> di
 _SESS_CHIP = {"ACTIVE": "ok", "INACTIVE": "muted", "KILLED": "crit"}
 
 # Column keys that get a specific render regardless of their SQL type (everything else uses the
-# data-layer's inferred num/clob/text).
-_SESS_COL_OVERRIDE = {"status": "chip", "sql_id": "mono", "prev_sql_id": "mono", "sql_text": "clob"}
+# data-layer's inferred num/clob/text). Identifiers/hashes are forced to `mono` so they render as-is
+# (NO thousands-separator commas — SID 22931, not "22,931"); real quantities stay `num` (grouped).
+_SESS_COL_OVERRIDE = {
+    "status": "chip", "sql_text": "clob",
+    "sid": "mono", "serial#": "mono", "parent": "mono", "waiting_for": "mono",
+    "sql_id": "mono", "prev_sql_id": "mono", "plan_hash_value": "mono", "sql_hash_value": "mono",
+    "audsid": "mono", "user#": "mono", "sql_exec_id": "mono", "sql_child_number": "mono",
+    "prev_child_number": "mono", "row_wait_obj#": "mono",
+}
 # Tokens shown upper-cased in prettified labels.
 _SESS_ACRONYMS = {"sql", "id", "cpu", "pga", "pq", "pdml", "os", "db", "ols", "mb", "sid"}
 

@@ -230,18 +230,41 @@ td.mono { font-family: var(--occ-mono); }
 }
 .occ-drawer {
   position: fixed; top: 0; right: 0; z-index: 1086; height: 100vh; width: min(96vw, 760px);
+  max-width: 98vw;   /* inline [style.width] can grow it; never past the viewport */
   display: flex; flex-direction: column; background: var(--cui-body-bg); color: var(--cui-body-color);
   border-left: 1px solid var(--occ-line); box-shadow: -24px 0 60px rgba(0, 0, 0, 0.34);
   animation: occ-drawer-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+/* Left-edge grip: drag to widen (widen-only; floor enforced in the component). */
+.occ-drawer__resize {
+  position: absolute; top: 0; left: 0; z-index: 3; width: 9px; height: 100%;
+  cursor: ew-resize; touch-action: none;
+}
+.occ-drawer__resize::before {
+  content: ""; position: absolute; top: 0; left: 0; width: 3px; height: 100%;
+  background: transparent; transition: background 0.14s ease;
+}
+.occ-drawer__resize:hover::before,
+.occ-drawer__resize:active::before { background: var(--occ-accent); }
 .occ-drawer__head {
   display: flex; align-items: center; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--occ-line);
 }
 .occ-drawer__id { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .occ-drawer__title { margin: 0; font-size: 16px; font-weight: 800; font-family: var(--occ-mono); }
 .occ-drawer__close {
-  border: 0; background: transparent; color: var(--cui-secondary-color); font-size: 26px; line-height: 1;
-  cursor: pointer; padding: 0 4px; &:hover { color: var(--cui-body-color); }
+  flex: none; width: 34px; height: 34px; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 9px; background: transparent;
+  color: var(--cui-secondary-color); font-size: 24px; line-height: 1; cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+  &:hover {
+    color: var(--occ-crit, #e55353);
+    background: color-mix(in srgb, var(--occ-crit, #e55353) 12%, transparent);
+    border-color: color-mix(in srgb, var(--occ-crit, #e55353) 30%, transparent);
+  }
+  &:focus-visible {
+    outline: none; color: var(--cui-body-color);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--occ-accent, #4d5dfb) 30%, transparent);
+  }
 }
 .occ-kill-btn {
   border: 1px solid color-mix(in srgb, var(--occ-crit) 42%, transparent); color: var(--occ-crit);

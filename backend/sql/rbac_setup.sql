@@ -47,7 +47,7 @@ CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_activ
 
 COMMENT ON TABLE  ols_app_access                IS 'RBAC override grants for the OLS Dashboard (see RBAC_DESIGN.md).';
 COMMENT ON COLUMN ols_app_access.resource_type  IS 'SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION';
-COMMENT ON COLUMN ols_app_access.resource_scope IS 'log_analytics | config_ops:group|cib|retail | infra_health | service_console | oracle_command_center[:<db>]';
+COMMENT ON COLUMN ols_app_access.resource_scope IS 'log_analytics | config_ops:group|cib|retail | infra_health | service_console | oracle_command_center[:<db>] | user_management | docs | docs_technical';
 COMMENT ON COLUMN ols_app_access.access_level    IS 'READ | WRITE | DENY (DENY subtracts / excludes; per-table wins over category; SERVER/APP/DB DENY = "all EXCEPT")';
 
 --------------------------------------------------------------------------------
@@ -93,6 +93,12 @@ INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_ke
 VALUES ('BOB','TABLE','config_ops:cib','CIB_LIMIT_CONFIG','READ','PROD','ADMIN1','salt user table access');
 INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
 VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','PROD','ADMIN1','salt user table access');
+
+-- Delegate the User Management "User access" tab (grant/revoke access for OTHER users) ------
+--   Powerful — the holder can hand out any ols_app_access row. Does NOT make them an ops-admin
+--   (the exclusive "Manage access" tab stays gated by ols_ops_access). See access_examples.sql §10.
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('DBAUSER','SCREEN','user_management','*','READ','PROD','ADMIN1','User Management: User access tab');
 
 COMMIT;
 

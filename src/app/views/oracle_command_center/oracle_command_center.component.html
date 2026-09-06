@@ -711,23 +711,25 @@
 <!-- SID deep-dive drawer (outside .occ so its position:fixed isn't reset by the surface) -->
 @if (detailOpen()) {
   <div class="occ-drawer-backdrop" (click)="closeDetail()"></div>
-  <aside class="occ-drawer" role="dialog" aria-modal="true" aria-label="Session deep-dive">
+  <aside class="occ-drawer" role="dialog" aria-modal="true" aria-label="Session deep-dive" [style.width.px]="drawerWidth()">
+    <div class="occ-drawer__resize" (pointerdown)="onDrawerResizeStart($event)"
+         role="separator" aria-orientation="vertical" title="Drag to widen" aria-label="Drag to widen the panel"></div>
     @if (detailLoading() && !detail()) {
       <div class="occ-drawer__head">
         <h3 class="occ-drawer__title">Loading session…</h3>
-        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" title="Close" aria-label="Close">×</button>
       </div>
       <div class="occ-drawer__body"><app-loader variant="spinner" message="Fetching plan, ASH, stats…" /></div>
     } @else if (detailError()) {
       <div class="occ-drawer__head">
         <h3 class="occ-drawer__title">Session</h3>
-        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" title="Close" aria-label="Close">×</button>
       </div>
       <div class="occ-drawer__body"><div class="occ-empty occ-empty--err">Couldn't load the deep-dive. Close and retry.</div></div>
     } @else if (detail()?.available === false) {
       <div class="occ-drawer__head">
         <h3 class="occ-drawer__title">Session no longer active</h3>
-        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" title="Close" aria-label="Close">×</button>
       </div>
       <div class="occ-drawer__body">
         <div class="occ-empty">
@@ -751,7 +753,7 @@
         @if (canKill() && detailText(d.session, 'status') !== 'KILLED') {
           <button type="button" class="occ-kill-btn" (click)="killFromDetail()">Kill session</button>
         }
-        <button type="button" class="occ-drawer__close" (click)="closeDetail()" aria-label="Close">×</button>
+        <button type="button" class="occ-drawer__close" (click)="closeDetail()" title="Close" aria-label="Close">×</button>
       </div>
 
       <div class="occ-drawer__body">

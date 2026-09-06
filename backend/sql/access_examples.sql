@@ -16,7 +16,7 @@
 --   * VALIDATE ON SCREEN (dev, no DB needed): run in the browser console
 --       localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
 --     scenarios: admin | defaults_only | not_provisioned | config_group_cib | occ_group_write |
---       service_console | ops_admin | sql_studio |
+--       service_console | ops_admin | user_access_only | sql_studio |
 --       config_cib_only | config_group_only | config_retail_only        (one scope, WRITE) |
 --       config_cib_readonly | config_group_readonly | config_retail_readonly  (one scope, READ → no CRUD) |
 --       docs_user_only | docs_technical_only        (Documentation: one guide granted; defaults_only = none)
@@ -292,6 +292,22 @@ INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_ke
 VALUES ('CHANGE_ME','SCREEN','docs','*','READ','PROD','ADMIN','Docs: User Guide');
 INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
 VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: Technical Guide');
+
+
+--==============================================================================
+-- 10) USER MANAGEMENT — "User access" tab   (grant/revoke access FOR OTHER users)
+--     resource_type='SCREEN', resource_scope='user_management', key '*', level READ.
+--     ⚠ POWERFUL: this reveals the "User access" tab, from which the holder can grant/revoke ANY
+--     ols_app_access row for ANY active OLS user (up to full access) — treat it as "may hand out
+--     access" and give it sparingly. ADMIN and the full-access wildcard (SCREEN/*/*) get it
+--     automatically (no row needed). It is a view-only screen — WRITE is not used.
+--
+--     The OTHER tab, "Manage access" (managing the privileged operators in ols_ops_access), is NOT
+--     grantable here — it stays exclusive to ols_ops_access (see ops_access_setup.sql / §7). A row
+--     below does NOT make anyone an ops-admin.
+--==============================================================================
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','user_management','*','READ','PROD','ADMIN','User Management: User access tab (can grant/revoke for others)');
 
 
 COMMIT;

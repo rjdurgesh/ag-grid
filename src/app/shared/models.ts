@@ -289,7 +289,12 @@ export interface UserLookup {
   active: boolean;
   username: string;
   display_name?: string;
+  /** Given/first name and family/surname, when the directory provides them separately. */
+  first_name?: string;
+  surname?: string;
   email?: string;
+  /** Directory GUID (global unique id) for the user, shown for verification before granting. */
+  guid?: string;
   message?: string;
 }
 /** Response of `POST /api/access/admin/user`. */
@@ -306,6 +311,12 @@ export interface OpsAdmin {
   is_active: string;
   can_users?: string;
   can_sql?: string;
+  /** Identity fields (from ols_users) so the list can show the full name, not just the UID initial. */
+  display_name?: string;
+  first_name?: string;
+  surname?: string;
+  email?: string;
+  guid?: string;
 }
 
 // --- S-Studio (Config Ops SQL console — POST /api/sql_studio/* — see sql_studio_api.py) --------

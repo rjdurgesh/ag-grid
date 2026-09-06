@@ -134,7 +134,7 @@ export const environment: AppEnvironment = {
    *   localStorage.setItem('ols.devScenario','defaults_only'); location.reload();
    *   localStorage.removeItem('ols.devScenario'); location.reload();   // back to devRoles
    * Scenarios (see mock-api.interceptor DEV_SCENARIOS): 'admin' | 'defaults_only' | 'not_provisioned'
-   * | 'config_group_cib' | 'occ_group_write' | 'service_console' | 'ops_admin' | 'sql_studio'
+   * | 'config_group_cib' | 'occ_group_write' | 'service_console' | 'ops_admin' | 'user_access_only' | 'sql_studio'
    * | 'config_{cib,group,retail}_only' | 'config_{cib,group,retail}_readonly'
    * | 'docs_user_only' | 'docs_technical_only'  (Documentation: one guide granted; defaults_only = none).
    */

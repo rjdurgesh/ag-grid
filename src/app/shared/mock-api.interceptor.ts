@@ -134,7 +134,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     }
     return respond({
       status: 'success',
-      lookup: { exists: true, active: true, username: uid, display_name: titleCase(uid), email: `${uid.toLowerCase()}@ols.local` },
+      lookup: { exists: true, active: true, username: uid.toUpperCase(), ...umIdentity(uid) },
       grants: umStore.grants.get(uid.toUpperCase()) ?? [], snapshot: null
     });
   }
@@ -170,7 +170,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     }
     const ops_admins = [...umStore.ops.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([u, v]) => ({ username: u, is_active: v.active ? 'Y' : 'N', can_users: v.users ? 'Y' : 'N', can_sql: v.sql ? 'Y' : 'N' }));
+      .map(([u, v]) => ({ username: u, is_active: v.active ? 'Y' : 'N', can_users: v.users ? 'Y' : 'N', can_sql: v.sql ? 'Y' : 'N', ...umIdentity(u) }));
     return respond({ status: 'success', ops_admins });
   }
 
@@ -478,7 +478,7 @@ const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
   // Full access (like ADMIN + ops-admin + S-Studio).
   admin: () => baseActive({
     role: 'ADMIN', is_ops_admin: true, can_sql: true,
-    screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
+    screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'user_management'],
     write_screens: ['service_console', 'oracle_command_center'],
     config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [] },
     service: { all_apps: true, apps: [], denied_apps: [] },
@@ -521,8 +521,11 @@ const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
     write_screens: ['service_console'],
     service: { all_apps: false, apps: ['OLS_GROUP', 'OLS_CIB'], denied_apps: [] }
   }),
-  // Ops-admin (User Management) with NO other features — validates the Administration group appears.
+  // Ops-admin (User Management) with NO other features — sees BOTH tabs (super-user).
   ops_admin: () => baseActive({ is_ops_admin: true }),
+  // Granted "User access" ONLY (a SCREEN/user_management grant, NOT an ops-admin): sees the User
+  // access tab but NOT Manage access, and the tab strip is hidden (single tab). Validates the split.
+  user_access_only: () => baseActive({ screens: ['home', 'log_analytics', 'infra_health', 'user_management'] }),
   // S-Studio operator WITHOUT super-admin: can_sql only (is_ops_admin false → NO User Management),
   // plus config GROUP/CIB (S-Studio lives inside the scope screen, so it needs a config grant to reach).
   sql_studio: () => baseActive({
@@ -622,7 +625,7 @@ function mockAccessSnapshot(): Record<string, unknown> {
   if (role === 'ADMIN') {
     return {
       ...base,
-      screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center'],
+      screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'user_management'],
       write_screens: ['service_console', 'oracle_command_center'],
       config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [] },
       servers: ['*'], all_servers: true, denied_servers: [],
@@ -691,6 +694,30 @@ interface UmGrant {
 }
 const umNoUser = (uid: string) =>
   `The ${uid} user does not exist in OLS. Please submit the appropriate provisioning request before proceeding.`;
+
+/** Deterministic pseudo-GUID for a seed so the dev UI shows a stable, GUID-shaped id per user. */
+function umGuid(seed: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const next = () => { h = Math.imul(h ^ (h >>> 15), 2246822507); h ^= h >>> 13; return h >>> 0; };
+  const hx = (len: number) => (next() >>> 0).toString(16).padStart(8, '0').slice(0, len);
+  return `${hx(8)}-${hx(4)}-${hx(4)}-${hx(4)}-${hx(8)}${hx(4)}`.toUpperCase();
+}
+// Realistic name pools so dev data shows a clear first name AND surname (real data comes from ols_users).
+const UM_FIRST = ['James', 'Mary', 'Robert', 'Patricia', 'Michael', 'Linda', 'David', 'Elizabeth', 'Priya', 'Wei', 'Omar', 'Sofia', 'Arjun', 'Chen', 'Aisha', 'Marco'];
+const UM_LAST = ['Smith', 'Johnson', 'Williams', 'Brown', 'Garcia', 'Miller', 'Davis', 'Patel', 'Nguyen', 'Khan', 'Wong', 'Kumar', 'Rossi', 'Meyer', 'Silva', 'Okafor'];
+function umPick(arr: string[], seed: string, salt: number): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) { h = (h * 31 + seed.charCodeAt(i)) >>> 0; }
+  return arr[(h + salt) % arr.length];
+}
+/** Synthesize first/surname/display/email/GUID for a uid (dev only — real data comes from ols_users). */
+function umIdentity(uid: string): { first_name: string; surname: string; display_name: string; email: string; guid: string } {
+  const key = uid.toUpperCase();
+  const first = umPick(UM_FIRST, key, 0);
+  const surname = umPick(UM_LAST, key, 9);
+  return { first_name: first, surname, display_name: `${first} ${surname}`, email: `${uid.toLowerCase()}@ols.local`, guid: umGuid(key) };
+}
 interface UmOps { active: boolean; users: boolean; sql: boolean; }
 const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, UmOps>() };
 let umSeeded = false;
@@ -1000,6 +1027,7 @@ function mockCatalogue(): Record<string, unknown> {
     screens: [
       { key: 'service_console', label: 'Service Console', write_capable: true },
       { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true },
+      { key: 'user_management', label: 'User Management — User access', write_capable: false },
       { key: 'docs', label: 'Docs — User Guide', write_capable: false },
       { key: 'docs_technical', label: 'Docs — Technical Guide', write_capable: false }
     ],

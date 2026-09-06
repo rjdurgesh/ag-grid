@@ -164,9 +164,10 @@ def fetch_space(db_config: Any) -> list[dict]:
 # =============================================================================
 
 def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int) -> dict:
-    """Three queries on one connection → {tables, stats, partitions}, all scoped to the top-N
-    table names so the stats/partition scans never touch the whole schema. The API assembles
-    the tree. (Example of the multi-query-in-one-function pattern.)"""
+    """Four queries on one connection → {tables, stats, partitions, subpartitions}, all scoped to the
+    top-N table names so the scans never touch the whole schema. The API assembles the 3-level tree
+    (Table → Partition → Subpartition). Composite tables keep no bytes at the partition level, so a
+    partition's size is rolled up from its subpartition segments (via dba_tab_subpartitions)."""
     connection = None
     cursor = None
     try:
@@ -188,41 +189,77 @@ def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int)
 
         names = [t["segment_name"] for t in tables]
         if not names:
-            return {"tables": [], "stats": [], "partitions": []}
+            return {"tables": [], "stats": [], "partitions": [], "subpartitions": []}
 
-        # Bind the top-N names as an IN-list (:n0, :n1, …) so the next two queries touch ONLY
-        # those tables — placeholders are tokens, names bind as values → injection-safe.
+        # Bind the top-N names as an IN-list (:n0, :n1, …) so the scoped scans touch ONLY those
+        # tables — placeholders are tokens, names bind as values → injection-safe.
         ph = ", ".join(f":n{i}" for i in range(len(names)))
         name_binds = {f"n{i}": n for i, n in enumerate(names)}
 
-        # 2) Stats for just those tables + their partitions.
+        # 2) Stats at every level (table / partition / subpartition) for just those tables — keyed
+        #    by (table, partition_name, subpartition_name) so each tree node gets its own chip.
         cursor.execute(f"""
-            SELECT object_type, table_name, partition_name, num_rows, stale_stats,
+            SELECT object_type, table_name, partition_name, subpartition_name, num_rows, stale_stats,
                    TO_CHAR(last_analyzed, 'DD-Mon HH24:MI') AS last_analyzed
               FROM dba_tab_statistics
-             WHERE owner = :owner AND object_type IN ('TABLE','PARTITION')
+             WHERE owner = :owner AND object_type IN ('TABLE','PARTITION','SUBPARTITION')
                AND table_name IN ({ph})
         """, {"owner": owner, **name_binds})
         cols = [c[0].lower() for c in cursor.description]
         stats = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-        # 3) Top-N partitions per table in one windowed query.
+        # 3) Top-N partitions per table. A partition's bytes = its own TABLE PARTITION segment
+        #    (range/list tables) OR the roll-up of its TABLE SUBPARTITION segments (composite tables,
+        #    where the partition itself has no segment) — hence the UNION ALL. dba_tab_subpartitions
+        #    maps each subpartition to its parent partition (dba_segments has no parent-partition col).
         cursor.execute(f"""
-            SELECT segment_name, partition_name, size_gb FROM (
-                SELECT segment_name, partition_name,
+            SELECT table_name, partition_name, size_gb FROM (
+                SELECT table_name, partition_name,
                        ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
-                       ROW_NUMBER() OVER (PARTITION BY segment_name ORDER BY SUM(bytes) DESC) AS rn
-                  FROM dba_segments
-                 WHERE owner = :owner AND segment_name IN ({ph})
-                   AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
-                 GROUP BY segment_name, partition_name
+                       ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY SUM(bytes) DESC) AS rn
+                  FROM (
+                    SELECT segment_name AS table_name, partition_name, bytes
+                      FROM dba_segments
+                     WHERE owner = :owner AND segment_type = 'TABLE PARTITION'
+                       AND segment_name IN ({ph})
+                    UNION ALL
+                    SELECT sp.table_name, sp.partition_name, seg.bytes
+                      FROM dba_tab_subpartitions sp
+                      JOIN dba_segments seg
+                        ON seg.owner = sp.table_owner AND seg.segment_name = sp.table_name
+                       AND seg.partition_name = sp.subpartition_name
+                       AND seg.segment_type = 'TABLE SUBPARTITION'
+                     WHERE sp.table_owner = :owner AND sp.table_name IN ({ph})
+                  )
+                 GROUP BY table_name, partition_name
             ) WHERE rn <= :lim
-            ORDER BY segment_name, size_gb DESC
+            ORDER BY table_name, size_gb DESC
         """, {"owner": owner, "lim": child_limit, **name_binds})
         cols = [c[0].lower() for c in cursor.description]
         partitions = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-        return {"tables": tables, "stats": stats, "partitions": partitions}
+        # 4) Top-N subpartitions per partition (composite tables only). dba_segments' partition_name
+        #    on a TABLE SUBPARTITION segment IS the subpartition name; the join gives the parent.
+        cursor.execute(f"""
+            SELECT table_name, partition_name, subpartition_name, size_gb FROM (
+                SELECT sp.table_name, sp.partition_name, sp.subpartition_name,
+                       ROUND(SUM(seg.bytes)/1024/1024/1024, 2) AS size_gb,
+                       ROW_NUMBER() OVER (PARTITION BY sp.table_name, sp.partition_name
+                                          ORDER BY SUM(seg.bytes) DESC) AS rn
+                  FROM dba_tab_subpartitions sp
+                  JOIN dba_segments seg
+                    ON seg.owner = sp.table_owner AND seg.segment_name = sp.table_name
+                   AND seg.partition_name = sp.subpartition_name
+                   AND seg.segment_type = 'TABLE SUBPARTITION'
+                 WHERE sp.table_owner = :owner AND sp.table_name IN ({ph})
+                 GROUP BY sp.table_name, sp.partition_name, sp.subpartition_name
+            ) WHERE rn <= :lim
+            ORDER BY table_name, partition_name, size_gb DESC
+        """, {"owner": owner, "lim": child_limit, **name_binds})
+        cols = [c[0].lower() for c in cursor.description]
+        subpartitions = [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+        return {"tables": tables, "stats": stats, "partitions": partitions, "subpartitions": subpartitions}
     finally:
         if cursor:
             cursor.close()
