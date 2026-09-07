@@ -138,6 +138,17 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
       grants: umStore.grants.get(uid.toUpperCase()) ?? [], snapshot: null
     });
   }
+  if (path === '/api/access/admin/users') {
+    umSeed();
+    const users = [...umStore.grants.entries()]
+      .filter(([, gs]) => (gs?.length ?? 0) > 0)
+      .map(([u, gs]) => ({
+        username: u.toUpperCase(), ...umIdentity(u),
+        grant_count: gs.length, features: umFeatures(gs)
+      }))
+      .sort((a, b) => (a.display_name || a.username).localeCompare(b.display_name || b.username));
+    return respond({ status: 'success', users });
+  }
   if (path === '/api/access/admin/grant') {
     const g = (req.body ?? {}) as UmGrant;
     return respond({ status: 'success', grants: umUpsertGrant(g) });
@@ -690,7 +701,7 @@ function mockAccessSnapshot(): Record<string, unknown> {
 
 interface UmGrant {
   username: string; resource_type: string; resource_scope: string;
-  resource_key: string; access_level: string; app_env: string;
+  resource_key: string; access_level: string;
 }
 const umNoUser = (uid: string) =>
   `The ${uid} user does not exist in OLS. Please submit the appropriate provisioning request before proceeding.`;
@@ -718,6 +729,25 @@ function umIdentity(uid: string): { first_name: string; surname: string; display
   const surname = umPick(UM_LAST, key, 9);
   return { first_name: first, surname, display_name: `${first} ${surname}`, email: `${uid.toLowerCase()}@ols.local`, guid: umGuid(key) };
 }
+/** Summarise a user's grants into high-level feature areas (mirrors access_api._feature_label). */
+function umFeatures(grants: UmGrant[]): string[] {
+  const feats = new Set<string>();
+  for (const g of grants) {
+    if ((g.access_level || '').toUpperCase() === 'DENY') { continue; }
+    const rt = (g.resource_type || '').toUpperCase();
+    const rs = g.resource_scope || '';
+    if (rt === 'SCREEN' && rs === '*') { feats.add('Full access'); continue; }
+    if (rs.startsWith('config_ops:') || rt === 'TABLE' || rt === 'TABLE_CATEGORY') { feats.add('Config Ops'); }
+    else if (rs === 'service_console') { feats.add('Service Console'); }
+    else if (rs === 'oracle_command_center' || rt === 'DB') { feats.add('Oracle Command Center'); }
+    else if (rs === 'user_management') { feats.add('User access'); }
+    else if (rs === 'docs' || rs === 'docs_technical') { feats.add('Docs'); }
+    else if (rs === 'log_analytics' || rt === 'SERVER') { feats.add('Log Analytics'); }
+    else if (rs === 'infra_health') { feats.add('Infra Health'); }
+    else if (rt === 'REGRESSION') { feats.add('Regression'); }
+  }
+  return [...feats].sort();
+}
 interface UmOps { active: boolean; users: boolean; sql: boolean; }
 const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, UmOps>() };
 let umSeeded = false;
@@ -731,16 +761,36 @@ function umSeed(): void {
   umStore.ops.set('DBAUSER', { active: true, users: true, sql: false });
   umStore.ops.set('SQLONLY', { active: true, users: false, sql: true });   // S-Studio, NOT super-admin
   umStore.grants.set('JDOE', [
-    { username: 'JDOE', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ', app_env: 'PROD' },
-    { username: 'JDOE', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ', app_env: 'PROD' },
-    { username: 'JDOE', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'WRITE', app_env: 'PROD' },
-    { username: 'JDOE', resource_type: 'SECTION', resource_scope: 'oracle_command_center', resource_key: 'sql_intelligence', access_level: 'DENY', app_env: 'PROD' }
+    { username: 'JDOE', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ' },
+    { username: 'JDOE', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ' },
+    { username: 'JDOE', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'WRITE' },
+    { username: 'JDOE', resource_type: 'SECTION', resource_scope: 'oracle_command_center', resource_key: 'sql_intelligence', access_level: 'DENY' }
   ]);
+  // A few more granted users so the "who has access" roster demonstrates sorting / filtering / features.
+  umStore.grants.set('MSMITH', [
+    { username: 'MSMITH', resource_type: 'SCREEN', resource_scope: 'service_console', resource_key: '*', access_level: 'WRITE' },
+    { username: 'MSMITH', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'cib_batch', access_level: 'READ' }
+  ]);
+  umStore.grants.set('RPATEL', [
+    { username: 'RPATEL', resource_type: 'TABLE_CATEGORY', resource_scope: 'config_ops:group', resource_key: 'OMT-BOTH', access_level: 'WRITE' },
+    { username: 'RPATEL', resource_type: 'SCREEN', resource_scope: 'user_management', resource_key: '*', access_level: 'READ' }
+  ]);
+  umStore.grants.set('AKHAN', [
+    { username: 'AKHAN', resource_type: 'SCREEN', resource_scope: '*', resource_key: '*', access_level: 'READ' }
+  ]);
+  // Bulk demo users so the roster crosses one page (pagination is visible in dev).
+  const demoScopes = ['service_console', 'oracle_command_center', 'user_management', 'docs', 'log_analytics'];
+  for (let i = 1; i <= 11; i++) {
+    const u = 'USER' + String(i).padStart(2, '0');
+    umStore.grants.set(u, [
+      { username: u, resource_type: 'SCREEN', resource_scope: demoScopes[i % demoScopes.length], resource_key: '*', access_level: 'READ' }
+    ]);
+  }
 }
 
 function umKeyEq(a: UmGrant, b: UmGrant): boolean {
   return a.resource_type === b.resource_type && a.resource_scope === b.resource_scope &&
-    (a.resource_key || '').toUpperCase() === (b.resource_key || '').toUpperCase() && a.app_env === b.app_env;
+    (a.resource_key || '').toUpperCase() === (b.resource_key || '').toUpperCase();
 }
 
 function umUpsertGrant(g: UmGrant): UmGrant[] {

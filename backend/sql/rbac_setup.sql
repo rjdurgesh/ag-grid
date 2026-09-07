@@ -2,7 +2,7 @@
 -- RBAC setup for the OLS Dashboard
 --   * ols_users        : EXISTING table (identity + base role) — NOT created here,
 --                        only READ. We rely on these columns:
---                          USERNAME, FIRSTNAME, LASTNAME, EMAILID,
+--                          USERNAME, FIRSTNAME, SURNAME, EMAIL, GUID,
 --                          LGCL_DEL_FLG ('N' = active),
 --                          IS_ADMIN, IS_READ, IS_SALT  ('Y'/'N')
 --   * ols_app_access   : NEW table (this script) — the fine-grained override grants.
@@ -27,7 +27,6 @@ CREATE TABLE ols_app_access (
   resource_scope VARCHAR2(64)  NOT NULL,                            -- log_analytics | infra_health | config_ops:group|cib|retail | service_console | oracle_command_center
   resource_key   VARCHAR2(128) DEFAULT '*' NOT NULL,               -- server | app(OLS_GROUP…) | db(group,cib_batch…) | table | category | section | '*'
   access_level   VARCHAR2(10)  NOT NULL,                            -- READ | WRITE | DENY
-  app_env        VARCHAR2(10)  DEFAULT 'PROD' NOT NULL,             -- PROD | STG | DEV | '*' (all envs)
   is_active      CHAR(1)       DEFAULT 'Y' NOT NULL,                -- Y active, N revoked (kept for audit)
   granted_by     VARCHAR2(64),
   granted_on     DATE          DEFAULT SYSDATE,
@@ -38,9 +37,9 @@ CREATE TABLE ols_app_access (
   CONSTRAINT ols_app_access_ck_act   CHECK (is_active     IN ('Y','N'))
 );
 
--- Prevent duplicate grants for the same user/resource/env.
+-- Prevent duplicate grants for the same user/resource (access is env-independent — one row per resource).
 CREATE UNIQUE INDEX ols_app_access_uq
-  ON ols_app_access (UPPER(username), resource_type, resource_scope, UPPER(resource_key), app_env);
+  ON ols_app_access (UPPER(username), resource_type, resource_scope, UPPER(resource_key));
 
 -- Fast lookup for the /api/access/me snapshot.
 CREATE INDEX ols_app_access_ix_user ON ols_app_access (UPPER(username), is_active);
@@ -51,54 +50,75 @@ COMMENT ON COLUMN ols_app_access.resource_scope IS 'log_analytics | config_ops:g
 COMMENT ON COLUMN ols_app_access.access_level    IS 'READ | WRITE | DENY (DENY subtracts / excludes; per-table wins over category; SERVER/APP/DB DENY = "all EXCEPT")';
 
 --------------------------------------------------------------------------------
--- 3) Sample grants (edit usernames / envs to taste, then COMMIT)
+-- 2b) MIGRATION for an EXISTING table that still has the old APP_ENV column
+--     Access is now env-independent — the per-grant APP_ENV column is removed. On an existing
+--     install, run these ONCE (DESTRUCTIVE of the app_env dimension). Dedupe FIRST, because rows
+--     that differed only by app_env collapse to one under the new unique key:
+--
+--       -- 1. Collapse env duplicates, keeping the strongest level per (user,resource):
+--       --    WRITE > READ > DENY is a judgement call — review before running. Simple version keeps
+--       --    the most-recently granted row:
+--       DELETE FROM ols_app_access a
+--        WHERE a.access_id NOT IN (
+--          SELECT MAX(b.access_id) FROM ols_app_access b
+--           GROUP BY UPPER(b.username), b.resource_type, b.resource_scope, UPPER(b.resource_key));
+--       -- 2. Drop the old unique index, the column, then recreate the index without app_env:
+--       DROP INDEX ols_app_access_uq;
+--       ALTER TABLE ols_app_access DROP COLUMN app_env;
+--       CREATE UNIQUE INDEX ols_app_access_uq
+--         ON ols_app_access (UPPER(username), resource_type, resource_scope, UPPER(resource_key));
+--       COMMIT;
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+-- 3) Sample grants (edit usernames to taste, then COMMIT)
 --    NOTE: ADMIN users need NO rows here — set IS_ADMIN='Y' on ols_users and they
 --          get everything. These rows are only for READ / SALT users.
 --------------------------------------------------------------------------------
 
 -- READ user JDOE ------------------------------------------------------------
 -- Log Analytics: only server eurv15
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('JDOE','SERVER','log_analytics','eurv15','READ','PROD','ADMIN1','log access to one server');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('JDOE','SERVER','log_analytics','eurv15','READ','ADMIN1','log access to one server');
 -- Config Ops (Group): all FUNCTIONAL tables, read
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('JDOE','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','READ','PROD','ADMIN1','all functional group tables');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('JDOE','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','READ','ADMIN1','all functional group tables');
 -- Config Ops (Group): write ONE table
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('JDOE','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','PROD','ADMIN1','edit cost centre');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('JDOE','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','ADMIN1','edit cost centre');
 -- Config Ops (Group): explicitly hide one table the category granted
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('JDOE','TABLE','config_ops:group','GRP_GL_MAPPING','DENY','PROD','ADMIN1','not for this user');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('JDOE','TABLE','config_ops:group','GRP_GL_MAPPING','DENY','ADMIN1','not for this user');
 -- Oracle Command Center: hide the SQL Intelligence section
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('JDOE','SECTION','oracle_command_center','sql_intelligence','DENY','PROD','ADMIN1','hide SQL Intelligence');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('JDOE','SECTION','oracle_command_center','sql_intelligence','DENY','ADMIN1','hide SQL Intelligence');
 
 -- READ user DBAUSER (a DBA who can act) -------------------------------------
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','SCREEN','service_console','*','WRITE','PROD','ADMIN1','can start/stop services');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','SERVER','log_analytics','*','READ','PROD','ADMIN1','all log servers');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','SCREEN','service_console','*','WRITE','ADMIN1','can start/stop services');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','SERVER','log_analytics','*','READ','ADMIN1','all log servers');
 -- Infra Health, per APP (keys: OLS_GROUP | OLS_CIB | OLS_RETAIL | POSEIDON; '*' = all apps)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','APP','infra_health','OLS_GROUP','READ','PROD','ADMIN1','Infra Health: only OLS_GROUP');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','APP','infra_health','OLS_GROUP','READ','ADMIN1','Infra Health: only OLS_GROUP');
 -- Oracle Command Center, per DB + per-DB level (keys: group | cib_batch | cib_reporting |
 -- retail_batch | retail_reporting; '*' = all DBs). WRITE = kill/apply on that DB, READ = view only.
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','DB','oracle_command_center','group','WRITE','PROD','ADMIN1','OCC: write to GROUP');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','DB','oracle_command_center','cib_batch','READ','PROD','ADMIN1','OCC: read-only CIB BATCH');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','DB','oracle_command_center','group','WRITE','ADMIN1','OCC: write to GROUP');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','DB','oracle_command_center','cib_batch','READ','ADMIN1','OCC: read-only CIB BATCH');
 
 -- SALT user BOB (IS_SALT='Y' on ols_users) : Config-Ops-only, a few CIB tables -
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('BOB','TABLE','config_ops:cib','CIB_LIMIT_CONFIG','READ','PROD','ADMIN1','salt user table access');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','PROD','ADMIN1','salt user table access');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('BOB','TABLE','config_ops:cib','CIB_LIMIT_CONFIG','READ','ADMIN1','salt user table access');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','ADMIN1','salt user table access');
 
 -- Delegate the User Management "User access" tab (grant/revoke access for OTHER users) ------
 --   Powerful — the holder can hand out any ols_app_access row. Does NOT make them an ops-admin
 --   (the exclusive "Manage access" tab stays gated by ols_ops_access). See access_examples.sql §10.
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('DBAUSER','SCREEN','user_management','*','READ','PROD','ADMIN1','User Management: User access tab');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('DBAUSER','SCREEN','user_management','*','READ','ADMIN1','User Management: User access tab');
 
 COMMIT;
 
@@ -109,7 +129,7 @@ COMMIT;
 --   UPDATE ols_app_access SET is_active='N' WHERE username='JDOE' AND resource_type='SERVER' AND resource_key='eurv15';  COMMIT;
 --
 -- See everything a user has:
---   SELECT resource_type, resource_scope, resource_key, access_level, app_env, is_active
+--   SELECT resource_type, resource_scope, resource_key, access_level, is_active
 --     FROM ols_app_access WHERE UPPER(username)=UPPER('JDOE') ORDER BY resource_type, resource_scope;
 --
 -- Grant a whole category (bulk) vs one table:

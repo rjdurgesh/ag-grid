@@ -157,7 +157,6 @@ class GrantBody(BaseModel):
     resource_scope: str
     resource_key: str = "*"
     access_level: str = "READ"
-    app_env: str = "PROD"
 
 
 class GrantDeleteBody(BaseModel):
@@ -166,7 +165,6 @@ class GrantDeleteBody(BaseModel):
     resource_type: str
     resource_scope: str
     resource_key: str
-    app_env: str
 
 
 class OpsAdminBody(BaseModel):
@@ -201,8 +199,83 @@ def _is_active(identity: dict | None) -> bool:
 
 def _display_name(identity: dict) -> str:
     fn = (identity.get("firstname") or "").strip()
-    ln = (identity.get("lastname") or "").strip()
+    ln = (identity.get("surname") or "").strip()
     return (f"{fn} {ln}").strip() or (identity.get("username") or "")
+
+
+def _identity_fields(identity: dict) -> dict:
+    """The user-facing identity fields the UI shows, sourced from ols_users (firstname / surname /
+    email / guid). Returned by every lookup so the User-access + Manage-access cards can render
+    First Surname, email and GUID. Missing columns come back as ''."""
+    return {
+        "first_name": (identity.get("firstname") or "").strip(),
+        "surname": (identity.get("surname") or "").strip(),
+        "display_name": _display_name(identity),
+        "email": (identity.get("email") or "").strip(),
+        "guid": (identity.get("guid") or "").strip(),
+    }
+
+
+def _ops_rows(rows: list[dict]) -> list[dict]:
+    """Map raw ols_ops_access(+ols_users) rows to the UI OpsAdmin contract so the Manage-access list
+    shows the operator's real name / email / GUID (first_name / display_name / …)."""
+    return [{
+        "username": r.get("username"),
+        "is_active": r.get("is_active"),
+        "can_users": r.get("can_users"),
+        "can_sql": r.get("can_sql"),
+        **_identity_fields(r),
+    } for r in rows]
+
+
+def _feature_label(grant: dict) -> str | None:
+    """High-level area a single grant row reveals (for the roster's Features column). DENY rows reveal
+    nothing → None. Keep in step with the frontend describe()/typeTag() groupings."""
+    rt = (grant.get("resource_type") or "").upper()
+    rs = (grant.get("resource_scope") or "")
+    if (grant.get("access_level") or "").upper() == "DENY":
+        return None
+    if rt == "SCREEN" and rs == "*":
+        return "Full access"
+    if rs.startswith(_CONFIG_PREFIX) or rt in ("TABLE", "TABLE_CATEGORY"):
+        return "Config Ops"
+    if rs == "service_console":
+        return "Service Console"
+    if rs == "oracle_command_center" or rt == "DB":
+        return "Oracle Command Center"
+    if rs == "user_management":
+        return "User access"
+    if rs in ("docs", "docs_technical"):
+        return "Docs"
+    if rs == "log_analytics" or rt == "SERVER":
+        return "Log Analytics"
+    if rs == "infra_health":
+        return "Infra Health"
+    if rt == "REGRESSION":
+        return "Regression"
+    return None
+
+
+def _group_access_users(rows: list[dict]) -> list[dict]:
+    """Group raw ols_app_access(+identity) rows by user into the AccessUser roster contract:
+    identity + grant_count + a de-duped, sorted list of feature areas."""
+    by_user: dict[str, dict] = {}
+    for r in rows:
+        key = (r.get("username") or "").upper()
+        entry = by_user.get(key)
+        if entry is None:
+            entry = {"username": r.get("username"), **_identity_fields(r), "grant_count": 0, "_feats": set()}
+            by_user[key] = entry
+        entry["grant_count"] += 1
+        lbl = _feature_label(r)
+        if lbl:
+            entry["_feats"].add(lbl)
+    out = []
+    for e in by_user.values():
+        e["features"] = sorted(e.pop("_feats"))
+        out.append(e)
+    out.sort(key=lambda x: (x.get("display_name") or x.get("username") or "").upper())
+    return out
 
 
 def _scope_of(resource_scope: str | None) -> str | None:
@@ -237,8 +310,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     username = identity.get("username", "")
     base = {
         "status": "success", "active": True, "role": role, "app_env": app_env,
-        "username": username, "display_name": _display_name(identity),
-        "email": (identity.get("emailid") or "").strip(),
+        "username": username, **_identity_fields(identity),
         "is_ops_admin": bool(is_ops_admin),
         "can_sql": bool(can_sql),          # independent of is_ops_admin — S-Studio can be granted alone
     }
@@ -482,7 +554,7 @@ def access_me(request: Request, body: AccessQuery) -> dict:
     try:
         identity = database.fetch_user_identity(cfg, body.username)
         active = _is_active(identity)
-        grants = database.fetch_user_grants(cfg, body.username, body.app_env) if active else []
+        grants = database.fetch_user_grants(cfg, body.username) if active else []
         is_ops = database.fetch_is_ops_admin(cfg, body.username) if active else False
         # can_sql (S-Studio) is independent of is_ops_admin (User Management) — fetch it on its own.
         can_sql = database.fetch_can_sql(cfg, body.username) if active else False
@@ -506,7 +578,7 @@ def access_effective(request: Request, body: EffectiveQuery) -> dict:
         if _role_of(caller) != "ADMIN" or not _is_active(caller):
             raise HTTPException(status_code=403, detail="Admin access required")
         identity = database.fetch_user_identity(cfg, body.username)
-        grants = database.fetch_user_grants(cfg, body.username, body.app_env)
+        grants = database.fetch_user_grants(cfg, body.username)
         return {
             "status": "success",
             "identity": identity or {"username": body.username, "note": "not found"},
@@ -579,7 +651,7 @@ def _lookup_target(cfg, uid: str) -> tuple[bool, dict]:
     if not _is_active(identity):
         return False, {"exists": bool(identity), "active": False, "username": uid, "message": no_ols_user_msg(uid)}
     return True, {"exists": True, "active": True, "username": identity.get("username", uid),
-                  "display_name": _display_name(identity), "email": (identity.get("emailid") or "").strip()}
+                  **_identity_fields(identity)}
 
 
 @router.post("/admin/catalogue")
@@ -612,8 +684,7 @@ def admin_user(request: Request, body: AdminUserQuery) -> dict:
         grants = _dummy_grants(body.uid)
         snap = build_snapshot(ident, grants, body.app_env, is_ops_admin=_dummy_is_ops_admin(body.uid))
         return {"status": "success",
-                "lookup": {"exists": True, "active": True, "username": body.uid,
-                           "display_name": _display_name(ident), "email": (ident.get("emailid") or "").strip()},
+                "lookup": {"exists": True, "active": True, "username": body.uid, **_identity_fields(ident)},
                 "grants": grants, "snapshot": snap}
     try:
         ok, lk = _lookup_target(cfg, body.uid)
@@ -621,14 +692,30 @@ def admin_user(request: Request, body: AdminUserQuery) -> dict:
             return {"status": "success", "lookup": lk, "grants": [], "snapshot": None}
         ident = database.fetch_user_identity(cfg, body.uid)
         grants = database.fetch_all_grants(cfg, body.uid)
-        env_grants = database.fetch_user_grants(cfg, body.uid, body.app_env)
-        snap = build_snapshot(ident, env_grants, body.app_env,
+        snap = build_snapshot(ident, grants, body.app_env,
                               is_ops_admin=database.fetch_is_ops_admin(cfg, body.uid))
         return {"status": "success", "lookup": lk, "grants": grants, "snapshot": snap}
     except HTTPException:
         raise
     except Exception:
         logger.exception("admin/user failed for %s", body.uid)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/admin/users")
+def admin_users(request: Request, body: AdminQuery) -> dict:
+    """The "who has access" roster: every user with ≥1 active `ols_app_access` grant, joined to
+    `ols_users`, with a per-user grant count + summarised feature areas. Sorting/filtering is done
+    client-side. Gated by the User-access surface (ops-admin / ADMIN / SCREEN/user_management)."""
+    cfg = _require_user_admin(request, body.caller)
+    if ACCESS_USE_DUMMY:
+        return {"status": "success", "users": _dummy_access_users()}
+    try:
+        return {"status": "success", "users": _group_access_users(database.fetch_access_users(cfg))}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("admin/users failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -640,7 +727,6 @@ def admin_grant(request: Request, body: GrantBody) -> dict:
     rs = (body.resource_scope or "").strip()
     rk = (body.resource_key or "*").strip() or "*"
     lvl = (body.access_level or "").strip().upper()
-    env = (body.app_env or "PROD").strip() or "PROD"
     if rt not in _RESOURCE_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid resource_type '{rt}'")
     if lvl not in ("READ", "WRITE", "DENY"):
@@ -651,7 +737,7 @@ def admin_grant(request: Request, body: GrantBody) -> dict:
         ok, _ = _lookup_target(cfg, body.username)
         if not ok:
             raise HTTPException(status_code=422, detail=no_ols_user_msg(body.username))
-        database.grant_upsert(cfg, body.username, rt, rs, rk, lvl, env, body.caller)
+        database.grant_upsert(cfg, body.username, rt, rs, rk, lvl, body.caller)
         return {"status": "success", "grants": database.fetch_all_grants(cfg, body.username)}
     except HTTPException:
         raise
@@ -668,8 +754,7 @@ def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
         return {"status": "success", "dummy": True, "deleted": 1}
     try:
         n = database.grant_delete(cfg, body.username, (body.resource_type or "").strip().upper(),
-                                  (body.resource_scope or "").strip(), (body.resource_key or "").strip(),
-                                  (body.app_env or "").strip())
+                                  (body.resource_scope or "").strip(), (body.resource_key or "").strip())
         return {"status": "success", "deleted": n, "grants": database.fetch_all_grants(cfg, body.username)}
     except HTTPException:
         raise
@@ -691,7 +776,7 @@ def admin_ops(request: Request, body: OpsAdminBody) -> dict:
         return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
     try:
         if action == "list":
-            return {"status": "success", "ops_admins": database.fetch_ops_admins(cfg)}
+            return {"status": "success", "ops_admins": _ops_rows(database.fetch_ops_admins(cfg))}
         if not (body.uid or "").strip():
             raise HTTPException(status_code=400, detail="uid is required")
         if action == "add":
@@ -715,7 +800,7 @@ def admin_ops(request: Request, body: OpsAdminBody) -> dict:
             database.ops_admin_delete(cfg, body.uid)
         else:
             raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
-        return {"status": "success", "ops_admins": database.fetch_ops_admins(cfg)}
+        return {"status": "success", "ops_admins": _ops_rows(database.fetch_ops_admins(cfg))}
     except HTTPException:
         raise
     except Exception:
@@ -734,8 +819,9 @@ def _dummy_identity(username: str) -> dict:
     admin = "ADMIN" in u
     salt = "SALT" in u
     return {
-        "username": username, "firstname": username.title(), "lastname": "User",
-        "emailid": f"{username.lower()}@example.com", "lgcl_del_flg": "N",
+        "username": username, "firstname": username.title(), "surname": "User",
+        "email": f"{username.lower()}@example.com", "guid": f"{u}-0000-0000-0000-DUMMYGUID",
+        "lgcl_del_flg": "N",
         "is_admin": "Y" if admin else "N",
         "is_read": "N" if (admin or salt) else "Y",
         "is_salt": "Y" if salt else "N",
@@ -766,6 +852,17 @@ def _dummy_grants(username: str) -> list[dict]:
         {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "cib_batch", "access_level": "READ", "app_env": "PROD"},
         {"resource_type": "SECTION", "resource_scope": "oracle_command_center", "resource_key": "sql_intelligence", "access_level": "DENY", "app_env": "PROD"},
     ]
+
+
+def _dummy_access_users() -> list[dict]:
+    """Dev roster for `/admin/users`: a few canned users with varied grants (mirrors _dummy_grants),
+    resolved through the SAME grouping the real path uses so the shape matches."""
+    rows: list[dict] = []
+    for u in ("JDOE", "MSMITH", "RPATEL", "SALTUSER"):
+        ident = _dummy_identity(u)
+        for g in _dummy_grants(u):
+            rows.append({**g, "username": u, **ident})
+    return _group_access_users(rows)
 
 
 def _dummy_is_ops_admin(username: str) -> bool:

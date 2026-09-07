@@ -1534,7 +1534,7 @@ def fetch_user_identity(db_config: Any, username: str) -> dict | None:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT username, firstname, lastname, emailid, lgcl_del_flg,
+            SELECT username, firstname, surname, email, guid, lgcl_del_flg,
                    is_admin, is_read, is_salt
               FROM ols_users
              WHERE UPPER(username) = UPPER(:u)
@@ -1549,9 +1549,9 @@ def fetch_user_identity(db_config: Any, username: str) -> dict | None:
             connection.close()
 
 
-def fetch_user_grants(db_config: Any, username: str, app_env: str) -> list[dict]:
-    """Active override grants for a user from `ols_app_access`, scoped to the given environment
-    (rows where APP_ENV matches, or the wildcard '*'). Each row: resource_type, resource_scope,
+def fetch_user_grants(db_config: Any, username: str) -> list[dict]:
+    """Active override grants for a user from `ols_app_access`. Access is env-independent (there is no
+    per-grant environment), so every active grant applies. Each row: resource_type, resource_scope,
     resource_key, access_level. The API layer resolves these into the effective snapshot."""
     connection = None
     cursor = None
@@ -1559,12 +1559,38 @@ def fetch_user_grants(db_config: Any, username: str, app_env: str) -> list[dict]
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT username, resource_type, resource_scope, resource_key, access_level, app_env
+            SELECT username, resource_type, resource_scope, resource_key, access_level
               FROM ols_app_access
              WHERE UPPER(username) = UPPER(:u)
                AND is_active = 'Y'
-               AND (app_env = :env OR app_env = '*')
-        """, {"u": username, "env": app_env})
+        """, {"u": username})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_access_users(db_config: Any) -> list[dict]:
+    """Every ACTIVE `ols_app_access` grant row joined to `ols_users` identity — the raw data for the
+    "who has access" roster. The API layer groups these by username and summarises the features.
+    LEFT JOIN so a granted UID missing from ols_users still appears (identity columns NULL)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT a.username, a.resource_type, a.resource_scope, a.resource_key,
+                   a.access_level,
+                   u.firstname, u.surname, u.email, u.guid
+              FROM ols_app_access a
+              LEFT JOIN ols_users u ON UPPER(u.username) = UPPER(a.username)
+             WHERE a.is_active = 'Y'
+             ORDER BY UPPER(a.username)
+        """)
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
     finally:
@@ -1606,15 +1632,19 @@ def fetch_is_ops_admin(db_config: Any, username: str) -> bool:
 
 def fetch_ops_admins(db_config: Any) -> list[dict]:
     """Every row in `ols_ops_access` (who may use User Management + their S-Studio flag), active
-    first then by name."""
+    first then by name. LEFT JOINs `ols_users` (same app DB) so the list shows the operator's real
+    name / email / GUID — a UID with no ols_users row still returns (identity columns NULL)."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT username, is_active, can_users, can_sql FROM ols_ops_access
-             ORDER BY is_active DESC, UPPER(username)
+            SELECT o.username, o.is_active, o.can_users, o.can_sql,
+                   u.firstname, u.surname, u.email, u.guid
+              FROM ols_ops_access o
+              LEFT JOIN ols_users u ON UPPER(u.username) = UPPER(o.username)
+             ORDER BY o.is_active DESC, UPPER(o.username)
         """)
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
@@ -1687,18 +1717,18 @@ def ops_admin_set_sql(db_config: Any, username: str, allowed: bool) -> int:
 
 
 def fetch_all_grants(db_config: Any, username: str) -> list[dict]:
-    """Every ACTIVE `ols_app_access` grant for one user across all environments — the rows the
-    User Management screen lists (and can revoke). Ordered for a stable display."""
+    """Every ACTIVE `ols_app_access` grant for one user — the rows the User Management screen lists
+    (and can revoke). Access is env-independent. Ordered for a stable display."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT username, resource_type, resource_scope, resource_key, access_level, app_env
+            SELECT username, resource_type, resource_scope, resource_key, access_level
               FROM ols_app_access
              WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y'
-             ORDER BY resource_type, resource_scope, UPPER(resource_key), app_env
+             ORDER BY resource_type, resource_scope, UPPER(resource_key)
         """, {"u": username})
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
@@ -1731,9 +1761,10 @@ def fetch_server_names(db_config: Any) -> list[str]:
 
 
 def grant_upsert(db_config: Any, username: str, resource_type: str, resource_scope: str,
-                 resource_key: str, access_level: str, app_env: str, granted_by: str) -> None:
-    """Insert or update ONE `ols_app_access` grant (idempotent on its natural key). Re-granting the
-    same resource updates the level and re-activates the row. Commits. WRITE — ops-admin only."""
+                 resource_key: str, access_level: str, granted_by: str) -> None:
+    """Insert or update ONE `ols_app_access` grant (idempotent on its natural key: user + resource).
+    Re-granting the same resource updates the level and re-activates the row. Access is env-independent.
+    Commits. WRITE — ops-admin only."""
     connection = None
     cursor = None
     try:
@@ -1742,19 +1773,19 @@ def grant_upsert(db_config: Any, username: str, resource_type: str, resource_sco
         cursor.execute("""
             MERGE INTO ols_app_access t
             USING (SELECT :u username, :rt resource_type, :rs resource_scope, :rk resource_key,
-                          :lvl access_level, :env app_env, :gb granted_by FROM dual) s
+                          :lvl access_level, :gb granted_by FROM dual) s
                ON (UPPER(t.username) = UPPER(s.username) AND t.resource_type = s.resource_type
                    AND t.resource_scope = s.resource_scope
-                   AND UPPER(t.resource_key) = UPPER(s.resource_key) AND t.app_env = s.app_env)
+                   AND UPPER(t.resource_key) = UPPER(s.resource_key))
             WHEN MATCHED THEN UPDATE SET t.access_level = s.access_level, t.is_active = 'Y',
                                          t.granted_by = s.granted_by, t.granted_on = SYSDATE
             WHEN NOT MATCHED THEN
                 INSERT (username, resource_type, resource_scope, resource_key,
-                        access_level, app_env, is_active, granted_by, granted_on)
+                        access_level, is_active, granted_by, granted_on)
                 VALUES (s.username, s.resource_type, s.resource_scope, s.resource_key,
-                        s.access_level, s.app_env, 'Y', s.granted_by, SYSDATE)
+                        s.access_level, 'Y', s.granted_by, SYSDATE)
         """, {"u": username, "rt": resource_type, "rs": resource_scope, "rk": resource_key,
-              "lvl": access_level, "env": app_env, "gb": granted_by})
+              "lvl": access_level, "gb": granted_by})
         connection.commit()
     finally:
         if cursor:
@@ -1764,9 +1795,9 @@ def grant_upsert(db_config: Any, username: str, resource_type: str, resource_sco
 
 
 def grant_delete(db_config: Any, username: str, resource_type: str, resource_scope: str,
-                 resource_key: str, app_env: str) -> int:
-    """Hard-DELETE one `ols_app_access` grant by its natural key (no audit kept). Returns the number
-    of rows removed. Commits. WRITE — ops-admin only."""
+                 resource_key: str) -> int:
+    """Hard-DELETE one `ols_app_access` grant by its natural key: user + resource (no audit kept).
+    Returns the number of rows removed. Commits. WRITE — ops-admin only."""
     connection = None
     cursor = None
     try:
@@ -1775,8 +1806,8 @@ def grant_delete(db_config: Any, username: str, resource_type: str, resource_sco
         cursor.execute("""
             DELETE FROM ols_app_access
              WHERE UPPER(username) = UPPER(:u) AND resource_type = :rt AND resource_scope = :rs
-               AND UPPER(resource_key) = UPPER(:rk) AND app_env = :env
-        """, {"u": username, "rt": resource_type, "rs": resource_scope, "rk": resource_key, "env": app_env})
+               AND UPPER(resource_key) = UPPER(:rk)
+        """, {"u": username, "rt": resource_type, "rs": resource_scope, "rk": resource_key})
         n = cursor.rowcount
         connection.commit()
         return n

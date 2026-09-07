@@ -5,7 +5,7 @@ import { ApiDataService } from '../../shared/api-data.service';
 import { API, apiEnv } from '../../shared/api-endpoints';
 import { environment } from '../../../environments/environment';
 import { RbacService } from '../../auth/rbac.service';
-import { AccessCatalogue, AdminUserResponse, GrantRow, OpsAdmin } from '../../shared/models';
+import { AccessCatalogue, AccessUser, AdminUserResponse, GrantRow, OpsAdmin } from '../../shared/models';
 
 /** One grant to add (the natural key + level). */
 export interface GrantInput {
@@ -14,7 +14,6 @@ export interface GrantInput {
   resource_scope: string;
   resource_key: string;
   access_level: 'READ' | 'WRITE' | 'DENY';
-  app_env: string;
 }
 
 /**
@@ -42,6 +41,11 @@ export class UserManagementService {
     });
   }
 
+  /** Everyone with ≥1 active grant (for the "who has access" roster), joined to ols_users identity. */
+  usersWithAccess(): Observable<{ users: AccessUser[] }> {
+    return this.api.post(API.access.admin.users, { caller: this.caller() });
+  }
+
   grant(g: GrantInput): Observable<{ grants: GrantRow[] }> {
     return this.api.post(API.access.admin.grant, { caller: this.caller(), ...g });
   }
@@ -50,7 +54,7 @@ export class UserManagementService {
     return this.api.post(API.access.admin.grantDelete, {
       caller: this.caller(),
       username: g.username, resource_type: g.resource_type, resource_scope: g.resource_scope,
-      resource_key: g.resource_key, app_env: g.app_env
+      resource_key: g.resource_key
     });
   }
 

@@ -5,7 +5,7 @@ import { forkJoin } from 'rxjs';
 import { GrantInput, UserManagementService } from './user-management.service';
 import { ConfirmService } from '../../components/confirm/confirm.service';
 import { RbacService } from '../../auth/rbac.service';
-import { AccessCatalogue, GrantRow, OpsAdmin, UserLookup } from '../../shared/models';
+import { AccessCatalogue, AccessUser, GrantRow, OpsAdmin, UserLookup } from '../../shared/models';
 
 /** The friendly "grant type" a form row builds (maps to resource_type + scope). */
 type GrantKind =
@@ -38,6 +38,69 @@ export class UserManagementComponent implements OnInit {
   // --- Catalogue -------------------------------------------------------------
   readonly catalogue = signal<AccessCatalogue | null>(null);
 
+  // --- "Who has access" roster (all users with ≥1 grant) ---------------------
+  readonly accessUsers = signal<AccessUser[]>([]);
+  readonly loadingUsers = signal(false);
+  /** Per-column filters (name / username / email / guid / features). */
+  readonly colFilters = signal<Record<string, string>>({ name: '', username: '', email: '', guid: '', features: '' });
+  readonly usersSortKey = signal<'name' | 'username' | 'email' | 'grants'>('name');
+  readonly usersSortDir = signal<'asc' | 'desc'>('asc');
+  readonly pageSizeOptions = [5, 10, 20, 100];
+  readonly pageSize = signal(10);
+  readonly page = signal(0);
+
+  private colText(u: AccessUser, col: string): string {
+    switch (col) {
+      case 'name': return (u.display_name || u.username);
+      case 'username': return u.username;
+      case 'email': return u.email ?? '';
+      case 'guid': return u.guid ?? '';
+      case 'features': return (u.features ?? []).join(' ');
+      default: return '';
+    }
+  }
+
+  /** Roster after per-column filters + sort (all matching rows, before paging). */
+  readonly filteredUsers = computed<AccessUser[]>(() => {
+    const f = this.colFilters();
+    const active = Object.entries(f).filter(([, v]) => (v || '').trim());
+    let list = this.accessUsers();
+    if (active.length) {
+      list = list.filter((u) => active.every(([col, v]) => this.colText(u, col).toLowerCase().includes(v.trim().toLowerCase())));
+    }
+    const key = this.usersSortKey();
+    const dir = this.usersSortDir() === 'asc' ? 1 : -1;
+    const val = (u: AccessUser): string | number =>
+      key === 'grants' ? u.grant_count
+        : key === 'username' ? u.username.toLowerCase()
+        : key === 'email' ? (u.email ?? '').toLowerCase()
+        : (u.display_name || u.username).toLowerCase();
+    return [...list].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (typeof av === 'number' && typeof bv === 'number') { return (av - bv) * dir; }
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  });
+
+  /** Total pages for the current filter (≥1). */
+  readonly pageCount = computed(() => Math.max(1, Math.ceil(this.filteredUsers().length / this.pageSize())));
+  /** The rows on the current page (page clamped to range). */
+  readonly pagedUsers = computed<AccessUser[]>(() => {
+    const p = Math.min(this.page(), this.pageCount() - 1);
+    const start = p * this.pageSize();
+    return this.filteredUsers().slice(start, start + this.pageSize());
+  });
+
+  /** Update one column filter and jump back to the first page. */
+  setColFilter(col: string, value: string): void {
+    this.colFilters.set({ ...this.colFilters(), [col]: value });
+    this.page.set(0);
+  }
+  /** Change rows-per-page (5/10/20/100) and jump back to the first page. */
+  setPageSize(n: number): void { this.pageSize.set(n); this.page.set(0); }
+  prevPage(): void { this.page.set(Math.max(0, this.page() - 1)); }
+  nextPage(): void { this.page.set(Math.min(this.pageCount() - 1, this.page() + 1)); }
+
   // --- Target user + their grants -------------------------------------------
   readonly uidInput = signal('');
   readonly lookup = signal<UserLookup | null>(null);
@@ -55,7 +118,6 @@ export class UserManagementComponent implements OnInit {
   readonly selKey = signal('');            // chosen dropdown key (screen/app/db/server/category/section)
   readonly freeKey = signal('');           // free-text key (config table, custom server)
   readonly level = signal<Level>('READ');
-  readonly env = signal('PROD');
   readonly sectionDb = signal('');         // '' = hide section on every DB
 
   // --- Staged grants (build several, then apply in one go) -------------------
@@ -88,6 +150,110 @@ export class UserManagementComponent implements OnInit {
     if (t === 'access' && !this.canUserTab()) { return 'ops'; }
     return t;
   });
+  readonly refreshingUser = signal(false);
+  readonly refreshingOps = signal(false);
+
+  /** Switch tab AND reset the OTHER tab's transient state (loaded user, staged grants, validation)
+   *  so each tab opens fresh. Landing on Manage access re-pulls the latest operator list. */
+  selectTab(tab: 'access' | 'ops'): void {
+    if (this.activeTab() === tab) { return; }
+    this.resetUserTab();
+    this.resetOpsTab();
+    this.toast.set(null);
+    this.activeTab.set(tab);
+    if (tab === 'ops') { this.refreshOpsTab(); }
+  }
+
+  private resetUserTab(): void {
+    this.uidInput.set('');
+    this.lookup.set(null);
+    this.grants.set([]);
+    this.staged.set([]);
+    this.copyFromUid.set('');
+    this.sourceUser.set(null);
+    this.sourceGrants.set([]);
+    this.showSourceModal.set(false);
+  }
+
+  private resetOpsTab(): void {
+    this.opsUidInput.set('');
+    this.opsLookup.set(null);
+    this.opsFilter.set('');
+  }
+
+  /** Refresh the User-access tab: re-pull the catalogue and, if a user is loaded, their grants. */
+  refreshUserTab(): void {
+    this.refreshingUser.set(true);
+    this.svc.catalogue().subscribe({ next: (r) => this.catalogue.set(r.catalogue), error: () => { /* keep old */ } });
+    this.loadAccessUsers();
+    const lk = this.lookup();
+    if (!lk?.active) { this.refreshingUser.set(false); return; }
+    this.svc.loadUser(lk.username).subscribe({
+      next: (r) => { this.refreshingUser.set(false); this.lookup.set(r.lookup); this.grants.set(r.lookup.active ? (r.grants ?? []) : []); },
+      error: (e) => { this.refreshingUser.set(false); this.fail(e, 'Could not refresh the user'); }
+    });
+  }
+
+  /** Refresh the Manage-access tab: re-pull the ops-admin list. */
+  refreshOpsTab(): void {
+    this.refreshingOps.set(true);
+    this.svc.ops('list').subscribe({
+      next: (r) => { this.refreshingOps.set(false); this.opsAdmins.set(r.ops_admins ?? []); },
+      error: () => { this.refreshingOps.set(false); }
+    });
+  }
+
+  /** (Re)load the "who has access" roster (all users with ≥1 grant). */
+  loadAccessUsers(): void {
+    this.loadingUsers.set(true);
+    this.svc.usersWithAccess().subscribe({
+      next: (r) => { this.loadingUsers.set(false); this.accessUsers.set(r.users ?? []); },
+      error: () => { this.loadingUsers.set(false); }
+    });
+  }
+
+  /** Set / toggle the roster sort column (same column flips asc↔desc). */
+  sortUsers(key: 'name' | 'username' | 'email' | 'grants'): void {
+    if (this.usersSortKey() === key) {
+      this.usersSortDir.set(this.usersSortDir() === 'asc' ? 'desc' : 'asc');
+    } else {
+      this.usersSortKey.set(key);
+      this.usersSortDir.set('asc');
+    }
+    this.page.set(0);
+  }
+
+  /** Click a roster row → load that user into the editor above. */
+  openUser(username: string): void {
+    this.uidInput.set((username || '').toUpperCase());
+    this.loadUser();
+  }
+
+  /** Download the (filtered + sorted) roster as a CSV file. */
+  downloadUsers(): void {
+    const rows = this.filteredUsers();
+    if (!rows.length) { return; }
+    const headers = ['Name', 'Username', 'Email', 'GUID', 'Features', 'Grants'];
+    const esc = (v: unknown) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(',')];
+    for (const u of rows) {
+      lines.push([
+        this.userFullName(u), u.username, u.email ?? '', u.guid ?? '',
+        (u.features ?? []).join('; '), u.grant_count,
+      ].map(esc).join(','));
+    }
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `users-with-access-${stamp}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // --- Ops-admin gate --------------------------------------------------------
   readonly opsAdmins = signal<OpsAdmin[]>([]);
@@ -107,8 +273,16 @@ export class UserManagementComponent implements OnInit {
       (o.display_name ?? '').toLowerCase().includes(q) ||
       (o.email ?? '').toLowerCase().includes(q));
   });
-  /** Add is enabled only once the typed uid is validated as an active OLS user. */
-  readonly canAddOps = computed(() => !!this.opsLookup()?.active);
+  /** The existing ops-admin row matching the validated candidate (case-insensitive), if any —
+   *  so we can block a duplicate add and tell the user they're already an ops-admin. */
+  readonly opsExisting = computed<OpsAdmin | null>(() => {
+    const lk = this.opsLookup();
+    if (!lk?.active) { return null; }
+    const u = lk.username.trim().toUpperCase();
+    return this.opsAdmins().find((o) => o.username.trim().toUpperCase() === u) ?? null;
+  });
+  /** Add is enabled only once the typed uid is validated AND is not already an ops-admin. */
+  readonly canAddOps = computed(() => !!this.opsLookup()?.active && !this.opsExisting());
 
   readonly toast = signal<Toast | null>(null);
 
@@ -130,6 +304,7 @@ export class UserManagementComponent implements OnInit {
       error: (e) => this.fail(e, 'Could not load the resource catalogue')
     });
     this.refreshOps();
+    this.loadAccessUsers();
   }
 
   // --- Derived form helpers --------------------------------------------------
@@ -184,7 +359,6 @@ export class UserManagementComponent implements OnInit {
   });
 
   readonly dbOptions = computed(() => this.catalogue()?.databases ?? []);
-  readonly envOptions = computed(() => this.catalogue()?.app_envs ?? ['PROD', 'STG', 'DEV', '*']);
 
   /** Change the grant type and reset the dependent fields to valid defaults. */
   setKind(k: GrantKind): void {
@@ -237,7 +411,6 @@ export class UserManagementComponent implements OnInit {
   private buildGrant(): GrantInput | null {
     const username = this.loadedUid();
     if (!username) { return null; }
-    const env = this.env();
     const level = this.level();
     const k = this.kind();
     const dropKey = this.selKey();
@@ -272,7 +445,8 @@ export class UserManagementComponent implements OnInit {
     }
 
     if (!resource_key) { return null; }         // free-text kinds require a value
-    return { username, resource_type, resource_scope, resource_key, access_level: level, app_env: env };
+    // Access is env-independent — there is no per-grant environment.
+    return { username, resource_type, resource_scope, resource_key, access_level: level };
   }
 
   /** Pick a level from the segmented control (ignores levels invalid for the current kind). */
@@ -282,7 +456,7 @@ export class UserManagementComponent implements OnInit {
 
   private sameKey(a: GrantRow, b: GrantRow): boolean {
     return a.resource_type === b.resource_type && a.resource_scope === b.resource_scope &&
-      (a.resource_key || '').toUpperCase() === (b.resource_key || '').toUpperCase() && a.app_env === b.app_env;
+      (a.resource_key || '').toUpperCase() === (b.resource_key || '').toUpperCase();
   }
 
   /** Stage the current form selection (does NOT save yet). Re-adding the same resource updates it. */
@@ -388,6 +562,7 @@ export class UserManagementComponent implements OnInit {
         const fullest = results.reduce((a, b) => ((b?.grants?.length ?? 0) >= (a?.grants?.length ?? 0) ? b : a));
         if (fullest?.grants) { this.grants.set(fullest.grants); }
         this.staged.set([]);
+        this.loadAccessUsers();   // roster grant-counts / features may have changed
         this.toast.set({ kind: 'ok', text: `Saved ${n} grant${n === 1 ? '' : 's'} to ${this.loadedUid()}.` });
       },
       error: (e) => { this.applying.set(false); this.fail(e, 'Could not apply the grants'); }
@@ -405,6 +580,7 @@ export class UserManagementComponent implements OnInit {
       next: (r) => {
         if (r.grants) { this.grants.set(r.grants); }
         else { this.grants.set(this.grants().filter((x) => x !== row)); }
+        this.loadAccessUsers();   // roster grant-counts / features may have changed
         this.toast.set({ kind: 'ok', text: `Revoked ${this.describe(row)}.` });
       },
       error: (e) => this.fail(e, 'Could not revoke the grant')
@@ -449,6 +625,13 @@ export class UserManagementComponent implements OnInit {
   async addOps(): Promise<void> {
     const lk = this.opsLookup();
     if (!lk || !lk.active) { return; }
+    const existing = this.opsExisting();
+    if (existing) {
+      this.toast.set({ kind: 'err', text: existing.is_active === 'Y'
+        ? `${lk.username} is already an ops-admin.`
+        : `${lk.username} already exists as an ops-admin but is disabled — enable them from the list below.` });
+      return;
+    }
     const uid = lk.username.trim();
     const ok = await this.confirm.ask({
       title: 'Add ops-admin',

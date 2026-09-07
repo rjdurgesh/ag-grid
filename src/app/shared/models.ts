@@ -281,7 +281,6 @@ export interface GrantRow {
   resource_scope: string;
   resource_key: string;
   access_level: 'READ' | 'WRITE' | 'DENY';
-  app_env: string;
 }
 /** Result of validating a grant target against `ols_users`. `active` false → show `message`. */
 export interface UserLookup {
@@ -317,6 +316,18 @@ export interface OpsAdmin {
   surname?: string;
   email?: string;
   guid?: string;
+}
+/** One row of the "who has access" roster — a user with ≥1 active `ols_app_access` grant, joined to
+ *  `ols_users` for identity. `features` is a summarised list of the high-level areas they can reach. */
+export interface AccessUser {
+  username: string;
+  first_name?: string;
+  surname?: string;
+  display_name?: string;
+  email?: string;
+  guid?: string;
+  grant_count: number;
+  features: string[];
 }
 
 // --- S-Studio (Config Ops SQL console — POST /api/sql_studio/* — see sql_studio_api.py) --------

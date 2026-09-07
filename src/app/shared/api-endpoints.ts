@@ -73,6 +73,8 @@ export const API = {
       catalogue: `${API_BASE_URL}/api/access/admin/catalogue`,
       /** `{ caller, uid, app_env }` → `{ lookup, grants, snapshot }` for one user. */
       user: `${API_BASE_URL}/api/access/admin/user`,
+      /** `{ caller }` → `{ users: AccessUser[] }` — everyone with ≥1 grant (joined to ols_users). */
+      users: `${API_BASE_URL}/api/access/admin/users`,
       /** `{ caller, username, resource_type, resource_scope, resource_key, access_level, app_env }` → grant (upsert). */
       grant: `${API_BASE_URL}/api/access/admin/grant`,
       /** `{ caller, username, resource_type, resource_scope, resource_key, app_env }` → revoke (hard delete). */

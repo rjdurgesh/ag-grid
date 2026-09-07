@@ -31,12 +31,12 @@ SET DEFINE OFF;   -- '&' in comments/values is literal, not a substitution promp
 -- 0) FULL ACCESS  (the SCREEN / '*' / '*' wildcard = everything, in ONE row)
 --==============================================================================
 -- Full READ — see every screen / tab / app / table, read-only (no write buttons anywhere)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','*','*','READ','PROD','ADMIN','FULL read access to everything');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','*','*','READ','ADMIN','FULL read access to everything');
 
 -- Full READ + WRITE — everything, plus every action (kill, start/stop, add/edit/delete, apply)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','*','*','WRITE','PROD','ADMIN','FULL read+write access to everything');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','*','*','WRITE','ADMIN','FULL read+write access to everything');
 
 
 --==============================================================================
@@ -56,58 +56,58 @@ VALUES ('CHANGE_ME','SCREEN','*','*','WRITE','PROD','ADMIN','FULL read+write acc
 --    (OMT-BOTH grant = ALL tables in the scope; TECHNICAL/FUNCTIONAL also include BOTH tables).
 --==============================================================================
 -- Read/write to ONLY the OLS GROUP and OLS CIB screens (all their tables; RETAIL hidden)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','PROD','ADMIN','Config: GROUP, all tables, write');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','WRITE','PROD','ADMIN','Config: CIB, all tables, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','ADMIN','Config: GROUP, all tables, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','WRITE','ADMIN','Config: CIB, all tables, write');
 
 -- Read/write to ONLY OLS GROUP and ALL its tables
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','PROD','ADMIN','Config: GROUP, all tables, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','ADMIN','Config: GROUP, all tables, write');
 
 -- Read/write to ONLY OLS GROUP and only the OMT-FUNCTIONAL tables
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','WRITE','PROD','ADMIN','Config: GROUP, functional tables, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','WRITE','ADMIN','Config: GROUP, functional tables, write');
 
 -- Read/write to GROUP: all OMT-FUNCTIONAL tables + one OMT-TECHNICAL table ("ABC_NAME")
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','WRITE','PROD','ADMIN','Config: GROUP functional tables');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','ABC_NAME','WRITE','PROD','ADMIN','Config: GROUP + one technical table');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','WRITE','ADMIN','Config: GROUP functional tables');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','ABC_NAME','WRITE','ADMIN','Config: GROUP + one technical table');
 
 -- Read/write to GROUP: exactly one table from each category (name the actual tables)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','PROD','ADMIN','Config: 1 functional table');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_GL_MAPPING','WRITE','PROD','ADMIN','Config: 1 technical table');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_RISK_WEIGHTS','WRITE','PROD','ADMIN','Config: 1 OMT-BOTH table');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','ADMIN','Config: 1 functional table');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_GL_MAPPING','WRITE','ADMIN','Config: 1 technical table');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_RISK_WEIGHTS','WRITE','ADMIN','Config: 1 OMT-BOTH table');
 
 -- (variety) READ-ONLY instead of write: change ACCESS_LEVEL 'WRITE' -> 'READ' in any row above.
 -- (variety) Mixed: category READ + one table WRITE (read many, edit one)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','READ','PROD','ADMIN','Config: functional read');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','PROD','ADMIN','Config: edit just this one');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-FUNCTIONAL','READ','ADMIN','Config: functional read');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_COST_CENTER','WRITE','ADMIN','Config: edit just this one');
 
 -- (variety) ONLY the OMT-TECHNICAL tables of a scope (standalone technical category)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-TECHNICAL','READ','PROD','ADMIN','Config: GROUP, technical tables, read');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-TECHNICAL','READ','ADMIN','Config: GROUP, technical tables, read');
 
 -- (variety) Category grant BUT carve out one table (per-table DENY wins over the category)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_GL_MAPPING','DENY','PROD','ADMIN','Config: hide this table from the category grant');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE','config_ops:group','GRP_GL_MAPPING','DENY','ADMIN','Config: hide this table from the category grant');
 
 -- (variety) Grant the whole scope BUT hide an entire category (category-level DENY):
 --   e.g. all GROUP tables EXCEPT the technical ones. The DENY category subtracts from OMT-BOTH.
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','PROD','ADMIN','Config: GROUP, all tables, write');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-TECHNICAL','DENY','PROD','ADMIN','Config: ...but hide ALL technical tables');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','ADMIN','Config: GROUP, all tables, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-TECHNICAL','DENY','ADMIN','Config: ...but hide ALL technical tables');
 
 -- (variety) Make a scope VISIBLE with no tables yet (empty screen, add table grants later)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','config_ops:retail','*','READ','PROD','ADMIN','Config: RETAIL screen visible, no tables yet');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','config_ops:retail','*','READ','ADMIN','Config: RETAIL screen visible, no tables yet');
 
 
 --==============================================================================
@@ -121,20 +121,20 @@ VALUES ('CHANGE_ME','SCREEN','config_ops:retail','*','READ','PROD','ADMIN','Conf
 --    apps: OLS_GROUP | OLS_CIB | OLS_RETAIL | POSEIDON, or '*' for all
 --==============================================================================
 -- Read only, FULL (see every app's services, no start/stop)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','service_console','*','READ','PROD','ADMIN','Service Console: read-only, all apps');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','service_console','*','READ','ADMIN','Service Console: read-only, all apps');
 
 -- Read/write (start/stop) but ONLY the OLS GROUP and OLS CIB apps
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','service_console','*','WRITE','PROD','ADMIN','Service Console: start/stop allowed');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','service_console','OLS_GROUP','READ','PROD','ADMIN','Service Console: only OLS_GROUP app');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','service_console','OLS_CIB','READ','PROD','ADMIN','Service Console: only OLS_CIB app');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','service_console','*','WRITE','ADMIN','Service Console: start/stop allowed');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','APP','service_console','OLS_GROUP','READ','ADMIN','Service Console: only OLS_GROUP app');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','APP','service_console','OLS_CIB','READ','ADMIN','Service Console: only OLS_CIB app');
 
 -- (variety) Read-only on specific apps only (APP grants, no SCREEN WRITE)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','service_console','OLS_GROUP','READ','PROD','ADMIN','Service Console: view OLS_GROUP only');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','APP','service_console','OLS_GROUP','READ','ADMIN','Service Console: view OLS_GROUP only');
 
 
 --==============================================================================
@@ -151,49 +151,49 @@ VALUES ('CHANGE_ME','APP','service_console','OLS_GROUP','READ','PROD','ADMIN','S
 --        temp=Temp Tablespace · sessions=Sessions Detail · sql_intelligence=SQL Intelligence
 --==============================================================================
 -- Read only, FULL OCC (all DB tabs, no kill, all sections)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','*','READ','PROD','ADMIN','OCC: read-only, all DBs');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','*','READ','ADMIN','OCC: read-only, all DBs');
 
 -- Read/write, show sections 1..8 only (i.e. HIDE SQL Intelligence), and ONLY the OLS GROUP tab
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','PROD','ADMIN','OCC: only GROUP tab, write');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center','sql_intelligence','DENY','PROD','ADMIN','OCC: hide SQL Intelligence everywhere');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','ADMIN','OCC: only GROUP tab, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center','sql_intelligence','DENY','ADMIN','OCC: hide SQL Intelligence everywhere');
 
 -- Write on GROUP, read-only on CIB BATCH, and on CIB BATCH show ONLY sections space/top/topidx.
 --   OCC "write" is per-DB (kill/apply); the other sections are read-only displays. So this is:
 --   DB group=WRITE, DB cib_batch=READ, and on cib_batch DENY every section except the 3 to keep.
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','PROD','ADMIN','OCC: write on GROUP');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','cib_batch','READ','PROD','ADMIN','OCC: read-only on CIB BATCH');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','ADMIN','OCC: write on GROUP');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','cib_batch','READ','ADMIN','OCC: read-only on CIB BATCH');
 -- keep space/top/topidx on CIB BATCH -> deny the rest ON cib_batch only:
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','idxhealth','DENY','PROD','ADMIN','CIB BATCH: hide Index Health');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','locks','DENY','PROD','ADMIN','CIB BATCH: hide Locks');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','blocking','DENY','PROD','ADMIN','CIB BATCH: hide Blocking');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','temp','DENY','PROD','ADMIN','CIB BATCH: hide Temp');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','sessions','DENY','PROD','ADMIN','CIB BATCH: hide Sessions');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','sql_intelligence','DENY','PROD','ADMIN','CIB BATCH: hide SQL Intelligence');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','idxhealth','DENY','ADMIN','CIB BATCH: hide Index Health');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','locks','DENY','ADMIN','CIB BATCH: hide Locks');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','blocking','DENY','ADMIN','CIB BATCH: hide Blocking');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','temp','DENY','ADMIN','CIB BATCH: hide Temp');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','sessions','DENY','ADMIN','CIB BATCH: hide Sessions');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center:cib_batch','sql_intelligence','DENY','ADMIN','CIB BATCH: hide SQL Intelligence');
 
 -- Deny the SQL Investigation (SQL Intelligence) section for a user (everything else stays)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SECTION','oracle_command_center','sql_intelligence','DENY','PROD','ADMIN','OCC: hide SQL Intelligence');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SECTION','oracle_command_center','sql_intelligence','DENY','ADMIN','OCC: hide SQL Intelligence');
 
 -- (variety) See two DBs, write on one, read on the other
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','PROD','ADMIN','OCC: write GROUP');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','READ','PROD','ADMIN','OCC: read RETAIL BATCH');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','group','WRITE','ADMIN','OCC: write GROUP');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','READ','ADMIN','OCC: read RETAIL BATCH');
 
 -- (variety) All DBs, write everywhere (equivalent to SCREEN/oracle_command_center/*/WRITE)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','PROD','ADMIN','OCC: all DBs, write');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','ADMIN','OCC: all DBs, write');
 
 
 --==============================================================================
@@ -205,16 +205,16 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','PROD','ADMIN','OCC
 --     Log Analytics + Infra Health are ungated defaults, so exclusion does not apply there.)
 --==============================================================================
 -- Service Console: start/stop on ALL apps EXCEPT OLS_RETAIL
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','service_console','*','WRITE','PROD','ADMIN','Service Console: write, all apps...');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','APP','service_console','OLS_RETAIL','DENY','PROD','ADMIN','...except OLS_RETAIL (hidden)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','service_console','*','WRITE','ADMIN','Service Console: write, all apps...');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','APP','service_console','OLS_RETAIL','DENY','ADMIN','...except OLS_RETAIL (hidden)');
 
 -- OCC: ALL DB tabs with write EXCEPT retail_batch (that tab is hidden entirely)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','PROD','ADMIN','OCC: all DBs, write...');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','PROD','ADMIN','...except RETAIL BATCH');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','*','WRITE','ADMIN','OCC: all DBs, write...');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','ADMIN','...except RETAIL BATCH');
 
 
 --==============================================================================
@@ -229,8 +229,8 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','PROD','A
 --   INSERT INTO ols_ops_access (username, is_active, can_users, can_sql)
 --   VALUES ('CHANGE_ME','Y','N','Y');
 --   -- + the Config Ops scope(s) they'll query (so the scope screen — and its S-Studio tab — appears):
---   INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
---   VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','READ','PROD','ADMIN','see GROUP scope for S-Studio');
+--   INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+--   VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','READ','ADMIN','see GROUP scope for S-Studio');
 --   COMMIT;
 --
 --   -- Turn S-Studio on/off for an EXISTING operator:
@@ -246,30 +246,23 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','PROD','A
 --    the scope screen. Only shows when the app runs in DEV/STG. ADMIN sees it everywhere already.
 --==============================================================================
 -- Regression on CIB: the config grant (to reach the CIB screen) + the Regression grant (to see the tab)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','WRITE','DEV','ADMIN','Config: CIB screen (to reach the tab)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','cib','*','READ','DEV','ADMIN','Regression tab on CIB (DEV)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','WRITE','ADMIN','Config: CIB screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','cib','*','READ','ADMIN','Regression tab on CIB (DEV)');
 
 -- Regression on RETAIL (same pattern)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:retail','OMT-BOTH','WRITE','DEV','ADMIN','Config: RETAIL screen (to reach the tab)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','retail','*','READ','DEV','ADMIN','Regression tab on RETAIL (DEV)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:retail','OMT-BOTH','WRITE','ADMIN','Config: RETAIL screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','retail','*','READ','ADMIN','Regression tab on RETAIL (DEV)');
 
 -- Regression on GROUP (same pattern)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','DEV','ADMIN','Config: GROUP screen (to reach the tab)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','group','*','READ','DEV','ADMIN','Regression tab on GROUP (DEV)');
-
--- (variety) Grant Regression on ALL scopes for STG (one row per scope; app_env STG):
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','cib','*','READ','STG','ADMIN','Regression CIB (STG)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','retail','*','READ','STG','ADMIN','Regression RETAIL (STG)');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','REGRESSION','group','*','READ','STG','ADMIN','Regression GROUP (STG)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','ADMIN','Config: GROUP screen (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','REGRESSION','group','*','READ','ADMIN','Regression tab on GROUP');
+-- NOTE: the grant is env-independent; the tab only appears when the APP itself runs in DEV/STG.
 
 
 --==============================================================================
@@ -280,18 +273,18 @@ VALUES ('CHANGE_ME','REGRESSION','group','*','READ','STG','ADMIN','Regression GR
 --    These are READ-only screens (no WRITE actions). Grant from User Management or with SQL below.
 --==============================================================================
 -- User Guide only
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','docs','*','READ','PROD','ADMIN','Docs: User Guide');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs','*','READ','ADMIN','Docs: User Guide');
 
 -- Technical Guide only
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: Technical Guide');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','ADMIN','Docs: Technical Guide');
 
 -- BOTH guides (two rows)
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','docs','*','READ','PROD','ADMIN','Docs: User Guide');
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: Technical Guide');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs','*','READ','ADMIN','Docs: User Guide');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','ADMIN','Docs: Technical Guide');
 
 
 --==============================================================================
@@ -306,8 +299,8 @@ VALUES ('CHANGE_ME','SCREEN','docs_technical','*','READ','PROD','ADMIN','Docs: T
 --     grantable here — it stays exclusive to ols_ops_access (see ops_access_setup.sql / §7). A row
 --     below does NOT make anyone an ops-admin.
 --==============================================================================
-INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, app_env, granted_by, comments)
-VALUES ('CHANGE_ME','SCREEN','user_management','*','READ','PROD','ADMIN','User Management: User access tab (can grant/revoke for others)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','SCREEN','user_management','*','READ','ADMIN','User Management: User access tab (can grant/revoke for others)');
 
 
 COMMIT;
@@ -315,7 +308,7 @@ COMMIT;
 --------------------------------------------------------------------------------
 -- Handy checks
 --   See everything a user has:
---     SELECT resource_type, resource_scope, resource_key, access_level, app_env, is_active
+--     SELECT resource_type, resource_scope, resource_key, access_level, is_active
 --       FROM ols_app_access WHERE UPPER(username)=UPPER('CHANGE_ME') ORDER BY 1,2,3;
 --   Revoke one grant (keep the audit row):
 --     UPDATE ols_app_access SET is_active='N'

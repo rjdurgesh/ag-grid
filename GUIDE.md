@@ -233,13 +233,36 @@ Tab details: Both the target `POST /api/access/admin/user` lookup and each `POST
 row carry the user's **identity fields** for on-screen verification: `first_name`, `surname`, `display_name`,
 `email`, `guid` (added to `UserLookup` / `OpsAdmin` in [`models.ts`](src/app/shared/models.ts)). The User-access
 card shows *First Surname* + username/email/GUID; the ops list shows full names (searchable) and adding an
-ops-admin is **validate-first** (look the UID up, show its details, *then* Add). A **disabled** ops-admin is
+ops-admin is **validate-first** (look the UID up, show its details, *then* Add). Adding a user who is
+**already an ops-admin** is blocked — validation shows an "already an ops-admin" note (or "…but disabled →
+Enable them below") instead of the Add button, so there's no silent re-add. A **disabled** ops-admin is
 locked down — its User Management / S-Studio privilege toggles are disabled (in the UI and re-checked in the
-handlers); only **Enable** or **Remove** act on a disabled row. UIDs are **normalized to
+handlers); only **Enable** or **Remove** act on a disabled row. Each tab has a **refresh** icon (re-pulls
+the catalogue + loaded user, or the ops list); **switching tabs resets** the other tab's transient state
+(loaded user, staged grants, validation) so each opens fresh, and landing on Manage access re-pulls the list. UIDs are **normalized to
 UPPERCASE** on entry (so the value sent to `/admin/user|grant|ops` and shown on screen is uppercase); GUID is
-shown uppercase too, email as-is. **Backend TODO:** `access_api.py` must `SELECT` these columns from `ols_users`
-into both responses (and can rely on the uppercase UID) — the dev mock supplies them, real endpoints currently
-return only `username`/`display_name`/`email`, so surname/GUID show blank against a live backend.
+shown uppercase too, email as-is. The identity fields are read live from **`ols_users`**: `database.fetch_user_identity`
+selects `firstname, surname, email, guid` (the expected column names — **not** `lastname`/`emailid`), and
+`database.fetch_ops_admins` LEFT JOINs `ols_users` so the operator list shows real names/GUID; `access_api`
+maps them to the UI contract (`first_name`/`surname`/`display_name`/`email`/`guid`) via `_identity_fields`
+(and `_ops_rows` for the list). So `ols_users` must expose `USERNAME, FIRSTNAME, SURNAME, EMAIL, GUID,
+LGCL_DEL_FLG, IS_ADMIN, IS_READ, IS_SALT`.
+
+The User-access tab also shows a **"Users with access" roster** — every user with ≥1 active `ols_app_access`
+grant, joined to `ols_users`, with columns Name / Username / Email ID / GUID / Features / Grants. It has
+**per-column filters** (a filter input under each header), is **sortable** (Name/Username/Email/Grants, click to
+toggle asc↔desc), is **paginated** (10/page, `page`/`pageSize`), scrolls vertically (sticky headers; feature
+chips wrap), offers a **Download CSV** of the filtered rows, and **clicking a row loads that user** into the
+editor above. Its **refresh** icon lives in the roster header (the Grant-access card no longer has one);
+similarly the Manage-access refresh sits by **Current ops-admins**, next to the list it refreshes. Data:
+`POST /api/access/admin/users` → `database.fetch_access_users` (grants LEFT JOIN ols_users) →
+`access_api._group_access_users` (per-user grant count + de-duped `features` from `_feature_label`). It
+refreshes after any Apply/Revoke and via the header refresh icon.
+
+**Environment is not a per-grant dimension in the UI:** access is **consistent across all environments**, so
+every grant built or copied here is created with `app_env='*'` and the old **Env column/dropdown was removed**
+from the grants table, staged list, copy preview and Build-a-grant form. (`app_env` still exists in
+`ols_app_access`; the backend's `OR app_env='*'` match means `*` grants apply everywhere.)
 
 **S-Studio** (Config Ops → **Config | MISC | S-Studio** tab) is a raw SQL / PL-SQL console for running
 queries, DML, anonymous blocks, and package/procedure deployments against one database. **Doubly
