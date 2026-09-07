@@ -78,6 +78,8 @@
   }
   &__tabpanels { display: block; }
   &__tabpanels &__card { max-width: 1200px; }
+  /* Separate the roster card from the "Grant access to a user" card above it. */
+  &__card--roster { margin-top: 22px; }
 
   &__card {
     /* .ols-card gives bg/border/radius/shadow; add a subtle top accent + inner rhythm. */
@@ -504,10 +506,23 @@
   &__muted { color: var(--cui-secondary-color, #9aa3b0); }
   &__feats { white-space: normal; }
   &__feat {
-    display: inline-block; margin: 1px 4px 1px 0; padding: 0.08rem 0.45rem;
-    border-radius: 6px; font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px; vertical-align: middle;
+    margin: 2px 5px 2px 0; padding: 0.12rem 0.28rem 0.12rem 0.5rem;
+    border-radius: 999px; font-size: 0.68rem; font-weight: 700; white-space: nowrap;
     color: var(--um-accent); background: color-mix(in srgb, var(--um-accent) 12%, transparent);
+    /* READ shows in the accent; WRITE shows in success/green so write access stands out at a glance. */
+    &--w {
+      color: var(--cui-success, #1e9e3e);
+      background: color-mix(in srgb, var(--cui-success, #2eb85c) 15%, transparent);
+    }
   }
+  /* The R/W level as a solid pill inside the chip so the access level pops at a glance. */
+  &__feat-lvl {
+    display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 999px; font-size: 0.6rem; font-weight: 800; line-height: 1;
+    color: #fff; background: var(--um-accent);
+  }
+  &__feat--w &__feat-lvl { background: var(--cui-success, #2eb85c); }
 
   /* Scrollable roster body — vertical (bounds tall rows) AND horizontal (long GUID/email/name) + sticky headers. */
   &__table-wrap--scroll { max-height: 520px; overflow: auto; }

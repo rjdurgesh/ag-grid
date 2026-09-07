@@ -140,12 +140,19 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
   if (path === '/api/access/admin/users') {
     umSeed();
+    const opsSet = new Set([...umStore.ops.keys()]);   // ops-admin uids (upper-cased)
     const users = [...umStore.grants.entries()]
       .filter(([, gs]) => (gs?.length ?? 0) > 0)
-      .map(([u, gs]) => ({
-        username: u.toUpperCase(), ...umIdentity(u),
-        grant_count: gs.length, features: umFeatures(gs)
-      }))
+      .map(([u, gs]) => {
+        let features = umFeatures(gs);
+        // Ops-admins hold Config Ops only to reach the exclusive S-Studio → don't list it as a feature.
+        if (opsSet.has(u.toUpperCase())) { features = features.filter((f) => !f.name.startsWith('Config Ops')); }
+        // grant_count = grants that back a VISIBLE feature, so it never counts a hidden grant
+        // (DENY rows + a suppressed Config Ops grant don't count); several grants in one chip still count.
+        const visible = new Set(features.map((f) => f.name));
+        const grant_count = gs.filter((g) => { const l = umFeatureLabel(g); return l != null && visible.has(l); }).length;
+        return { username: u.toUpperCase(), ...umIdentity(u), grant_count, features };
+      })
       .sort((a, b) => (a.display_name || a.username).localeCompare(b.display_name || b.username));
     return respond({ status: 'success', users });
   }
@@ -729,24 +736,42 @@ function umIdentity(uid: string): { first_name: string; surname: string; display
   const surname = umPick(UM_LAST, key, 9);
   return { first_name: first, surname, display_name: `${first} ${surname}`, email: `${uid.toLowerCase()}@ols.local`, guid: umGuid(key) };
 }
-/** Summarise a user's grants into high-level feature areas (mirrors access_api._feature_label). */
-function umFeatures(grants: UmGrant[]): string[] {
-  const feats = new Set<string>();
-  for (const g of grants) {
-    if ((g.access_level || '').toUpperCase() === 'DENY') { continue; }
-    const rt = (g.resource_type || '').toUpperCase();
-    const rs = g.resource_scope || '';
-    if (rt === 'SCREEN' && rs === '*') { feats.add('Full access'); continue; }
-    if (rs.startsWith('config_ops:') || rt === 'TABLE' || rt === 'TABLE_CATEGORY') { feats.add('Config Ops'); }
-    else if (rs === 'service_console') { feats.add('Service Console'); }
-    else if (rs === 'oracle_command_center' || rt === 'DB') { feats.add('Oracle Command Center'); }
-    else if (rs === 'user_management') { feats.add('User access'); }
-    else if (rs === 'docs' || rs === 'docs_technical') { feats.add('Docs'); }
-    else if (rs === 'log_analytics' || rt === 'SERVER') { feats.add('Log Analytics'); }
-    else if (rs === 'infra_health') { feats.add('Infra Health'); }
-    else if (rt === 'REGRESSION') { feats.add('Regression'); }
+/** Summarise a user's grants into high-level feature areas + strongest level (mirrors access_api). */
+/** High-level area a single grant reveals (mirrors access_api._feature_label). DENY → null. */
+function umFeatureLabel(g: UmGrant): string | null {
+  const lvl = (g.access_level || '').toUpperCase();
+  if (lvl === 'DENY') { return null; }
+  const rt = (g.resource_type || '').toUpperCase();
+  const rs = g.resource_scope || '';
+  if (rt === 'SCREEN' && rs === '*') { return 'Full access'; }
+  if (rs.startsWith('config_ops:') || rt === 'TABLE' || rt === 'TABLE_CATEGORY') {
+    const sc = (rs.split(':')[1] || '').toLowerCase();
+    const lbl = { group: 'GROUP', cib: 'CIB', retail: 'RETAIL' }[sc];
+    return lbl ? `Config Ops (${lbl})` : 'Config Ops';
   }
-  return [...feats].sort();
+  if (rs === 'service_console') { return 'Service Console'; }
+  if (rs === 'oracle_command_center' || rt === 'DB') {
+    // Show WHICH app the OCC DB tab(s) belong to (GROUP / CIB / RETAIL), or ALL for a '*' grant.
+    const k = (g.resource_key || '*').toLowerCase();
+    const app = k === '*' ? 'ALL' : k === 'group' ? 'GROUP' : k.startsWith('cib') ? 'CIB' : k.startsWith('retail') ? 'RETAIL' : k.toUpperCase();
+    return `Oracle Command Center (${app})`;
+  }
+  if (rs === 'user_management') { return 'User access'; }
+  if (rs === 'docs' || rs === 'docs_technical') { return 'Docs'; }
+  if (rs === 'log_analytics' || rt === 'SERVER') { return 'Log Analytics'; }
+  if (rs === 'infra_health') { return 'Infra Health'; }
+  if (rt === 'REGRESSION') { return 'Regression'; }
+  return null;
+}
+function umFeatures(grants: UmGrant[]): { name: string; level: string }[] {
+  const feats: Record<string, string> = {};
+  for (const g of grants) {
+    const name = umFeatureLabel(g);
+    if (!name) { continue; }
+    const level = (g.access_level || '').toUpperCase() === 'WRITE' ? 'WRITE' : 'READ';
+    if (feats[name] !== 'WRITE') { feats[name] = level; }
+  }
+  return Object.keys(feats).sort().map((name) => ({ name, level: feats[name] }));
 }
 interface UmOps { active: boolean; users: boolean; sql: boolean; }
 const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, UmOps>() };
@@ -769,7 +794,9 @@ function umSeed(): void {
   // A few more granted users so the "who has access" roster demonstrates sorting / filtering / features.
   umStore.grants.set('MSMITH', [
     { username: 'MSMITH', resource_type: 'SCREEN', resource_scope: 'service_console', resource_key: '*', access_level: 'WRITE' },
-    { username: 'MSMITH', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'cib_batch', access_level: 'READ' }
+    { username: 'MSMITH', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'cib_batch', access_level: 'READ' },
+    // Screen-level Config Ops for CIB only (the new SCREEN / config_ops:<scope> grant) → "Config Ops (CIB)".
+    { username: 'MSMITH', resource_type: 'SCREEN', resource_scope: 'config_ops:cib', resource_key: '*', access_level: 'READ' }
   ]);
   umStore.grants.set('RPATEL', [
     { username: 'RPATEL', resource_type: 'TABLE_CATEGORY', resource_scope: 'config_ops:group', resource_key: 'OMT-BOTH', access_level: 'WRITE' },
@@ -777,6 +804,12 @@ function umSeed(): void {
   ]);
   umStore.grants.set('AKHAN', [
     { username: 'AKHAN', resource_type: 'SCREEN', resource_scope: '*', resource_key: '*', access_level: 'READ' }
+  ]);
+  // DBAUSER is an ops-admin (see umStore.ops) AND has grants — demoes "hide Config Ops for ops-admins"
+  // (its Config Ops chip is suppressed in the roster; the OCC chip still shows).
+  umStore.grants.set('DBAUSER', [
+    { username: 'DBAUSER', resource_type: 'TABLE_CATEGORY', resource_scope: 'config_ops:cib', resource_key: 'OMT-BOTH', access_level: 'WRITE' },
+    { username: 'DBAUSER', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'READ' }
   ]);
   // Bulk demo users so the roster crosses one page (pagination is visible in dev).
   const demoScopes = ['service_console', 'oracle_command_center', 'user_management', 'docs', 'log_analytics'];

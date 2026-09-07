@@ -238,11 +238,18 @@ def _feature_label(grant: dict) -> str | None:
     if rt == "SCREEN" and rs == "*":
         return "Full access"
     if rs.startswith(_CONFIG_PREFIX) or rt in ("TABLE", "TABLE_CATEGORY"):
-        return "Config Ops"
+        # Show WHICH app/scope (GROUP / CIB / RETAIL) so the roster distinguishes them.
+        sc = _scope_of(rs)
+        lbl = {"group": "GROUP", "cib": "CIB", "retail": "RETAIL"}.get((sc or "").lower())
+        return f"Config Ops ({lbl})" if lbl else "Config Ops"
     if rs == "service_console":
         return "Service Console"
     if rs == "oracle_command_center" or rt == "DB":
-        return "Oracle Command Center"
+        # Show WHICH app the OCC DB tab(s) belong to (GROUP / CIB / RETAIL), or ALL for a '*' grant.
+        key = (grant.get("resource_key") or "*").lower()
+        app = ("ALL" if key == "*" else "GROUP" if key == "group"
+               else "CIB" if key.startswith("cib") else "RETAIL" if key.startswith("retail") else key.upper())
+        return f"Oracle Command Center ({app})"
     if rs == "user_management":
         return "User access"
     if rs in ("docs", "docs_technical"):
@@ -256,23 +263,36 @@ def _feature_label(grant: dict) -> str | None:
     return None
 
 
-def _group_access_users(rows: list[dict]) -> list[dict]:
+def _group_access_users(rows: list[dict], ops_admins: set[str] = frozenset()) -> list[dict]:
     """Group raw ols_app_access(+identity) rows by user into the AccessUser roster contract:
-    identity + grant_count + a de-duped, sorted list of feature areas."""
+    identity + grant_count + a de-duped list of feature areas, each carrying its strongest access
+    level (WRITE beats READ; DENY reveals nothing). For an ops-admin (uid in `ops_admins`, upper-cased)
+    the "Config Ops" chip is suppressed — they hold that grant only to reach the exclusive S-Studio, so
+    it isn't a normal roster feature; their OTHER features still show."""
     by_user: dict[str, dict] = {}
     for r in rows:
         key = (r.get("username") or "").upper()
         entry = by_user.get(key)
         if entry is None:
-            entry = {"username": r.get("username"), **_identity_fields(r), "grant_count": 0, "_feats": set()}
+            entry = {"username": r.get("username"), **_identity_fields(r), "_labels": [], "_feats": {}}
             by_user[key] = entry
-        entry["grant_count"] += 1
         lbl = _feature_label(r)
+        entry["_labels"].append(lbl)                    # every grant's area (None for DENY) — used for the count
         if lbl:
-            entry["_feats"].add(lbl)
+            lvl = "WRITE" if (r.get("access_level") or "").upper() == "WRITE" else "READ"
+            if entry["_feats"].get(lbl) != "WRITE":     # upgrade to WRITE, never downgrade
+                entry["_feats"][lbl] = lvl
     out = []
     for e in by_user.values():
-        e["features"] = sorted(e.pop("_feats"))
+        labels = e.pop("_labels")
+        feats = e.pop("_feats")
+        is_ops = (e.get("username") or "").upper() in ops_admins
+        # Visible feature areas (suppress the ops-admin's Config Ops chip — held only to reach S-Studio).
+        visible = {n for n in feats if not (is_ops and n.startswith("Config Ops"))}
+        e["features"] = [{"name": n, "level": feats[n]} for n in sorted(visible)]
+        # grant_count = grants that back a VISIBLE feature, so the number never references a hidden grant
+        # (DENY rows and a suppressed Config Ops grant don't count); several grants in one chip still count.
+        e["grant_count"] = sum(1 for lbl in labels if lbl in visible)
         out.append(e)
     out.sort(key=lambda x: (x.get("display_name") or x.get("username") or "").upper())
     return out
@@ -711,7 +731,8 @@ def admin_users(request: Request, body: AdminQuery) -> dict:
     if ACCESS_USE_DUMMY:
         return {"status": "success", "users": _dummy_access_users()}
     try:
-        return {"status": "success", "users": _group_access_users(database.fetch_access_users(cfg))}
+        ops = {(o.get("username") or "").upper() for o in database.fetch_ops_admins(cfg)}
+        return {"status": "success", "users": _group_access_users(database.fetch_access_users(cfg), ops)}
     except HTTPException:
         raise
     except Exception:
@@ -835,22 +856,22 @@ def _dummy_grants(username: str) -> list[dict]:
         return []
     if "SALT" in u:  # config-ops-only persona: a couple of CIB tables
         return [
-            {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_LIMIT_CONFIG", "access_level": "READ", "app_env": "PROD"},
-            {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_FX_RATES", "access_level": "READ", "app_env": "PROD"},
+            {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_LIMIT_CONFIG", "access_level": "READ"},
+            {"resource_type": "TABLE", "resource_scope": "config_ops:cib", "resource_key": "CIB_FX_RATES", "access_level": "READ"},
         ]
     # default READ demo user (opt-in: Log Analytics + Config Ops(Group) + Service Console + OCC;
     # NOT Infrastructure Health, so it never shows)
     return [
-        {"resource_type": "SERVER", "resource_scope": "log_analytics", "resource_key": "eurv15", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "TABLE_CATEGORY", "resource_scope": "config_ops:group", "resource_key": "OMT-FUNCTIONAL", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "TABLE", "resource_scope": "config_ops:group", "resource_key": "GRP_COST_CENTER", "access_level": "WRITE", "app_env": "PROD"},
-        {"resource_type": "SCREEN", "resource_scope": "service_console", "resource_key": "*", "access_level": "WRITE", "app_env": "PROD"},
-        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_GROUP", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_CIB", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "APP", "resource_scope": "infra_health", "resource_key": "OLS_GROUP", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "group", "access_level": "WRITE", "app_env": "PROD"},
-        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "cib_batch", "access_level": "READ", "app_env": "PROD"},
-        {"resource_type": "SECTION", "resource_scope": "oracle_command_center", "resource_key": "sql_intelligence", "access_level": "DENY", "app_env": "PROD"},
+        {"resource_type": "SERVER", "resource_scope": "log_analytics", "resource_key": "eurv15", "access_level": "READ"},
+        {"resource_type": "TABLE_CATEGORY", "resource_scope": "config_ops:group", "resource_key": "OMT-FUNCTIONAL", "access_level": "READ"},
+        {"resource_type": "TABLE", "resource_scope": "config_ops:group", "resource_key": "GRP_COST_CENTER", "access_level": "WRITE"},
+        {"resource_type": "SCREEN", "resource_scope": "service_console", "resource_key": "*", "access_level": "WRITE"},
+        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_GROUP", "access_level": "READ"},
+        {"resource_type": "APP", "resource_scope": "service_console", "resource_key": "OLS_CIB", "access_level": "READ"},
+        {"resource_type": "APP", "resource_scope": "infra_health", "resource_key": "OLS_GROUP", "access_level": "READ"},
+        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "group", "access_level": "WRITE"},
+        {"resource_type": "DB", "resource_scope": "oracle_command_center", "resource_key": "cib_batch", "access_level": "READ"},
+        {"resource_type": "SECTION", "resource_scope": "oracle_command_center", "resource_key": "sql_intelligence", "access_level": "DENY"},
     ]
 
 

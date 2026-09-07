@@ -250,7 +250,7 @@
     </section>
 
     <!-- ============ Who has access (roster) ============ -->
-    <section class="ols-card um__card">
+    <section class="ols-card um__card um__card--roster">
       <div class="ols-card__title">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 20a5 5 0 0 1 10 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M17.5 13.5a4 4 0 0 1 3.5 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         Users with access
@@ -296,7 +296,9 @@
                   <td>{{ u.email }}</td>
                   <td class="um__mono um__upper">{{ u.guid }}</td>
                   <td class="um__feats">
-                    @for (f of u.features; track f) { <span class="um__feat">{{ f }}</span> }
+                    @for (f of u.features; track f.name) {
+                      <span class="um__feat" [class.um__feat--w]="f.level === 'WRITE'" [title]="f.name + ' — ' + (f.level === 'WRITE' ? 'Write' : 'Read')">{{ f.name }} <span class="um__feat-lvl">{{ f.level === 'WRITE' ? 'W' : 'R' }}</span></span>
+                    }
                     @if (!u.features.length) { <span class="um__muted">—</span> }
                   </td>
                   <td class="um__num">{{ u.grant_count }}</td>

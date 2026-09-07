@@ -257,12 +257,30 @@ editor above. Its **refresh** icon lives in the roster header (the Grant-access 
 similarly the Manage-access refresh sits by **Current ops-admins**, next to the list it refreshes. Data:
 `POST /api/access/admin/users` → `database.fetch_access_users` (grants LEFT JOIN ols_users) →
 `access_api._group_access_users` (per-user grant count + de-duped `features` from `_feature_label`). It
-refreshes after any Apply/Revoke and via the header refresh icon.
+refreshes after any Apply/Revoke and via the header refresh icon. **Feature chips carry the strongest access
+level** (WRITE>READ) as a coloured **R/W pill** (WRITE = green), and both **Config Ops and Oracle Command
+Center show which app(s)** the user can reach — `Config Ops (GROUP|CIB|RETAIL)` and
+`Oracle Command Center (GROUP|CIB|RETAIL|ALL)` (per-DB OCC grants collapse to their app: `group`→GROUP,
+`cib_*`→CIB, `retail_*`→RETAIL; a whole-screen or `*` grant → ALL). For an **ops-admin** the
+Config Ops chip is suppressed (they hold it only to reach the exclusive S-Studio; their other features show).
 
-**Environment is not a per-grant dimension in the UI:** access is **consistent across all environments**, so
-every grant built or copied here is created with `app_env='*'` and the old **Env column/dropdown was removed**
-from the grants table, staged list, copy preview and Build-a-grant form. (`app_env` still exists in
-`ols_app_access`; the backend's `OR app_env='*'` match means `*` grants apply everywhere.)
+**Granting the Config Ops screen per app (screen-level, no tables):** the **Screen visibility** grant type now
+includes **Config Ops Console**; choosing it shows the group/cib/retail scope picker and writes
+`SCREEN / config_ops:<scope> / *` (revealed by `build_snapshot` as that scope's screen). The app is encoded in
+the grant row's `resource_scope` (config), `resource_key` (OCC DB, Service app) — **not** in which database the
+row lives — so the single central `ols_app_access` in OLS_GROUP (read directly or via synonym/db-link) resolves
+correctly no matter which DB the request comes from.
+
+**Environment is NOT a per-grant dimension:** access is **consistent across all environments**. The per-grant
+`app_env` column was **removed end-to-end** — from the UI (Env column/dropdown in the grants table, staged list,
+copy preview and Build-a-grant form), the backend (`GrantBody`/`GrantDeleteBody`, `fetch_user_grants`/
+`fetch_all_grants`/`grant_upsert`/`grant_delete`/`fetch_access_users` no longer reference it, and the unique key
+is now `(username, resource_type, resource_scope, resource_key)`), and the **`ols_app_access` DDL**
+(`rbac_setup.sql` drops the column + a §2b migration for existing installs; `access_examples.sql` INSERTs
+updated). The *runtime* env (which environment the app is deployed in — DEV/STG/PROD, used by the snapshot and
+regression gating) is unrelated and unchanged. **Migration:** on an existing table, dedupe rows that differ only
+by `app_env`, then `DROP INDEX ols_app_access_uq; ALTER TABLE ols_app_access DROP COLUMN app_env;` and recreate
+the index without it (see `rbac_setup.sql` §2b).
 
 **S-Studio** (Config Ops → **Config | MISC | S-Studio** tab) is a raw SQL / PL-SQL console for running
 queries, DML, anonymous blocks, and package/procedure deployments against one database. **Doubly
@@ -901,7 +919,7 @@ down DB still gets a tab (grey) and its sections show read errors — the app ne
 | `POST …/sql/{sql_id}/plan_timeline` | `{}` | ⭐ Plan-instability chart: `points[]` (per-snapshot plan_hash + elapsed/exec), `plans[]`, `flip:{label,from_phv,to_phv}`. The UI draws a static SVG (reduced-motion safe). |
 | `POST …/sql/{sql_id}/plans` | `{}` | DynTable of distinct plans (BEST / CURRENT ⚠ / BASELINE status chip); `summary:{best_phv,current_phv,flip}` drives the diff selectors. |
 | `POST …/sql/{sql_id}/plan_text` | `{ plan_hash_value }` | One plan's `DBMS_XPLAN.DISPLAY_AWR` text (falls back to `DISPLAY_CURSOR`). Called twice for the side-by-side diff. |
-| `POST …/sql/{sql_id}/plan_analysis` | `{}` | **Bottleneck finder** — the runtime plan from `V$SQL_PLAN_STATISTICS_ALL` (live cursor): `{has_actual, note, summary, diagnosis, plan, stats}`. `plan` rows carry an **Est. accuracy** chip (A-Rows vs E-Rows×Starts), a **Time %** self-time bar (🔥 = bottleneck; falls back to ASH sample share when rowsource stats are absent), and a **Spent on** chip — the line's dominant resource (CPU vs a wait class) from ASH `sql_plan_line_id`, so you see *which* operation burned the CPU/I/O. `stats` correlates each table's `last_analyzed`/age/STALE with **stats-rows vs actual A-Rows**. `diagnosis:{sev,findings[],hint}` is the plain-language summary. A-Rows need rowsource stats — `has_actual:false` + `note` when absent. Live-cache only (empty when aged out → use Plan Timeline). |
+| `POST …/sql/{sql_id}/plan_analysis` | `{}` | **Bottleneck finder** — the runtime plan from `V$SQL_PLAN_STATISTICS_ALL` (live cursor): `{has_actual, note, summary, diagnosis, plan, stats}`. `plan` rows carry an **Est. accuracy** chip (A-Rows vs E-Rows×Starts), a **Time %** self-time bar (🔥 = bottleneck; falls back to ASH sample share when rowsource stats are absent), and a **Spent on** chip — the line's dominant resource (CPU vs a wait class) from ASH `sql_plan_line_id`, so you see *which* operation burned the CPU/I/O. `stats` correlates each table's `last_analyzed`/age/STALE with **stats-rows vs actual A-Rows**, and each `stats` row carries `owner`/`table`/`__actions:['gather']` so a WRITE-gated (`canKill()`) **Gather stats** row action can re-gather a stale table right here — reusing the same async gather proc as Session Details (no session-kill needed; you gather the *object's* stats, not the live cursor). `diagnosis:{sev,findings[],hint}` is the plain-language summary. A-Rows need rowsource stats — `has_actual:false` + `note` when absent. Live-cache only (empty when aged out → use Plan Timeline). |
 | `POST …/sql/{sql_id}/sql_monitor` | `{}` | Real-time **SQL Monitor** — `{monitored, overview?, report?, note?}` from `GV$SQL_MONITOR` + `DBMS_SQL_MONITOR.REPORT_SQL_MONITOR`. **Live/recent only** (in-memory; parallel or ≥5s runs); `monitored:false` + `note` when the SQL isn't currently monitored (past/aged-out → use Plan Analysis / Plan Timeline). |
 | `POST …/sql/{sql_id}/perf` | `{}` | Per-snapshot metric table (elapsed/cpu/gets/reads/rows per exec, by plan). |
 | `POST …/sql/{sql_id}/ash` | `{}` | ASH breakdown — top waits (event/wait_class/samples/% ) from DBA_HIST_ACTIVE_SESS_HISTORY. |

@@ -327,7 +327,8 @@ export interface AccessUser {
   email?: string;
   guid?: string;
   grant_count: number;
-  features: string[];
+  /** High-level areas the user can reach, each with its strongest access level (WRITE beats READ). */
+  features: { name: string; level: 'READ' | 'WRITE' }[];
 }
 
 // --- S-Studio (Config Ops SQL console — POST /api/sql_studio/* — see sql_studio_api.py) --------

@@ -45,7 +45,7 @@ export class UserManagementComponent implements OnInit {
   readonly colFilters = signal<Record<string, string>>({ name: '', username: '', email: '', guid: '', features: '' });
   readonly usersSortKey = signal<'name' | 'username' | 'email' | 'grants'>('name');
   readonly usersSortDir = signal<'asc' | 'desc'>('asc');
-  readonly pageSizeOptions = [5, 10, 20, 100];
+  readonly pageSizeOptions = [10, 20, 50, 100];
   readonly pageSize = signal(10);
   readonly page = signal(0);
 
@@ -55,7 +55,7 @@ export class UserManagementComponent implements OnInit {
       case 'username': return u.username;
       case 'email': return u.email ?? '';
       case 'guid': return u.guid ?? '';
-      case 'features': return (u.features ?? []).join(' ');
+      case 'features': return (u.features ?? []).map((f) => `${f.name} ${f.level}`).join(' ');
       default: return '';
     }
   }
@@ -96,7 +96,7 @@ export class UserManagementComponent implements OnInit {
     this.colFilters.set({ ...this.colFilters(), [col]: value });
     this.page.set(0);
   }
-  /** Change rows-per-page (5/10/20/100) and jump back to the first page. */
+  /** Change rows-per-page (10/20/50/100) and jump back to the first page. */
   setPageSize(n: number): void { this.pageSize.set(n); this.page.set(0); }
   prevPage(): void { this.page.set(Math.max(0, this.page() - 1)); }
   nextPage(): void { this.page.set(Math.min(this.pageCount() - 1, this.page() + 1)); }
@@ -242,7 +242,7 @@ export class UserManagementComponent implements OnInit {
     for (const u of rows) {
       lines.push([
         this.userFullName(u), u.username, u.email ?? '', u.guid ?? '',
-        (u.features ?? []).join('; '), u.grant_count,
+        (u.features ?? []).map((f) => `${f.name} (${f.level})`).join('; '), u.grant_count,
       ].map(esc).join(','));
     }
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
@@ -315,7 +315,10 @@ export class UserManagementComponent implements OnInit {
     if (!c) { return []; }
     switch (this.kind()) {
       case 'screen':
-        return c.screens.map((s) => ({ value: s.key, label: s.label }));
+        // Config Ops Console isn't a plain grantable screen (it's scope-driven), so offer it here with
+        // an app/scope picker — it writes SCREEN / config_ops:<scope> / * to reveal just that app's screen.
+        return [...c.screens.map((s) => ({ value: s.key, label: s.label })),
+          { value: 'config_ops_console', label: 'Config Ops Console' }];
       case 'server':
         return [{ value: '*', label: 'All servers (*)' },
           ...c.servers.map((s) => ({ value: s, label: s })),
@@ -334,7 +337,8 @@ export class UserManagementComponent implements OnInit {
     }
   });
 
-  readonly usesScope = computed(() => this.kind() === 'config_category' || this.kind() === 'config_table');
+  readonly usesScope = computed(() => this.kind() === 'config_category' || this.kind() === 'config_table'
+    || (this.kind() === 'screen' && this.selKey() === 'config_ops_console'));
   readonly usesFreeKey = computed(() =>
     this.kind() === 'config_table' || (this.kind() === 'server' && this.selKey() === CUSTOM));
   readonly usesKeyDropdown = computed(() => this.keyOptions().length > 0 && this.kind() !== 'config_table');
@@ -424,7 +428,9 @@ export class UserManagementComponent implements OnInit {
       case 'full':
         resource_type = 'SCREEN'; resource_scope = '*'; resource_key = '*'; break;
       case 'screen':
-        resource_type = 'SCREEN'; resource_scope = dropKey; resource_key = '*'; break;
+        resource_type = 'SCREEN';
+        resource_scope = dropKey === 'config_ops_console' ? 'config_ops:' + this.scope() : dropKey;
+        resource_key = '*'; break;
       case 'server':
         resource_type = 'SERVER'; resource_scope = 'log_analytics';
         resource_key = dropKey === CUSTOM ? free : dropKey; break;
@@ -745,6 +751,7 @@ export class UserManagementComponent implements OnInit {
     switch (g.resource_type) {
       case 'SCREEN':
         if (g.resource_scope === '*') { return 'Full access'; }
+        if (g.resource_scope.startsWith('config_ops:')) { return 'Config Ops screen · ' + this.scopeLabel(g.resource_scope); }
         return 'Screen · ' + (c?.screens.find((s) => s.key === g.resource_scope)?.label ?? g.resource_scope);
       case 'SERVER':
         return 'Log server · ' + (key === '*' ? 'all servers' : key);
@@ -770,7 +777,7 @@ export class UserManagementComponent implements OnInit {
   /** Short category tag for a grant row (the chip before its description). */
   typeTag(g: GrantRow): string {
     switch (g.resource_type) {
-      case 'SCREEN': return g.resource_scope === '*' ? 'Full' : 'Screen';
+      case 'SCREEN': return g.resource_scope === '*' ? 'Full' : g.resource_scope.startsWith('config_ops:') ? 'Config' : 'Screen';
       case 'SERVER': return 'Server';
       case 'APP': return g.resource_scope === 'service_console' ? 'Service' : 'Infra';
       case 'DB': return 'Database';
@@ -796,3 +803,5 @@ export class UserManagementComponent implements OnInit {
     this.toast.set({ kind: 'err', text });
   }
 }
+
+

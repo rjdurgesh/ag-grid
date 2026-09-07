@@ -583,8 +583,9 @@
 
                     <div class="occ-pa__statshd">Statistics of tables in this plan</div>
                     @if (pa.stats.rows.length) {
-                      <app-dyn-table [model]="pa.stats" [freezeFirst]="false" />
-                      <p class="occ-note">A big gap between <b>Stats say</b> and <b>Actual</b> on a <b>STALE</b> table is the smoking gun — re-gather its stats, then re-check. (See the <b>Fix</b> tab.)</p>
+                      <app-dyn-table [model]="pa.stats" [freezeFirst]="false"
+                        [actions]="canKill() ? gatherActions : []" (action)="onStatsAction($event)" />
+                      <p class="occ-note">A big gap between <b>Stats say</b> and <b>Actual</b> on a <b>STALE</b> table is the smoking gun — @if (canKill()) { use <b>Gather stats</b> on that row to re-gather (at the right partition/subpartition/table level), then refresh this tab. No need to kill the session — you're re-gathering the object's stats, not the live cursor. } @else { re-gather its stats (admin role required), then re-check. } (See the <b>Fix</b> tab.)</p>
                     } @else { <div class="occ-empty">No table statistics found for the plan's objects.</div> }
                   } @else {
                     <div class="occ-empty">This SQL_ID isn't in the cursor cache right now, so there's no live runtime plan. Use <b>Plan Timeline</b> / <b>Plans &amp; Diff</b> for the historical (AWR) view.</div>

@@ -1603,6 +1603,9 @@ def _sqli_plan_analysis_payload(raw: dict) -> dict:
                       "age_days": age, "num_rows": int(s.get("num_rows") or 0),
                       "actual_rows": actual_by_obj.get((owner, name)),
                       "state": "STALE" if stale else "FRESH", "state__sev": "warn" if stale else "ok",
+                      # owner/table ride along (not shown as columns) so the WRITE-gated "Gather stats"
+                      # row action can call the gather proc (it picks partition/subpartition/table level).
+                      "owner": owner or OCC_SCHEMA, "table": name, "__actions": ["gather"],
                       "__sev": "warn" if stale else ""})
 
     summary = {
