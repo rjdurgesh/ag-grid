@@ -2036,8 +2036,10 @@ def execute_sql(db_config: Any, sql: str) -> dict:
 # regression_ops.py; ALL SQL for the feature is here (see RBAC_DESIGN.md / Regression screen).
 # =============================================================================
 
-def regression_run_start(db_config: Any, app_env: str, started_by: str) -> int:
-    """Open a new regression run for this env; returns run_id. Commits."""
+def regression_run_start(db_config: Any, app_env: str, started_by: str,
+                         git_branch: str | None = None, release_date: str | None = None) -> int:
+    """Open a new regression run for this env; returns run_id. `git_branch` + `release_date` record
+    WHICH release this cycle targets (a month can have >1). Commits."""
     connection = None
     cursor = None
     try:
@@ -2045,10 +2047,10 @@ def regression_run_start(db_config: Any, app_env: str, started_by: str) -> int:
         cursor = connection.cursor()
         rid = cursor.var(int)
         cursor.execute("""
-            INSERT INTO ols_regression_run (app_env, status, started_by)
-            VALUES (:env, 'in_progress', :sb)
+            INSERT INTO ols_regression_run (app_env, status, started_by, git_branch, release_date)
+            VALUES (:env, 'in_progress', :sb, :br, :rd)
             RETURNING run_id INTO :rid
-        """, {"env": app_env, "sb": started_by, "rid": rid})
+        """, {"env": app_env, "sb": started_by, "br": git_branch, "rd": release_date, "rid": rid})
         connection.commit()
         return int(rid.getvalue()[0])
     finally:
@@ -2084,7 +2086,7 @@ def regression_run_current(db_config: Any, app_env: str) -> dict | None:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT run_id, app_env, status, started_by, start_time
+            SELECT run_id, app_env, status, started_by, git_branch, release_date, start_time
               FROM ols_regression_run
              WHERE app_env = :env AND status = 'in_progress'
              ORDER BY run_id DESC FETCH FIRST 1 ROW ONLY
@@ -2201,12 +2203,15 @@ def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 
         binds = {"lim": limit}
         if run_id:
             binds["r"] = run_id
+        where_l = where.replace("run_id", "l.run_id") if where else ""
         cursor.execute(f"""
-            SELECT load_dt, log_id, run_id, business_line, step_key, action, status, performed_by,
-                   start_time, end_time, task_completion_time, forced_by, comments
-              FROM ols_regression_log
-              {where}
-             ORDER BY log_id DESC FETCH FIRST :lim ROWS ONLY
+            SELECT l.load_dt, l.log_id, l.run_id, r.release_date, l.business_line, l.step_key, l.action,
+                   l.status, l.performed_by, l.start_time, l.end_time, l.task_completion_time,
+                   l.forced_by, l.comments
+              FROM ols_regression_log l
+              LEFT JOIN ols_regression_run r ON r.run_id = l.run_id
+              {where_l}
+             ORDER BY l.log_id DESC FETCH FIRST :lim ROWS ONLY
         """, binds)
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, [_cell(v) for v in row])) for row in cursor.fetchall()]

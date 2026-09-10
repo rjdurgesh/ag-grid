@@ -365,6 +365,8 @@ export interface RegressionRun {
   app_env: string;
   status: string;
   started_by: string;
+  git_branch?: string;            // the release/* branch this run applied
+  release_date?: string;          // YYYYMMDD release folder — which release we regressed
   start_time?: string;
 }
 /** Current status of one step (latest log row). */
@@ -377,6 +379,12 @@ export interface RegressionStepState {
   task_completion_time?: number;
   stale?: boolean;                // in_progress longer than the threshold → possibly stuck
   age_seconds?: number;           // how long it's been in_progress
+}
+/** A refreshable database for the Refresh-DB step (scope + env specific; DEV/STG may have several). */
+export interface RegressionDb {
+  key: string;
+  label: string;
+  category?: string;              // BATCH / REPORTING / … — groups the dropdown
 }
 /** The run + per-step status map. */
 export interface RegressionState {
@@ -417,6 +425,7 @@ export interface RegressionActivityRow {
   load_dt?: string;
   log_id: number;
   run_id: number;
+  release_date?: string;          // which release this run targeted (joined from the run)
   business_line?: string;
   step_key: string;
   action: string;

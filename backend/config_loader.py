@@ -177,13 +177,56 @@ def regression_scope_config(scope: str) -> dict:
     git_token = (os.getenv(f"REGRESSION_GIT_TOKEN_{scope.upper()}")
                  or os.getenv("REGRESSION_GIT_TOKEN")
                  or os.getenv("REGRESSION_GIT_AUTH", ""))
+    # script_roots: DB-key → repo-relative Scripts folder (a dict, not a scalar). The <release_date>
+    # folder is appended under it at run time. Scope-JSON wins, else defaults-JSON, else {} (sql_subdir
+    # is the single-root fallback). E.g. cib: {"cib_batch":"CIB/Batch/Scripts","cib_reporting":"CIB/Reporting/Scripts"}.
+    sr = s.get("script_roots")
+    if not isinstance(sr, dict):
+        sr = defaults.get("script_roots") if isinstance(defaults.get("script_roots"), dict) else {}
+    # refresh_databases: this SCOPE's refreshable DBs for THIS server's env (DEV/STG can have several,
+    # both batch + reporting). Per-server file → DEV lists DEV DBs, STG lists STG DBs. Two shapes:
+    #   grouped  {"BATCH": ["OLS1","OLS2"], "REPORTING": ["OLSR1"]}   (category = the key)
+    #   flat     ["OLS1", {"key":"OLS2","label":"..","category":"BATCH"}]
+    # Both normalise to [{key,label,category}] (category "" when unspecified). Order is preserved.
+    rd = s.get("refresh_databases")
+    if rd is None:
+        rd = defaults.get("refresh_databases")
+
+    def _rdb(item, category):
+        if isinstance(item, dict) and item.get("key"):
+            return {"key": str(item["key"]), "label": str(item.get("label") or item["key"]),
+                    "category": str(item.get("category") or category or "")}
+        if isinstance(item, str) and item.strip():
+            return {"key": item.strip(), "label": item.strip(), "category": str(category or "")}
+        return None
+
+    refresh_databases = []
+    if isinstance(rd, dict):
+        for cat, items in rd.items():
+            for item in (items or []):
+                row = _rdb(item, cat)
+                if row:
+                    refresh_databases.append(row)
+    elif isinstance(rd, list):
+        for item in rd:
+            row = _rdb(item, "")
+            if row:
+                refresh_databases.append(row)
     return {
+        "script_roots": {str(k): str(v) for k, v in sr.items()},
+        "refresh_databases": refresh_databases,
         "scope": scope,
         "log_dir": val("log_dir", "REGRESSION_LOG_DIR", ""),
         "git_url": val("git_url", "REGRESSION_GIT_URL", ""),
         "git_auth": git_token,                       # SECRET — from .env, never the JSON file
+        # SSH auth (for ssh:// git_url): either a full command override, or a key (+ optional known_hosts)
+        # the engine assembles into a GIT_SSH_COMMAND. All non-secret → fine in the JSON.
+        "git_ssh_command": val("git_ssh_command", "GIT_SSH_COMMAND", ""),
+        "git_ssh_key": val("git_ssh_key", "REGRESSION_GIT_SSH_KEY", ""),
+        "git_known_hosts": val("git_known_hosts", "REGRESSION_GIT_KNOWN_HOSTS", ""),
         "git_workdir": val("git_workdir", "REGRESSION_GIT_WORKDIR", ""),
         "branch_prefix": val("branch_prefix", "REGRESSION_BRANCH_PREFIX", "release/"),
+        "branch_limit": val("branch_limit", "REGRESSION_BRANCH_LIMIT", 10),   # newest-N release branches
         "sql_subdir": val("sql_subdir", "REGRESSION_SQL_SUBDIR", ""),
         "sqlplus_timeout": val("sqlplus_timeout", "REGRESSION_SQLPLUS_TIMEOUT", 3600),
         "git_timeout": val("git_timeout", "REGRESSION_GIT_TIMEOUT", 120),

@@ -6,7 +6,11 @@
     </div>
     @if (state().run; as run) {
       <div class="rg__runinfo">
-        <span class="rg__run">Run #{{ run.run_id }} · started by {{ run.started_by }} ·
+        <span class="rg__run">Run #{{ run.run_id }}
+          @if (run.git_branch) { <span class="rg__sep">|</span> <code class="rg__branch">{{ run.git_branch }}</code> }
+          @if (run.release_date) { <span class="rg__sep">|</span> release <strong class="rg__rel">{{ run.release_date }}</strong> }
+          <span class="rg__sep">|</span> started by {{ run.started_by }}
+          <span class="rg__sep">|</span>
           <span class="rg__run-st" [class.is-done]="run.status === 'complete'">{{ run.status === 'complete' ? 'Completed' : 'In progress' }}</span>
         </span>
         <button type="button" class="rg-iconbtn" (click)="refreshState()" title="Refresh state from the server (e.g. after a dropped connection)" aria-label="Refresh state">
@@ -32,9 +36,45 @@
         <span>Regression run <strong>#{{ lastCompleted() }}</strong> completed.</span>
       </div>
     }
-    <div class="rg__start">
-      <p>{{ lastCompleted() ? 'Start another regression run when ready.' : 'No active regression run. Start one to begin the workflow.' }}</p>
-      <button type="button" class="rg-btn rg-btn--primary" (click)="startRun()">Start regression run</button>
+    <div class="rg__start rg__start--wizard">
+      <h3 class="rg__start-title">Start a regression run</h3>
+      <p class="rg__start-sub">Pick the release <strong>branch</strong>, pull it, then choose the <strong>release date</strong> — the <code>YYYYMMDD</code> folder this cycle targets.</p>
+
+      <div class="rg-row">
+        <button type="button" class="rg-btn" (click)="loadBranches()">Load release branches</button>
+        <select [ngModel]="selectedBranch()" (ngModelChange)="selectedBranch.set($event)">
+          <option value="">Select release/* branch…</option>
+          @for (b of branches(); track b) { <option [value]="b">{{ b }}</option> }
+        </select>
+        <button type="button" class="rg-btn" [disabled]="pulling() || !selectedBranch()" (click)="pullBranch()">
+          {{ pulling() ? 'Pulling…' : 'Pull' }}
+        </button>
+      </div>
+
+      @if (pulled()) {
+        <div class="rg-row rg-row--date">
+          <label class="rg-field">
+            <span class="rg-field__lbl">Release date</span>
+            <span class="rg-field__row">
+              <input type="date" class="rg-field__in rg-field__in--date" [ngModel]="releaseISO()" (ngModelChange)="setReleaseFromISO($event)" />
+              @if (releaseDate()) { <span class="rg-field__as">= <code>{{ releaseDate() }}</code></span> }
+            </span>
+          </label>
+        </div>
+        @if (availableDates().length) {
+          <p class="rg-hint rg-hint--dates">Release folders available in this branch — pick one: {{ availableDatesLabel() }}</p>
+        }
+        @if (releaseDate() && !dateKnown()) {
+          <p class="rg-warn">⚠️ No release folder <code>{{ releaseDate() }}</code> in this branch — pick one of the releases listed above.</p>
+        } @else if (dateKnown()) {
+          <p class="rg-ok-hint">✓ Release folder <code>{{ releaseDate() }}</code> found.</p>
+        }
+        <button type="button" class="rg-btn rg-btn--primary" [disabled]="starting() || !canStart()" (click)="startRun()">
+          {{ starting() ? 'Starting…' : 'Start regression run' }}
+        </button>
+      } @else {
+        <p class="rg-hint">Pull a release branch to choose its release date.</p>
+      }
     </div>
   } @else {
 
@@ -107,31 +147,50 @@
               @switch (step.key) {
 
                 @case ('refresh_db') {
-                  <p class="rg-hint">Select the databases to refresh, then call the DB-refresh API.</p>
-                  <div class="rg-pick">
-                    <div class="rg-pick__label">Databases</div>
-                    <div class="rg-chips">
-                      @for (d of databases; track d.key) {
-                        <label class="rg-chip" [class.is-on]="refreshDbs().includes(d.key)"><input type="checkbox" [checked]="refreshDbs().includes(d.key)" (change)="toggleRefreshDb(d.key)" />{{ d.label }}</label>
-                      }
+                  <p class="rg-hint">Select the OLS CIB database(s) to refresh for this environment, then call the DB-refresh API.</p>
+                  @if (refreshDbList().length) {
+                    <div class="rg-pick">
+                      <div class="rg-pick__label">Databases</div>
+                      <div class="rg-dd">
+                        <button type="button" class="rg-dd__trigger" [class.is-open]="refreshOpen()" (click)="toggleRefreshOpen()" [attr.aria-expanded]="refreshOpen()">
+                          <span [class.rg-dd__placeholder]="!refreshDbs().length">{{ refreshSummary() }}</span>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="rg-chevron rg-chevron--down" [class.is-open]="refreshOpen()" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        @if (refreshOpen()) {
+                          <div class="rg-dd__backdrop" (click)="closeRefreshMenu()"></div>
+                          <div class="rg-dd__panel" role="listbox" aria-label="Databases to refresh">
+                            <div class="rg-dd__tools">
+                              <span>{{ refreshDbs().length }} selected</span>
+                              <button type="button" class="rg-link rg-link--inline" (click)="toggleAllRefreshDbs()">{{ refreshDbs().length === refreshDbList().length ? 'Clear all' : 'Select all' }}</button>
+                            </div>
+                            @for (g of refreshGroups(); track g.category) {
+                              <div class="rg-dd__group">
+                                <div class="rg-dd__grouphdr">
+                                  <span>{{ g.category }}</span>
+                                  <button type="button" class="rg-link rg-link--inline" (click)="toggleGroupRefreshDbs(g.dbs)">{{ groupAllOn(g.dbs) ? 'Clear' : 'All' }}</button>
+                                </div>
+                                @for (d of g.dbs; track d.key) {
+                                  <label class="rg-dd__opt" [class.is-on]="refreshDbs().includes(d.key)">
+                                    <input type="checkbox" [checked]="refreshDbs().includes(d.key)" (change)="toggleRefreshDb(d.key)" />
+                                    <span>{{ d.label }}</span>
+                                  </label>
+                                }
+                              </div>
+                            }
+                          </div>
+                        }
+                      </div>
                     </div>
-                  </div>
-                  <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'refresh_db'" (click)="refreshDb()">
-                    {{ busy() === 'refresh_db' ? 'Refreshing…' : 'Refresh DB' }}
-                  </button>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'refresh_db'" (click)="refreshDb()">
+                      {{ busy() === 'refresh_db' ? 'Refreshing…' : 'Refresh DB' }}
+                    </button>
+                  } @else {
+                    <p class="rg-hint">No databases configured for this environment. <button type="button" class="rg-link rg-link--inline" (click)="loadRefreshDatabases()">Retry</button></p>
+                  }
                 }
 
                 @case ('apply_db') {
-                  <div class="rg-row">
-                    <button type="button" class="rg-btn" (click)="loadBranches()">Load release branches</button>
-                    <select [ngModel]="selectedBranch()" (ngModelChange)="selectedBranch.set($event)">
-                      <option value="">Select release/* branch…</option>
-                      @for (b of branches(); track b) { <option [value]="b">{{ b }}</option> }
-                    </select>
-                    <button type="button" class="rg-btn" [disabled]="pulling() || !selectedBranch()" (click)="pullBranch()">
-                      {{ pulling() ? 'Pulling…' : 'Pull' }}
-                    </button>
-                  </div>
+                  <p class="rg-hint">Applying release <strong>{{ state().run?.release_date }}</strong> — <code>chg*.sql</code> load from each selected database's <code>Scripts/{{ state().run?.release_date }}</code> folder and run on that database only.</p>
 
                   <!-- Release-branch browser (collapsible) -->
                   <div class="rg-browser">
@@ -158,29 +217,35 @@
                     }
                   </div>
 
-                  @if (chgScripts().length) {
-                    <div class="rg-pick">
-                      <div class="rg-pick__label">Scripts (CHG_*.sql)</div>
-                      <div class="rg-chips">
-                        @for (s of chgScripts(); track s) {
-                          <label class="rg-chip" [class.is-on]="applyScripts().includes(s)"><input type="checkbox" [checked]="applyScripts().includes(s)" (change)="toggleApplyScript(s)" />{{ s }}</label>
-                        }
-                      </div>
+                  <div class="rg-pick">
+                    <div class="rg-pick__label">Databases</div>
+                    <div class="rg-chips">
+                      @for (d of databases; track d.key) {
+                        <label class="rg-chip" [class.is-on]="applyDbs().includes(d.key)"><input type="checkbox" [checked]="applyDbs().includes(d.key)" (change)="toggleApplyDb(d.key)" />{{ d.label }}</label>
+                      }
                     </div>
-                    <div class="rg-pick">
-                      <div class="rg-pick__label">Databases</div>
-                      <div class="rg-chips">
-                        @for (d of databases; track d.key) {
-                          <label class="rg-chip" [class.is-on]="applyDbs().includes(d.key)"><input type="checkbox" [checked]="applyDbs().includes(d.key)" (change)="toggleApplyDb(d.key)" />{{ d.label }}</label>
+                  </div>
+                  @if (loadingApply()) {
+                    <p class="rg-hint">Loading chg scripts for release {{ state().run?.release_date }}…</p>
+                  } @else if (applyTotal()) {
+                    <div class="rg-relscripts">
+                      @for (d of applyDbs(); track d) {
+                        @if (applyScriptsByDb()[d]?.length) {
+                          <div class="rg-relgrp">
+                            <div class="rg-relgrp__db">{{ dbLabel(d) }} <span class="rg-relgrp__n">{{ applyScriptsByDb()[d].length }} chg</span></div>
+                            <ul class="rg-relgrp__list">@for (s of applyScriptsByDb()[d]; track s) { <li>{{ s }}</li> }</ul>
+                          </div>
                         }
-                      </div>
+                      }
                     </div>
                     <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db'" (click)="runApply()">
-                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes' }}
+                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applyTotal() + ')' }}
                     </button>
                     @if (applyResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: applyResults() }" /> }
+                  } @else if (applyDbs().length) {
+                    <p class="rg-warn">No <code>chg*.sql</code> found for release {{ state().run?.release_date }} in the selected database folder(s).</p>
                   } @else {
-                    <p class="rg-hint">Pull a release branch to list its <code>CHG_*.sql</code> scripts.</p>
+                    <p class="rg-hint">Select the target database(s) to load this release's <code>chg*.sql</code>.</p>
                   }
                 }
 
@@ -276,7 +341,7 @@
             <strong>✓ Regression run #{{ state().run?.run_id }} completed.</strong>
             <span>Closed out and recorded in the activity log below.</span>
           </div>
-          <button type="button" class="rg-btn" (click)="startRun()">Start new run</button>
+          <button type="button" class="rg-btn" (click)="newRun()">Start new run</button>
         } @else {
           <div class="rg-finish__msg">
             <strong>All steps complete.</strong>

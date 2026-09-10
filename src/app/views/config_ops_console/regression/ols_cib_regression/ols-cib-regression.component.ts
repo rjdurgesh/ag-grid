@@ -14,7 +14,7 @@ import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
   BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
-  RegressionState, RunSqlResult
+  RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 interface StepDef { key: string; title: string; }
@@ -64,8 +64,27 @@ export class OlsCibRegressionComponent implements OnInit {
   readonly lastCompleted = signal<number | null>(null);
   /** A pre-existing in-progress run was loaded on entry (page refresh / someone else's run) → offer resume. */
   readonly resumed = signal(false);
-  /** Refresh DB targets — all 5 DBs selectable, default OLS CIB Batch. */
-  readonly refreshDbs = signal<string[]>(['cib_batch']);
+  /** Refresh DB targets — this scope's env-specific databases (loaded from the backend; DEV/STG can
+   *  have several). Nothing selected by default; the operator picks which to refresh. */
+  readonly refreshDbList = signal<RegressionDb[]>([]);
+  readonly refreshDbs = signal<string[]>([]);
+  readonly refreshOpen = signal(false);                // grouped multi-select dropdown open/closed
+  /** refreshDbList grouped by category (BATCH / REPORTING / …), first-seen order preserved. */
+  readonly refreshGroups = computed(() => {
+    const groups: { category: string; dbs: RegressionDb[] }[] = [];
+    const idx = new Map<string, number>();
+    for (const d of this.refreshDbList()) {
+      const cat = d.category || 'Other';
+      let i = idx.get(cat);
+      if (i === undefined) { i = groups.length; idx.set(cat, i); groups.push({ category: cat, dbs: [] }); }
+      groups[i].dbs.push(d);
+    }
+    return groups;
+  });
+  readonly refreshSummary = computed(() => {
+    const n = this.refreshDbs().length;
+    return n === 0 ? 'Select databases…' : `${n} database${n === 1 ? '' : 's'} selected`;
+  });
   readonly loading = signal(true);
   readonly toast = signal<Toast | null>(null);
   // Auto-dismiss any toast a few seconds after it appears (e.g. "State refreshed.") so it doesn't linger.
@@ -74,13 +93,18 @@ export class OlsCibRegressionComponent implements OnInit {
   });
   readonly busy = signal<string>('');            // step_key currently running
 
-  // Apply DB
+  // Start a run: pick the release/* branch + the release date (YYYYMMDD folder). BOTH identify the release.
   readonly branches = signal<string[]>([]);
   readonly selectedBranch = signal('');
   readonly scripts = signal<string[]>([]);
   readonly pulling = signal(false);
-  readonly applyScripts = signal<string[]>([]);  // selected CHG_*.sql
+  readonly releaseDate = signal('');                 // YYYYMMDD entered at run start (manual + validated)
+  readonly availableDates = signal<string[]>([]);    // release folders found in the pulled branch (type-ahead hint)
+  readonly starting = signal(false);
+  // Apply DB — chg*.sql resolved PER DB from <script-root(db)>/<release_date>/ (never cross-product)
   readonly applyDbs = signal<string[]>(['cib_batch']);
+  readonly applyScriptsByDb = signal<Record<string, string[]>>({});
+  readonly loadingApply = signal(false);
   readonly applyResults = signal<RunSqlResult[]>([]);
 
   // File copy
@@ -153,6 +177,7 @@ export class OlsCibRegressionComponent implements OnInit {
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
     { field: 'load_dt', headerName: 'Date', maxWidth: 120 },
+    { field: 'release_date', headerName: 'Release', maxWidth: 120 },
     { field: 'step_key', headerName: 'Step' },
     { field: 'action', headerName: 'Action' },
     { field: 'status', headerName: 'Status', maxWidth: 130,
@@ -179,7 +204,16 @@ export class OlsCibRegressionComponent implements OnInit {
     return at ? `Last refreshed ${formatDateTime(at)} · ${syncAgo(at, this.nowTick())}` : '';
   }
 
-  readonly chgScripts = computed(() => this.scripts().filter((s) => /(^|\/)CHG_/i.test(s)));
+  readonly dateFormatOk = computed(() => /^\d{8}$/.test(this.releaseDate()));
+  readonly dateKnown = computed(() => this.availableDates().includes(this.releaseDate()));
+  // Start is enabled ONLY when the chosen date is a real release folder in the pulled branch.
+  readonly canStart = computed(() => this.pulled() && this.dateKnown());
+  // The date picker works in ISO (YYYY-MM-DD); releaseDate stays canonical YYYYMMDD.
+  readonly releaseISO = computed(() => this.toIso(this.releaseDate()));
+  readonly availableDatesLabel = computed(() => this.availableDates().map((d) => this.toIso(d)).join(', '));
+  readonly applyTotal = computed(() => Object.values(this.applyScriptsByDb()).reduce((n, a) => n + a.length, 0));
+  private toIso(d: string): string { return /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : ''; }
+  setReleaseFromISO(iso: string): void { this.releaseDate.set((iso || '').replaceAll('-', '')); }
   /** Every step complete or forced → the run can be closed out. */
   readonly allStepsDone = computed(() => {
     const st = this.state().steps;
@@ -197,17 +231,24 @@ export class OlsCibRegressionComponent implements OnInit {
       },
       error: (e) => { this.loading.set(false); this.fail(e, 'Could not load the regression run'); }
     });
+    this.loadRefreshDatabases(); // env-specific DBs for this scope's Refresh-DB picker
     this.loadActivity();
     this.loadBatches();          // show batch status by default — don't make the user click Refresh
     // Tick every second so the "N sec ago" last-refreshed labels stay live.
     interval(1000).pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.nowTick.set(Date.now()));
   }
 
-  /** Re-hydrate the pulled-branch scripts after a refresh/resume so Apply/Reset/Trigger work again. */
+  /** Re-hydrate the pulled-branch context after a refresh/resume: branch, release date, scripts, and the
+   *  current release's chg-per-DB so Apply/Reset/Trigger work again without re-pulling. */
   private restoreContext(): void {
+    const run = this.state().run;
+    if (run?.git_branch) { this.selectedBranch.set(run.git_branch); this.repoBranch.set(run.git_branch); }
+    if (run?.release_date) { this.releaseDate.set(run.release_date); }
     this.svc.gitScripts().subscribe({
       next: (r) => { if (r.scripts?.length) { this.scripts.set(r.scripts); this.pulled.set(true); } }
     });
+    this.svc.releaseDates().subscribe({ next: (r) => this.availableDates.set(r.release_dates ?? []) });
+    if (run?.release_date) { this.loadReleaseScripts(); }
   }
 
   /** Dismiss the resume banner and keep working on the existing run. */
@@ -224,7 +265,7 @@ export class OlsCibRegressionComponent implements OnInit {
     if (!ok) { return; }
     this.resumed.set(false);
     this.svc.completeRun(old, 'abandoned').subscribe({
-      next: () => this.startRun(),
+      next: () => this.newRun(),                    // back to the start panel — pick branch + release date again
       error: (e) => this.fail(e, 'Could not close the old run')
     });
   }
@@ -311,17 +352,34 @@ export class OlsCibRegressionComponent implements OnInit {
   }
   private step(key: string): StepDef { return this.steps.find((s) => s.key === key)!; }
 
+  /** Start a run for a specific release: the pulled branch + the entered release date (hard-validated
+   *  server-side against the folders in that branch — a wrong/absent date is rejected, no run created). */
   startRun(): void {
-    this.svc.runStart().subscribe({
+    const b = this.selectedBranch();
+    const d = this.releaseDate();
+    if (!b || !this.pulled()) { void this.notifyRequired('Select a release branch and Pull it first.'); return; }
+    if (!/^\d{8}$/.test(d)) { void this.notifyRequired('Enter the release date as YYYYMMDD (e.g. 20260910).'); return; }
+    this.starting.set(true);
+    this.svc.runStart(b, d).subscribe({
       next: (s) => {
-        this.state.set(s); this.toast.set({ kind: 'ok', text: 'Regression run started.' });
+        this.starting.set(false);
+        this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
-        // fresh run — nothing pulled yet; reset the branch browser
-        this.pulled.set(false); this.tree.set([]); this.scripts.set([]); this.repoBranch.set(''); this.repoWorkdir.set('');
+        this.applyScriptsByDb.set({}); this.applyResults.set([]);
+        this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
         this.loadActivity();
       },
-      error: (e) => this.fail(e, 'Could not start the run')
+      error: (e) => { this.starting.set(false); this.fail(e, 'Could not start the run'); }
     });
+  }
+
+  /** Return to the "start a run" panel (after completing/abandoning) so the user picks a branch + date. */
+  newRun(): void {
+    this.state.set({ run: null, steps: {} });
+    this.resumed.set(false);
+    this.pulled.set(false); this.tree.set([]); this.scripts.set([]); this.repoBranch.set(''); this.repoWorkdir.set('');
+    this.selectedBranch.set(''); this.releaseDate.set(''); this.availableDates.set([]);
+    this.applyScriptsByDb.set({}); this.applyResults.set([]);
   }
 
   /** Close out the run once every step is complete/forced — logs completion + marks it finished. */
@@ -357,6 +415,12 @@ export class OlsCibRegressionComponent implements OnInit {
   }
 
   async forceComplete(step: StepDef): Promise<void> {
+    // Already done (run or forced)? Block re-forcing with a warning naming the release.
+    const st = this.stepStatus(step.key);
+    if (st === 'complete' || st === 'forced') {
+      await this.notifyRequired(`“${step.title}” is already ${st === 'forced' ? 'force-' : ''}completed for release ${this.state().run?.release_date ?? ''}. There's nothing to force.`);
+      return;
+    }
     const ok = await this.confirm.ask({
       title: 'Force-mark complete',
       message: `Force “${step.title}” to Complete without running it? This is logged as a forced override.`,
@@ -380,7 +444,30 @@ export class OlsCibRegressionComponent implements OnInit {
   }
 
   // --- step 1: Refresh DB ----------------------------------------------------
+  /** Load this scope's refreshable DBs for the current env (DEV/STG may have several). */
+  loadRefreshDatabases(): void {
+    this.svc.refreshDatabases().subscribe({
+      next: (r) => this.refreshDbList.set(r.databases ?? []),
+      error: (e) => this.fail(e, 'Could not load the databases for this environment')
+    });
+  }
   toggleRefreshDb(d: string): void { this.refreshDbs.set(this.toggle(this.refreshDbs(), d)); }
+  toggleRefreshOpen(): void { this.refreshOpen.set(!this.refreshOpen()); }
+  closeRefreshMenu(): void { this.refreshOpen.set(false); }
+  /** Select all / none of this env's refreshable DBs. */
+  toggleAllRefreshDbs(): void {
+    const all = this.refreshDbList().map((d) => d.key);
+    this.refreshDbs.set(this.refreshDbs().length === all.length ? [] : all);
+  }
+  /** Select all / none within one category group. */
+  toggleGroupRefreshDbs(dbs: RegressionDb[]): void {
+    const keys = dbs.map((d) => d.key);
+    const allOn = keys.every((k) => this.refreshDbs().includes(k));
+    const cur = new Set(this.refreshDbs());
+    keys.forEach((k) => (allOn ? cur.delete(k) : cur.add(k)));
+    this.refreshDbs.set([...cur]);
+  }
+  groupAllOn(dbs: RegressionDb[]): boolean { return dbs.length > 0 && dbs.every((d) => this.refreshDbs().includes(d.key)); }
 
   async refreshDb(): Promise<void> {
     if (!this.refreshDbs().length) { await this.notifyRequired('Select at least one database to refresh.'); return; }
@@ -410,8 +497,10 @@ export class OlsCibRegressionComponent implements OnInit {
         this.pulled.set(true);
         this.repoBranch.set(b);            // reflect the just-pulled branch immediately
         this.scripts.set(r.scripts ?? []);
+        this.availableDates.set(r.release_dates ?? []);   // release folders in THIS branch → the date hint
         this.tree.set([]);                 // drop the previous branch's tree; reload for this one
-        this.toast.set({ kind: 'ok', text: `Pulled ${b} — ${r.scripts?.length ?? 0} script(s).` });
+        const nd = r.release_dates?.length ?? 0;
+        this.toast.set({ kind: 'ok', text: `Pulled ${b} — ${nd} release date(s) found.` });
         if (this.browserOpen()) { this.loadTree(); }
       },
       error: (e) => { this.pulling.set(false); this.fail(e, 'Pull failed'); }
@@ -472,21 +561,63 @@ export class OlsCibRegressionComponent implements OnInit {
       error: (e) => this.fail(e, 'Could not read the file')
     });
   }
-  toggleApplyScript(s: string): void { this.applyScripts.set(this.toggle(this.applyScripts(), s)); }
-  toggleApplyDb(d: string): void { this.applyDbs.set(this.toggle(this.applyDbs(), d)); }
+  toggleApplyDb(d: string): void { this.applyDbs.set(this.toggle(this.applyDbs(), d)); this.loadReleaseScripts(); }
+
+  /** Load this run's chg*.sql for the selected DB(s) from their <release_date> folders (per DB). */
+  loadReleaseScripts(): void {
+    const d = this.state().run?.release_date;
+    if (!d || !this.applyDbs().length) { this.applyScriptsByDb.set({}); return; }
+    this.loadingApply.set(true);
+    this.svc.releaseScripts(d, this.applyDbs()).subscribe({
+      next: (r) => { this.loadingApply.set(false); this.applyScriptsByDb.set(r.scripts ?? {}); },
+      error: (e) => { this.loadingApply.set(false); this.fail(e, 'Could not load release scripts'); }
+    });
+  }
 
   async runApply(): Promise<void> {
-    if (!this.applyScripts().length || !this.applyDbs().length) {
-      await this.notifyRequired(
-        !this.applyScripts().length && !this.applyDbs().length ? 'Select at least one CHG script and one target database before applying.'
-        : !this.applyScripts().length ? 'Select at least one CHG script to apply.'
-        : 'Select at least one target database before applying.');
+    const d = this.state().run?.release_date;
+    if (!d) { await this.notifyRequired('This run has no release date.'); return; }
+    if (!this.applyDbs().length) { await this.notifyRequired('Select at least one target database.'); return; }
+    const map = this.applyScriptsByDb();
+    // Each DB runs ONLY its own folder's chg scripts (batch on cib_batch, reporting on cib_reporting) — never cross-product.
+    const queue = this.applyDbs().map((db) => ({ db, scripts: map[db] ?? [] })).filter((q) => q.scripts.length);
+    if (!queue.length) {
+      await this.notifyRequired(`No chg*.sql found for release ${d} in the selected database folder(s). Pick a database that has scripts for this release.`);
       return;
     }
+    const total = queue.reduce((n, q) => n + q.scripts.length, 0);
     const ok = await this.confirmStepRun(this.step('apply_db'),
-      `Run ${this.applyScripts().length} script(s) on ${this.applyDbs().length} database(s) via sqlplus?`, 'Apply');
+      `Run ${total} chg script(s) for release ${d} across ${queue.length} database(s) via sqlplus?`, 'Apply');
     if (!ok) { return; }
-    this.runSqlStep('apply_db', this.applyScripts(), this.applyDbs(), this.applyResults);
+    this.applyResults.set([]);
+    this.busy.set('apply_db');
+    this.viewerKind.set('console'); this.consoleCollapsed.set(false); this.consoleMax.set(false); this.consoleRunning.set(true);
+    this.logTitle.set('Execution log — running…'); this.logContent.set('');
+    this.applyQueue = [...queue];
+    this.runApplyQueue();
+  }
+
+  // Apply runs the DBs sequentially (each with its own scripts), streaming into the one console.
+  private applyQueue: { db: string; scripts: string[] }[] = [];
+  private runApplyQueue(): void {
+    const next = this.applyQueue.shift();
+    if (!next) {
+      this.busy.set(''); this.consoleRunning.set(false);
+      const anyErr = this.applyResults().some((r) => r.status !== 'complete');
+      this.logTitle.set(anyErr ? 'Execution log — completed with errors' : 'Execution log');
+      this.toast.set(anyErr ? { kind: 'err', text: 'Apply completed with errors — check the console.' }
+                            : { kind: 'ok', text: 'Apply completed successfully.' });
+      this.reloadState();
+      return;
+    }
+    this.logContent.update((c) => (c ? `${c}\n` : '') + `########## ${this.dbLabel(next.db)} ##########`);
+    this.svc.runSqlStream(this.runId, 'apply_db', next.scripts, [next.db], {
+      line: (t) => { if (this.consoleRunning()) { this.logContent.update((c) => (c ? `${c}\n${t}` : t)); } },
+      result: (r) => this.applyResults.update((a) => [...a, r]),
+      step: () => { /* per-DB status folded into the final summary */ },
+      done: () => this.runApplyQueue(),
+      error: (e) => { this.busy.set(''); this.consoleRunning.set(false); this.fail(e, 'Apply failed'); }
+    });
   }
 
   // --- step 3: File copy -----------------------------------------------------

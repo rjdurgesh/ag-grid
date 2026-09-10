@@ -5,8 +5,9 @@ operations. The API layer (``regression_api.py``) orchestrates them and writes t
 
 Every function takes a per-scope ``cfg`` dict (from ``config_loader.regression_scope_config(scope)``)
 so cib / retail / group can each point at their OWN git repo, work dir, log dir and NAS feed path. The
-cfg keys used here: ``git_url``, ``git_auth`` (secret token, from .env), ``git_workdir``,
-``branch_prefix``, ``sql_subdir``, ``log_dir``, ``sqlplus_timeout``, ``git_timeout``.
+cfg keys used here: ``git_url``, ``git_auth`` (secret token, from .env), ``git_ssh_command`` /
+``git_ssh_key`` / ``git_known_hosts`` (SSH auth for ssh:// remotes), ``git_workdir``, ``branch_prefix``,
+``sql_subdir``, ``log_dir``, ``sqlplus_timeout``, ``git_timeout``.
 
 SECURITY: the git token stays server-side (never sent to the UI). The DB password is fed to sqlplus
 over STDIN (never on the command line). Only DEV/STG use this screen.
@@ -39,11 +40,33 @@ def _auth_url(cfg: dict) -> str:
     return url
 
 
+def _git_env(cfg: dict) -> dict:
+    """Process environment for every git subprocess. For ssh:// remotes it sets GIT_SSH_COMMAND from
+    config — a full ``git_ssh_command`` override, else assembled from ``git_ssh_key`` (+ optional
+    ``git_known_hosts``). We set it EXPLICITLY on the subprocess (not via os.environ) so it works even
+    when .env isn't loaded into the process env. HTTPS remotes configure neither and inherit the env
+    unchanged. (An already-set GIT_SSH_COMMAND in the real environment is honoured as the last resort.)"""
+    env = os.environ.copy()
+    cmd = (cfg.get("git_ssh_command") or "").strip()
+    if not cmd:
+        key = (cfg.get("git_ssh_key") or "").strip()
+        if key:
+            parts = ["ssh", "-i", key, "-o", "IdentitiesOnly=yes"]
+            kh = (cfg.get("git_known_hosts") or "").strip()
+            if kh:
+                parts += ["-o", f"UserKnownHostsFile={kh}"]
+            cmd = " ".join(f'"{p}"' if " " in p else p for p in parts)
+    if cmd:
+        env["GIT_SSH_COMMAND"] = cmd
+    return env
+
+
 def list_release_branches(cfg: dict) -> list[str]:
-    """Remote branches whose name starts with the scope's branch prefix (e.g. release/*)."""
+    """The most-recent release branches (name starts with the scope's prefix, e.g. release/*), **newest
+    first, capped at `branch_limit`** (default 10) — `release/YYYY-MM-DD` sorts chronologically."""
     prefix = cfg.get("branch_prefix", "release/")
     out = subprocess.run(["git", "ls-remote", "--heads", _auth_url(cfg)],
-                         capture_output=True, text=True, timeout=cfg.get("git_timeout", 120))
+                         capture_output=True, text=True, timeout=cfg.get("git_timeout", 120), env=_git_env(cfg))
     if out.returncode != 0:
         raise RuntimeError(f"git ls-remote failed: {out.stderr.strip()[:400]}")
     names = []
@@ -52,7 +75,8 @@ def list_release_branches(cfg: dict) -> list[str]:
         name = ref.replace("refs/heads/", "")
         if name.startswith(prefix):
             names.append(name)
-    return sorted(names)
+    limit = int(cfg.get("branch_limit", 10) or 10)
+    return sorted(names, reverse=True)[:limit]
 
 
 def git_pull_branch(cfg: dict, branch: str) -> str:
@@ -65,16 +89,17 @@ def git_pull_branch(cfg: dict, branch: str) -> str:
     if not workdir:
         raise RuntimeError("git_workdir is not configured for this scope.")
     wd = Path(workdir)
+    genv = _git_env(cfg)
     if (wd / ".git").is_dir():
         for args in (["fetch", "origin", branch], ["checkout", branch],
                      ["reset", "--hard", f"origin/{branch}"]):
-            r = subprocess.run(["git", "-C", str(wd), *args], capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(["git", "-C", str(wd), *args], capture_output=True, text=True, timeout=timeout, env=genv)
             if r.returncode != 0:
                 raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()[:400]}")
     else:
         wd.parent.mkdir(parents=True, exist_ok=True)
         r = subprocess.run(["git", "clone", "--branch", branch, "--depth", "1", _auth_url(cfg), str(wd)],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout, env=genv)
         if r.returncode != 0:
             raise RuntimeError(f"git clone failed: {r.stderr.strip()[:400]}")
     return str(wd)
@@ -88,6 +113,54 @@ def list_branch_scripts(cfg: dict) -> list[str]:
     if not root.is_dir():
         return []
     return sorted(str(p.relative_to(wd)).replace("\\", "/") for p in root.rglob("*.sql"))
+
+
+# --- release-date scripts ---------------------------------------------------
+# A release lives in a YYYYMMDD folder under a scope's Scripts root(s); older releases accumulate.
+# CIB splits Batch/Reporting (→ cib_batch / cib_reporting DBs); retail/group use one root (key "*").
+
+def _script_roots(cfg: dict) -> dict:
+    """DB-key → repo-relative Scripts folder. Falls back to a single catch-all ('*' = sql_subdir) when
+    ``script_roots`` isn't configured."""
+    roots = cfg.get("script_roots") or {}
+    return dict(roots) if roots else {"*": cfg.get("sql_subdir", "")}
+
+
+def _root_for_db(cfg: dict, db: str) -> str:
+    """The Scripts root for one DB: its own entry, else the '*' catch-all, else sql_subdir."""
+    roots = _script_roots(cfg)
+    return roots.get(db) or roots.get("*") or cfg.get("sql_subdir", "")
+
+
+def list_release_dates(cfg: dict) -> list[str]:
+    """YYYYMMDD release folders present under ANY configured script root, newest first. Populates the
+    run-start date hint and backs the 'does this release exist?' validation."""
+    wd = Path(cfg.get("git_workdir", ""))
+    if not wd.is_dir():
+        return []
+    dates: set[str] = set()
+    for root in set(_script_roots(cfg).values()):
+        base = (wd / root) if root else wd
+        if base.is_dir():
+            for p in base.iterdir():
+                if p.is_dir() and p.name.isdigit() and len(p.name) == 8:
+                    dates.add(p.name)
+    return sorted(dates, reverse=True)
+
+
+def list_release_scripts(cfg: dict, release_date: str, db: str) -> list[str]:
+    """chg*.sql (case-insensitive) under <script_root(db)>/<release_date>/ for one DB — repo-relative
+    posix paths. Empty list when that DB has no folder for the release."""
+    if not (release_date.isdigit() and len(release_date) == 8):
+        raise RuntimeError("release_date must be an 8-digit YYYYMMDD folder name.")
+    wd = Path(cfg.get("git_workdir", ""))
+    root = _root_for_db(cfg, db)
+    base = (wd / root / release_date) if root else (wd / release_date)
+    if not base.is_dir():
+        return []
+    out = [str(p.relative_to(wd)).replace("\\", "/") for p in base.rglob("*")
+           if p.is_file() and p.name.lower().startswith("chg") and p.name.lower().endswith(".sql")]
+    return sorted(out)
 
 
 def _script_abspath(cfg: dict, rel: str) -> Path:
@@ -112,16 +185,26 @@ def repo_info(cfg: dict) -> dict:
     return {"workdir": str(wd), "branch": branch}
 
 
-def list_repo_tree(cfg: dict) -> list[str]:
+_TREE_SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".idea", ".vscode"}
+
+
+def list_repo_tree(cfg: dict, limit: int = 5000) -> list[str]:
     """Every file in the pulled branch (repo-relative posix paths), so the UI can browse it and
-    verify that referenced packages/procs exist. Excludes the .git dir."""
+    verify that referenced packages/procs exist. PRUNES heavy dirs (.git, node_modules, …) DURING the
+    walk — never descends into them — and caps the count, so a big repo (many accumulated release
+    folders + a full .git) can't hang the listing. Returns whether it was truncated via a trailing
+    sentinel is avoided; the caller treats a len==limit result as 'capped'."""
     wd = Path(cfg.get("git_workdir", ""))
     if not wd.is_dir():
         return []
-    return sorted(
-        str(p.relative_to(wd)).replace("\\", "/")
-        for p in wd.rglob("*") if p.is_file() and ".git" not in p.parts
-    )
+    out: list[str] = []
+    for root, dirs, files in os.walk(wd):
+        dirs[:] = [d for d in dirs if d not in _TREE_SKIP_DIRS]   # prune IN PLACE → os.walk won't descend
+        for f in files:
+            out.append(os.path.relpath(os.path.join(root, f), wd).replace("\\", "/"))
+            if len(out) >= limit:
+                return sorted(out)
+    return sorted(out)
 
 
 def read_repo_file(cfg: dict, rel: str, max_chars: int = 400_000) -> str:

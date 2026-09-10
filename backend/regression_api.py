@@ -76,6 +76,16 @@ class PullBody(Caller):
     branch: str
 
 
+class StartBody(Caller):
+    branch: str = ""               # the release/* branch this run applies
+    release_date: str = ""         # YYYYMMDD folder — validated against the pulled branch
+
+
+class ReleaseScriptsBody(Caller):
+    release_date: str
+    dbs: list[str] = []            # chg*.sql are resolved PER DB (each DB has its own Scripts folder)
+
+
 class RunSqlBody(Caller):
     run_id: int
     step_key: str                  # apply_db | reset | trigger
@@ -166,12 +176,23 @@ def run_current(request: Request, body: Caller) -> dict:
 
 
 @router.post("/run/start")
-def run_start(request: Request, body: Caller) -> dict:
+def run_start(request: Request, body: StartBody) -> dict:
+    """Open a run for a specific release: the pulled `branch` + a `release_date` (YYYYMMDD folder).
+    The date is HARD-VALIDATED against the release folders actually present in the pulled branch, so a
+    wrong/absent date is rejected with the list of what's available (no run is created)."""
     cfg = _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
-        return {"status": "success", "run": {"run_id": 1, "app_env": "DEV", "status": "in_progress", "started_by": body.caller}, "steps": {}}
+        return {"status": "success", "run": {"run_id": 1, "app_env": "DEV", "status": "in_progress",
+                                             "started_by": body.caller, "git_branch": body.branch,
+                                             "release_date": body.release_date}, "steps": {}}
+    scfg = config_loader.regression_scope_config(body.scope)
+    available = ops.list_release_dates(scfg)
+    if not body.release_date or body.release_date not in available:
+        shown = ", ".join(available[:12]) if available else "(none found — pull the release branch first)"
+        raise HTTPException(status_code=400,
+                            detail=f"No release folder '{body.release_date or ''}' in the pulled branch. Available: {shown}")
     env = request.app.state.app_env
-    rid = database.regression_run_start(cfg, env, body.caller)
+    rid = database.regression_run_start(cfg, env, body.caller, body.branch, body.release_date)
     return {"status": "success", **(database.regression_run_current(cfg, env) or {"run": {"run_id": rid}, "steps": {}})}
 
 
@@ -202,6 +223,28 @@ def step_unlock(request: Request, body: UnlockBody) -> dict:
     database.regression_log_write(cfg, body.run_id, body.step_key, "unlock", "error", body.caller,
                                   comments=f"Stuck in-progress step cleared by {body.caller}.", start_time=now, end_time=now)
     return {"status": "success", **(database.regression_run_current(cfg, request.app.state.app_env) or {})}
+
+
+@router.post("/refresh-databases")
+def refresh_databases(request: Request, body: Caller) -> dict:
+    """The databases refreshable for THIS scope in the current env (DEV/STG can have several — both
+    batch + reporting). Scope-specific (cib screen → cib DBs) and env-specific (per-server config), so
+    the Refresh-DB picker only ever shows this env's own databases. `{databases: [{key,label}]}`."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        env = str(getattr(request.app.state, "app_env", "DEV")).upper() or "DEV"
+        # grouped BATCH / REPORTING, with a few instances each to exercise the dropdown
+        canned = {
+            "cib": {"BATCH": [f"OLS_CIB_BATCH_{env}", f"OLS_CIB_BATCH_{env}_02", f"OLS_CIB_BATCH_{env}_03"],
+                    "REPORTING": [f"OLS_CIB_REPORTING_{env}", f"OLS_CIB_REPORTING_{env}_02"]},
+            "retail": {"BATCH": [f"OLS_RET_BATCH_{env}", f"OLS_RET_BATCH_{env}_02"],
+                       "REPORTING": [f"OLS_RET_REPORTING_{env}"]},
+            "group": {"BATCH": [f"OLS_GROUP_{env}"]},
+        }
+        groups = canned.get(body.scope, canned["cib"])
+        dbs = [{"key": n, "label": n, "category": cat} for cat, names in groups.items() for n in names]
+        return {"status": "success", "databases": dbs}
+    return {"status": "success", "databases": config_loader.regression_scope_config(body.scope)["refresh_databases"]}
 
 
 @router.post("/refresh-db")
@@ -240,7 +283,7 @@ def run_complete(request: Request, body: CompleteBody) -> dict:
 def git_branches(request: Request, body: Caller) -> dict:
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
-        return {"status": "success", "branches": ["release/20260828", "release/20260815"]}
+        return {"status": "success", "branches": ["release/2026-09-10", "release/2026-08-15"]}
     try:
         return {"status": "success", "branches": ops.list_release_branches(config_loader.regression_scope_config(body.scope))}
     except Exception as exc:  # noqa: BLE001
@@ -251,13 +294,49 @@ def git_branches(request: Request, body: Caller) -> dict:
 def git_pull(request: Request, body: PullBody) -> dict:
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
-        return {"status": "success", "scripts": ["apply/CHG_20260828.sql", "apply/CHG_20260828_MISC1.sql", "reset/reset_batches.sql", "trigger/trigger_all.sql"]}
+        return {"status": "success", "scripts": ["reset/reset_batches.sql", "trigger/trigger_all.sql"],
+                "release_dates": ["20260910", "20260815", "20260710"]}
     cfg = config_loader.regression_scope_config(body.scope)
     try:
         ops.git_pull_branch(cfg, body.branch)
-        return {"status": "success", "scripts": ops.list_branch_scripts(cfg)}
+        # release_dates → the run-start date hint + validation source (folders in THIS pulled branch)
+        return {"status": "success", "scripts": ops.list_branch_scripts(cfg),
+                "release_dates": ops.list_release_dates(cfg)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.post("/release/dates")
+def release_dates(request: Request, body: Caller) -> dict:
+    """Release folders (YYYYMMDD) present in the pulled branch, newest first — refresh the date hint
+    without re-pulling."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "release_dates": ["20260910", "20260815", "20260710"]}
+    return {"status": "success", "release_dates": ops.list_release_dates(config_loader.regression_scope_config(body.scope))}
+
+
+@router.post("/release/scripts")
+def release_scripts(request: Request, body: ReleaseScriptsBody) -> dict:
+    """chg*.sql for a release, resolved PER DB (cib_batch ← CIB/Batch/Scripts/<date>, cib_reporting ←
+    CIB/Reporting/Scripts/<date>, retail/group ← their single root). Returns {db: [scripts]} so the
+    Apply step runs each DB's scripts against that DB only (never cross-product)."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        canned = {
+            "cib_batch": [f"CIB/Batch/Scripts/{body.release_date}/chg_batch_001.sql",
+                          f"CIB/Batch/Scripts/{body.release_date}/chg_batch_002.sql"],
+            "cib_reporting": [f"CIB/Reporting/Scripts/{body.release_date}/chg_rpt_001.sql"],
+            "retail_batch": [f"RET/Scripts/{body.release_date}/chg_ret_001.sql"],
+            "retail_reporting": [f"RET/Scripts/{body.release_date}/chg_ret_001.sql"],
+            "group": [f"Scripts/{body.release_date}/chg_grp_001.sql"],
+        }
+        return {"status": "success", "scripts": {d: canned.get(d, []) for d in (body.dbs or ["cib_batch"])}}
+    cfg = config_loader.regression_scope_config(body.scope)
+    try:
+        return {"status": "success", "scripts": {d: ops.list_release_scripts(cfg, body.release_date, d) for d in body.dbs}}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/git/scripts")

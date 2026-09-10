@@ -48,8 +48,11 @@ work/log dirs and NAS feed manifest. `defaults` applies to every scope unless a 
 
 | Key (per scope) | Meaning |
 |-----------------|---------|
-| `git_url` | release repo (https). The **token is NOT here** — it's `REGRESSION_GIT_TOKEN[_<SCOPE>]` in `.env`, injected at runtime. |
+| `git_url` | release repo. **HTTPS** (`https://…`) → token auth (`REGRESSION_GIT_TOKEN[_<SCOPE>]` in `.env`, injected at runtime; **never here**). **SSH** (`ssh://git@host:<port>/…`) → no token; use `git_ssh_key` below. |
+| `git_ssh_key` / `git_known_hosts` | SSH auth for an `ssh://` `git_url`: private-key path (+ optional known_hosts path). The engine builds `GIT_SSH_COMMAND` from them and sets it on the git subprocess (so it works even if `.env` isn't in `os.environ`). **Use forward slashes** (`C:/Users/keys/id_ed25519`). Usually set once in `defaults`. Full override: `git_ssh_command`. |
 | `git_workdir` | local checkout dir for that scope |
+| `refresh_databases` | this scope's **refreshable DBs for THIS server's env**, **grouped by category** (DEV/STG can have several per group; per-server file → DEV lists DEV DBs, STG lists STG DBs). Drives the Refresh-DB grouped multi-select dropdown. Grouped object `{ "BATCH": ["OLS_CIB_BATCH_DEV","OLS_CIB_BATCH_DEV_02"], "REPORTING": ["OLS_CIB_REPORTING_DEV"] }` (or a flat array of names / `{key,label,category}`). |
+| `script_roots` | map of **DB key → repo-relative Scripts folder**; the tool appends the run's `<release_date>` (YYYYMMDD) folder and runs `chg*.sql` from it. Use `"*"` as the key when one root serves every DB. e.g. cib `{ "cib_batch": "CIB/Batch/Scripts", "cib_reporting": "CIB/Reporting/Scripts" }`, retail `{ "*": "RET/Scripts" }`, group `{ "*": "Scripts" }`. Falls back to `sql_subdir` if unset. |
 | `log_dir` | base dir for sqlplus run logs (`<dir>\<YYYYMMDD>\<script>__<db>.log`) |
 | `filecopy_manifest` | developer file-copy JSON (`{items:[{source,destination}]}`) |
 | `refresh_url` | step-1 DB-refresh API (dummy for now) |
@@ -57,6 +60,7 @@ work/log dirs and NAS feed manifest. `defaults` applies to every scope unless a 
 | Key (`defaults`) | Meaning | Default |
 |------------------|---------|---------|
 | `branch_prefix` | only these branches are listed/pullable | `release/` |
+| `branch_limit` | newest-N release branches returned (newest first) | `10` |
 | `sql_subdir` | sub-path of the repo holding `.sql` (`""` = root) | `""` |
 | `sqlplus_timeout` / `git_timeout` | seconds | `3600` / `120` |
 | `step_stale_minutes` | in-progress step older than this → stale/unlockable | `30` |

@@ -1,7 +1,10 @@
 {
-  "_comment": "Regression screen config, PER SCOPE. Copy to regression.json (gitignored, per server). SECRETS are NOT here: the git token stays in .env as REGRESSION_GIT_TOKEN_<SCOPE> (or REGRESSION_GIT_TOKEN). Any key left out falls back to defaults, then to the legacy REGRESSION_* .env var.",
+  "_comment": "Regression screen config, PER SCOPE. Copy to regression.json (gitignored, per server). SECRETS are NOT here: the git token (HTTPS only) stays in .env as REGRESSION_GIT_TOKEN_<SCOPE> (or REGRESSION_GIT_TOKEN). For an ssh:// git_url, set git_ssh_key (+ git_known_hosts) below instead of a token — the engine builds GIT_SSH_COMMAND from them. Use forward slashes in paths. refresh_databases lists THIS scope's refreshable DBs for THIS server's env, GROUPED by category (e.g. BATCH / REPORTING) shown as a grouped dropdown; DEV/STG can have several per group; per-server file, so the DEV server lists DEV DBs and the STG server lists STG DBs. script_roots maps each DB to its repo-relative Scripts folder; the tool appends the selected <release_date> (YYYYMMDD) folder and runs chg*.sql from it. cib+retail can share ONE git_url (split by CIB/ vs RET/ folders); group is its own repo. Use '*' as the DB key when one Scripts root serves every DB in the scope. Any key left out falls back to defaults, then to the legacy REGRESSION_* .env var.",
   "defaults": {
     "branch_prefix": "release/",
+    "branch_limit": 10,
+    "git_ssh_key": "",
+    "git_known_hosts": "",
     "sql_subdir": "",
     "sqlplus_timeout": 3600,
     "git_timeout": 120,
@@ -10,24 +13,37 @@
   },
   "scopes": {
     "cib": {
-      "git_url": "https://git.example.com/ols/cib-release.git",
-      "git_workdir": "D:\\ols\\regression\\cib\\work",
-      "log_dir": "D:\\ols\\regression\\cib\\logs",
-      "filecopy_manifest": "\\\\nas\\ols\\cib\\filecopy.json",
+      "git_url": "ssh://git@bitbucket.example.net:7999/ols/ols.git",
+      "git_workdir": "D:/ols/regression/cib/work",
+      "log_dir": "D:/ols/regression/cib/logs",
+      "script_roots": {
+        "cib_batch": "CIB/Batch/Scripts",
+        "cib_reporting": "CIB/Reporting/Scripts"
+      },
+      "refresh_databases": { "BATCH": ["OLS_CIB_BATCH_DEV", "OLS_CIB_BATCH_DEV_02"], "REPORTING": ["OLS_CIB_REPORTING_DEV"] },
+      "filecopy_manifest": "//nas/ols/cib/filecopy.json",
       "refresh_url": ""
     },
     "retail": {
-      "git_url": "https://git.example.com/ols/retail-release.git",
-      "git_workdir": "D:\\ols\\regression\\retail\\work",
-      "log_dir": "D:\\ols\\regression\\retail\\logs",
-      "filecopy_manifest": "\\\\nas\\ols\\retail\\filecopy.json",
+      "git_url": "ssh://git@bitbucket.example.net:7999/ols/ols.git",
+      "git_workdir": "D:/ols/regression/retail/work",
+      "log_dir": "D:/ols/regression/retail/logs",
+      "script_roots": {
+        "*": "RET/Scripts"
+      },
+      "refresh_databases": { "BATCH": ["OLS_RET_BATCH_DEV"], "REPORTING": ["OLS_RET_REPORTING_DEV"] },
+      "filecopy_manifest": "//nas/ols/retail/filecopy.json",
       "refresh_url": ""
     },
     "group": {
-      "git_url": "https://git.example.com/ols/group-release.git",
-      "git_workdir": "D:\\ols\\regression\\group\\work",
-      "log_dir": "D:\\ols\\regression\\group\\logs",
-      "filecopy_manifest": "\\\\nas\\ols\\group\\filecopy.json",
+      "git_url": "ssh://git@bitbucket.example.net:7999/ols/group.git",
+      "git_workdir": "D:/ols/regression/group/work",
+      "log_dir": "D:/ols/regression/group/logs",
+      "script_roots": {
+        "*": "Scripts"
+      },
+      "refresh_databases": { "BATCH": ["OLS_GROUP_DEV"] },
+      "filecopy_manifest": "//nas/ols/group/filecopy.json",
       "refresh_url": ""
     }
   }

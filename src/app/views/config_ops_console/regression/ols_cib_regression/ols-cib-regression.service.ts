@@ -7,7 +7,7 @@ import { environment } from '../../../../../environments/environment';
 import { RbacService } from '../../../../auth/rbac.service';
 import {
   BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
-  RegressionState, RunSqlResult
+  RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 /** Live-stream callbacks for a run-sql-stream (Apply / Reset / Trigger). */
@@ -36,14 +36,18 @@ export class OlsCibRegressionService {
   runCurrent(): Observable<RegressionState> {
     return this.api.post(API.regression.runCurrent, { caller: this.caller(), scope: this.scope });
   }
-  runStart(): Observable<RegressionState> {
-    return this.api.post(API.regression.runStart, { caller: this.caller(), scope: this.scope });
+  runStart(branch: string, release_date: string): Observable<RegressionState> {
+    return this.api.post(API.regression.runStart, { caller: this.caller(), scope: this.scope, branch, release_date });
   }
   markStep(run_id: number, step_key: string, status: string, forced = false, details?: string): Observable<RegressionState> {
     return this.api.post(API.regression.stepMark, { caller: this.caller(), scope: this.scope, run_id, step_key, status, forced, details });
   }
   unlockStep(run_id: number, step_key: string): Observable<RegressionState> {
     return this.api.post(API.regression.stepUnlock, { caller: this.caller(), scope: this.scope, run_id, step_key });
+  }
+  /** This scope's refreshable DBs for the current env (DEV/STG can have several; scope-specific). */
+  refreshDatabases(): Observable<{ databases: RegressionDb[] }> {
+    return this.api.post(API.regression.refreshDatabases, { caller: this.caller(), scope: this.scope });
   }
   refreshDb(run_id: number, dbs: string[]): Observable<{ result: { status: string; message: string; details: string } }> {
     return this.api.post(API.regression.refreshDb, { caller: this.caller(), scope: this.scope, run_id, dbs });
@@ -54,11 +58,19 @@ export class OlsCibRegressionService {
   gitBranches(): Observable<{ branches: string[] }> {
     return this.api.post(API.regression.gitBranches, { caller: this.caller(), scope: this.scope });
   }
-  gitPull(branch: string): Observable<{ scripts: string[] }> {
+  gitPull(branch: string): Observable<{ scripts: string[]; release_dates: string[] }> {
     return this.api.post(API.regression.gitPull, { caller: this.caller(), scope: this.scope, branch });
   }
   gitScripts(): Observable<{ scripts: string[] }> {
     return this.api.post(API.regression.gitScripts, { caller: this.caller(), scope: this.scope });
+  }
+  /** Release folders (YYYYMMDD) in the pulled branch — the date hint + validation source. */
+  releaseDates(): Observable<{ release_dates: string[] }> {
+    return this.api.post(API.regression.releaseDates, { caller: this.caller(), scope: this.scope });
+  }
+  /** chg*.sql for a release, PER DB ({ db: paths[] }) — each DB runs only its own folder's scripts. */
+  releaseScripts(release_date: string, dbs: string[]): Observable<{ scripts: Record<string, string[]> }> {
+    return this.api.post(API.regression.releaseScripts, { caller: this.caller(), scope: this.scope, release_date, dbs });
   }
   gitTree(): Observable<{ workdir: string; branch: string; files: string[] }> {
     return this.api.post(API.regression.gitTree, { caller: this.caller(), scope: this.scope });

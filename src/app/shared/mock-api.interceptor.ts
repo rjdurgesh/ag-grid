@@ -917,12 +917,13 @@ interface RegStoreT { run: Record<string, unknown> | null; steps: Record<string,
 const regStores: Record<string, RegStoreT> = {};
 const regLastBranches: Record<string, string> = {};
 let curScope = 'cib';
+const REG_DATES = ['20260910', '20260815', '20260710'];   // canned release folders for the dev date picker
 // One-time cleanup: drop the legacy pre-scope store key (replaced by per-scope ols.reg.store.<scope>).
 try { localStorage.removeItem('ols.reg.store'); } catch { /* ignore */ }
 
 function regNow(): string { return new Date().toISOString().slice(0, 19).replace('T', ' '); }
 function regKey(scope: string): string { return `ols.reg.store.${scope}`; }
-function lastBranch(): string { return regLastBranches[curScope] ?? 'release/20260828'; }
+function lastBranch(): string { return regLastBranches[curScope] ?? 'release/2026-09-10'; }
 
 // Persist each scope's dev run across reloads (mirrors the run living in Oracle; "resume after refresh").
 function loadRegStore(scope: string): RegStoreT {
@@ -949,7 +950,8 @@ function regSave(): void {
 function regLog(step_key: string, action: string, status: string, extra: Record<string, unknown> = {}): void {
   const s = store();
   s.activity.unshift({
-    log_id: s.nextLog++, run_id: (s.run?.['run_id'] ?? 1), load_dt: regNow().slice(0, 10),
+    log_id: s.nextLog++, run_id: (s.run?.['run_id'] ?? 1), release_date: (s.run?.['release_date'] ?? null),
+    load_dt: regNow().slice(0, 10),
     step_key, action, status, performed_by: environment.username, start_time: regNow(), end_time: regNow(),
     task_completion_time: 0, forced_by: null, comments: null, ...extra
   });
@@ -1000,15 +1002,34 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       regSave();
       return { status: 'success', run: null, steps: {} };
     }
-    case '/api/regression/run/start':
-      rs.run = { run_id: 1, app_env: environment.appEnv, status: 'in_progress', started_by: environment.username, start_time: regNow() };
+    case '/api/regression/run/start': {
+      const branch = String(body['branch'] ?? lastBranch());
+      const rd = String(body['release_date'] ?? '');
+      regLastBranches[curScope] = branch;
+      rs.run = { run_id: 1, app_env: environment.appEnv, status: 'in_progress', started_by: environment.username,
+                 git_branch: branch, release_date: rd, start_time: regNow() };
       rs.steps = {}; rs.activity = []; rs.nextLog = 1;
       regLog('run', 'start', 'in_progress');
       return { status: 'success', run: rs.run, steps: rs.steps };
+    }
     case '/api/regression/step/mark': {
       const key = String(body['step_key'] ?? ''); const st = String(body['status'] ?? 'complete');
       regSetStep(key, st, body['forced'] ? environment.username : undefined, String(body['details'] ?? ''));
       return { status: 'success', run: rs.run, steps: rs.steps };
+    }
+    case '/api/regression/refresh-databases': {
+      // Scope-specific, env-specific DBs, GROUPED by category (DEV/STG can have several per group).
+      const env = String(environment.appEnv || 'DEV').toUpperCase();
+      const canned: Record<string, Record<string, string[]>> = {
+        cib: { BATCH: [`OLS_CIB_BATCH_${env}`, `OLS_CIB_BATCH_${env}_02`, `OLS_CIB_BATCH_${env}_03`],
+               REPORTING: [`OLS_CIB_REPORTING_${env}`, `OLS_CIB_REPORTING_${env}_02`] },
+        retail: { BATCH: [`OLS_RET_BATCH_${env}`, `OLS_RET_BATCH_${env}_02`],
+                  REPORTING: [`OLS_RET_REPORTING_${env}`] },
+        group: { BATCH: [`OLS_GROUP_${env}`] },
+      };
+      const groups = canned[curScope] ?? canned['cib'];
+      const dbs = Object.entries(groups).flatMap(([category, names]) => names.map((n) => ({ key: n, label: n, category })));
+      return { status: 'success', databases: dbs };
     }
     case '/api/regression/refresh-db': {
       const rdbs = (body['dbs'] as string[]) ?? [];
@@ -1016,11 +1037,28 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       return { status: 'success', result: { status: 'complete', message: `Refresh triggered for ${rdbs.length} database(s) (dummy).`, details: `DB(s): ${rdbs.join(', ')}` } };
     }
     case '/api/regression/git/branches':
-      return { status: 'success', branches: ['release/20260828', 'release/20260815'] };
+      return { status: 'success', branches: ['release/2026-09-10', 'release/2026-08-15'] };
     case '/api/regression/git/pull':
       regLastBranches[curScope] = String(body['branch'] ?? lastBranch());
       regSave();
-      return { status: 'success', scripts: ['apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql', 'reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
+      return { status: 'success', release_dates: REG_DATES,
+               scripts: ['reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
+    case '/api/regression/release/dates':
+      return { status: 'success', release_dates: REG_DATES };
+    case '/api/regression/release/scripts': {
+      const rd = String(body['release_date'] ?? '');
+      const wanted = (body['dbs'] as string[]) ?? [];
+      const canned: Record<string, string[]> = {
+        cib_batch: [`CIB/Batch/Scripts/${rd}/chg_batch_001.sql`, `CIB/Batch/Scripts/${rd}/chg_batch_002.sql`],
+        cib_reporting: [`CIB/Reporting/Scripts/${rd}/chg_rpt_001.sql`],
+        retail_batch: [`RET/Scripts/${rd}/chg_ret_001.sql`],
+        retail_reporting: [`RET/Scripts/${rd}/chg_ret_001.sql`],
+        group: [`Scripts/${rd}/chg_grp_001.sql`],
+      };
+      const out: Record<string, string[]> = {};
+      for (const d of wanted) { out[d] = canned[d] ?? []; }
+      return { status: 'success', scripts: out };
+    }
     case '/api/regression/git/scripts':
       return { status: 'success', scripts: ['apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql', 'reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
     case '/api/regression/git/tree':

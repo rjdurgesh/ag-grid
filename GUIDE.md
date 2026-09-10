@@ -257,7 +257,10 @@ editor above. Its **refresh** icon lives in the roster header (the Grant-access 
 similarly the Manage-access refresh sits by **Current ops-admins**, next to the list it refreshes. Data:
 `POST /api/access/admin/users` → `database.fetch_access_users` (grants LEFT JOIN ols_users) →
 `access_api._group_access_users` (per-user grant count + de-duped `features` from `_feature_label`). It
-refreshes after any Apply/Revoke and via the header refresh icon. **Feature chips carry the strongest access
+refreshes after any Apply/Revoke and via the header refresh icon. **`grant_count` counts only grants that
+back a VISIBLE feature** — DENY rows (no chip) and an ops-admin's suppressed Config Ops grant don't count,
+so the number never references a hidden grant; several grants collapsing into one chip still each count.
+**Feature chips carry the strongest access
 level** (WRITE>READ) as a coloured **R/W pill** (WRITE = green), and both **Config Ops and Oracle Command
 Center show which app(s)** the user can reach — `Config Ops (GROUP|CIB|RETAIL)` and
 `Oracle Command Center (GROUP|CIB|RETAIL|ALL)` (per-DB OCC grants collapse to their app: `group`→GROUP,
@@ -329,9 +332,21 @@ reports a **per-date result** (each target ✓ rolled / ✗ failed with the DB e
 **Regression** (Config Ops → **Regression** tab, **DEV/STG only** AND granted per scope via an
 `ols_app_access` **`REGRESSION`** grant — `rbac.regressionVisible(scope)`; hidden otherwise, NOT tied to the
 ops-admin table)
-drives the pre-prod cycle as a gated, force-markable, fully-audited workflow: Refresh DB (multi-select all 5 DBs)
-→ Apply DB changes (git-pull a `release/*` branch → run `CHG_*.sql` on the chosen DB(s) via **sqlplus**, log +
-Download) → File copy (developer JSON manifest, `*` = recurse) → Reset → Trigger (run a branch `.sql` on one of
+drives the pre-prod cycle as a gated, force-markable, fully-audited workflow. **A run targets a specific release:**
+starting one is a wizard — pick the `release/*` **branch** (the list is the **newest `branch_limit`**, default 10,
+newest first), Pull it, then choose the **release date** with a
+**date picker** (native `type=date`, auto-converted to the canonical `YYYYMMDD` folder name). The pulled branch's
+actual release folders are listed as a hint, and **Start is disabled unless the chosen date is a real folder** in
+that branch (`canStart = pulled && dateKnown`); the run/start endpoint **re-validates server-side** too (rejects with
+the available list — no run created). Branch + date are stored on `ols_regression_run` (`git_branch`, `release_date`) and shown in the run
+header + the Regression Activity grid, so a month with two releases yields two clearly-labelled runs. Steps: Refresh
+DB (a **grouped multi-select dropdown** of this **scope's own databases for the current env** — DEV/STG can have many,
+grouped **BATCH / REPORTING**; loaded from the grouped `refresh_databases` in `config/regression.json` via
+`/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact)
+→ Apply DB changes (chg files are loaded **per DB** from that DB's `<script_roots[db]>/<release_date>/chg*.sql`
+and run on that DB only — cib_batch←`CIB/Batch/Scripts`, cib_reporting←`CIB/Reporting/Scripts`, retail←`RET/Scripts`,
+group←`Scripts`; each DB's set streams to the console in turn) → File copy (developer JSON manifest, `*` = recurse) →
+Reset → Trigger (run a branch `.sql` on one of
 the 3 batch schedulers). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
 `run/complete` audit row, run status → Completed on screen, then Start new run). Apply DB also has
 a collapsible **release-branch browser** (`git/tree` + `git/file`) to walk the pulled branch tree and read any
@@ -360,8 +375,12 @@ log) — so multiple operators can share a run without stepping on each other. A
 **Regression Activity** (the `ols_regression_log` audit — also an **AG-Grid** with pagination/filter/sort, icon
 Refresh + the same live last-refreshed line). Backend
 [`regression_api.py`](backend/regression_api.py) + `regression_ops.py` (git/sqlplus/copy) + `database.py`;
-tables `sql/regression_setup.sql`; **per-scope config in `config/regression.json`** (each scope's git repo,
-work/log dirs, NAS feed manifest — resolved via `config_loader.regression_scope_config(scope)`), git token in `.env`.
+release-date endpoints `release/dates` (folders in the pulled branch) + `release/scripts` (`{db: chg[]}` per DB);
+`git/pull` also returns `release_dates`. `regression_ops.list_repo_tree` prunes `.git`/`node_modules`/… **during**
+the walk and caps the count, so the branch browser can't hang on a big repo. Tables `sql/regression_setup.sql`
+(run table carries `git_branch` + `release_date`, with an idempotent ALTER migration); **per-scope config in
+`config/regression.json`** (each scope's git repo, **`script_roots` DB→Scripts-folder map**, work/log dirs, NAS
+feed manifest — resolved via `config_loader.regression_scope_config(scope)`), git token in `.env`.
 **Server prereqs: git + sqlplus.** The sqlplus password is fed over STDIN and **masked** in every log; it is
 resolved server-side — from config, or at runtime from **CyberArk** ([`cyberark.py`](backend/cyberark.py), CCP
 client-cert call by AppID; `CYBERARK_*` in `.env`) — so it is never typed in the UI or visible in the network tab.
@@ -374,6 +393,33 @@ store per scope (real backend is CIB-only today and ignores it; a retail backend
 defaults are `retail_batch`. The two monitor grids auto-load on open (no Refresh click), use **separate `gridOptions`**
 (batches page size 50, activity 100 — never share one options object across grids), show a live "Last refreshed … ·
 N sec ago" beside the refresh icon, and any toast auto-dismisses after 4s. Full detail: memory `regression-screen`.
+
+**Git auth — HTTPS token OR SSH key** (per scope, set `git_url` in `config/regression.json`). `_auth_url()`
+([`regression_ops.py`](backend/regression_ops.py)) injects the token **only** when `git_url` starts with `https://`;
+an `ssh://` URL is passed to git untouched — so the two modes are mutually exclusive:
+- **HTTPS** — `git_url: https://host/proj/repo.git` + a **token** (Bitbucket → *HTTP access token* / *App password*,
+  read-only repo scope) in `.env` as `REGRESSION_GIT_TOKEN[_<SCOPE>]`. The token is a SECRET: never in the JSON, never
+  sent to the UI; it's injected into the URL at runtime.
+- **SSH** — `git_url: ssh://git@host:<port>/proj/repo.git` (the `ssh://` scheme form is required for a non-default
+  port). **No token** — leave `REGRESSION_GIT_TOKEN` empty. Auth is an SSH keypair, driven by config keys — the engine
+  builds `GIT_SSH_COMMAND` in `_git_env()` and sets it **on the git subprocess** (`env=`), so it works even when `.env`
+  isn't loaded into `os.environ` (relying on a plain `.env` `GIT_SSH_COMMAND` does NOT work — that was the original bug).
+  Set up once:
+  1. In `config/regression.json` (usually `defaults`, since one key serves all scopes) set **`git_ssh_key`** = private-key
+     path and **`git_known_hosts`** = known_hosts path. **Use forward slashes** — `C:/Users/keys/id_ed25519` — backslashes
+     get mangled by the JSON/.env parser. (Or set the whole thing with `git_ssh_command`.) The private key file itself
+     never goes in the repo or JSON — only its path.
+  2. **Public key** added to Bitbucket as a **read-only repo Access Key / deploy key** (the tool only reads:
+     ls-remote / clone / fetch / checkout).
+  3. **Pre-trust the host key** so the non-interactive backend doesn't hang on the first connect, writing to the SAME
+     `git_known_hosts` file (PowerShell `>>` corrupts it with UTF-16 — use ASCII):
+     `ssh-keyscan -p <port> host | Out-File -Append -Encoding ascii <git_known_hosts>`.
+  Verify as the backend account, with the same key/known_hosts:
+  `ssh -T -p <port> -i <key> -o UserKnownHostsFile=<known_hosts> git@host`.
+
+**`git_workdir` / `log_dir`** (per scope) are server folders the tool creates on first use: `git_workdir` is where the
+release branch is checked out (Pull clones into it; Apply/Reset/Trigger read `.sql` from under it, jailed to this dir);
+`log_dir` is where each sqlplus run spools its session — `log_dir\<YYYYMMDD>\<script>__<db>.log` (the logs you view/download).
 
 **Local testing** (`USE_MOCK`/access mocked): flip `devRoles` in
 [`environment.ts`](src/environments/environment.ts) to ADMIN/READ/SALT — the mock
