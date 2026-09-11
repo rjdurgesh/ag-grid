@@ -97,6 +97,9 @@
       @for (step of steps; track step.key; let i = $index) {
         <div class="rg-step" [class.is-locked]="!isEnabled(i)">
           <div class="rg-step__head">
+            <button type="button" class="rg-step__caret" (click)="toggleStepCollapse(step.key)" [attr.aria-expanded]="!isStepCollapsed(step.key)" [title]="isStepCollapsed(step.key) ? 'Expand' : 'Collapse'">
+              <svg viewBox="0 0 24 24" width="14" height="14" class="rg-chevron" [class.is-open]="!isStepCollapsed(step.key)" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
             <span class="rg-step__num">{{ i + 1 }}</span>
             <span class="rg-step__title">{{ step.title }}</span>
             <span class="rg-badge" [class]="badgeClass(effectiveStatus(step.key))">{{ badgeLabel(effectiveStatus(step.key)) }}</span>
@@ -107,6 +110,7 @@
               <span class="rg-force__opt">optional</span>
             </button>
           </div>
+          @if (!isStepCollapsed(step.key)) {
           @if (hasRun(step.key)) {
             <div class="rg-step__meta">
               @if (lastRun(step.key)) {
@@ -228,18 +232,38 @@
                   @if (loadingApply()) {
                     <p class="rg-hint">Loading chg scripts for release {{ state().run?.release_date }}…</p>
                   } @else if (applyTotal()) {
+                    <div class="rg-row rg-row--tools">
+                      <p class="rg-hint">Tick the chg files to run — run a subset now and the rest later if you need to. Each runs on its own database, in listed order.</p>
+                      <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="loadingApply()"
+                              [disabled]="loadingApply()" (click)="loadReleaseScripts()" title="Re-scan the branch for chg files" aria-label="Reload chg scripts">
+                        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                          <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+                          <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </button>
+                    </div>
                     <div class="rg-relscripts">
                       @for (d of applyDbs(); track d) {
                         @if (applyScriptsByDb()[d]?.length) {
                           <div class="rg-relgrp">
-                            <div class="rg-relgrp__db">{{ dbLabel(d) }} <span class="rg-relgrp__n">{{ applyScriptsByDb()[d].length }} chg</span></div>
-                            <ul class="rg-relgrp__list">@for (s of applyScriptsByDb()[d]; track s) { <li>{{ s }}</li> }</ul>
+                            <div class="rg-relgrp__db">
+                              <span>{{ dbLabel(d) }} <span class="rg-relgrp__n">{{ applyScriptsByDb()[d].length }} chg</span></span>
+                              <button type="button" class="rg-link rg-link--inline" (click)="toggleApplyGroup(d, applyScriptsByDb()[d])">{{ applyGroupAllOn(d, applyScriptsByDb()[d]) ? 'Clear' : 'All' }}</button>
+                            </div>
+                            <div class="rg-relgrp__files">
+                              @for (s of applyScriptsByDb()[d]; track s) {
+                                <label class="rg-fileopt" [class.is-on]="applyIsSel(d, s)">
+                                  <input type="checkbox" [checked]="applyIsSel(d, s)" (change)="toggleApplyScript(d, s)" />
+                                  <span>{{ s }}</span>
+                                </label>
+                              }
+                            </div>
                           </div>
                         }
                       }
                     </div>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db'" (click)="runApply()">
-                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applyTotal() + ')' }}
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db' || !applySelectedCount()" (click)="runApply()">
+                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applySelectedCount() + ')' }}
                     </button>
                     @if (applyResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: applyResults() }" /> }
                   } @else if (applyDbs().length) {
@@ -250,13 +274,36 @@
                 }
 
                 @case ('file_copy') {
-                  <button type="button" class="rg-btn" (click)="loadManifest()">Load copy manifest</button>
+                  <p class="rg-hint">The manifest lives in the release repo (<code>Scripts/{{ state().run?.release_date }}/filecopy_manifest_{{ state().run?.release_date }}.json</code>). Tick the files to copy — copy some now and the rest later; the step completes only when all are done.</p>
+                  <div class="rg-row">
+                    <button type="button" class="rg-btn" [disabled]="loadingManifests()" (click)="loadManifests()">{{ loadingManifests() ? 'Discovering…' : 'Discover manifests' }}</button>
+                  </div>
+                  @if (manifestLocations().length) {
+                    <div class="rg-manifests">
+                      @for (loc of manifestLocations(); track loc.root) {
+                        <div class="rg-manifest-loc">
+                          <div class="rg-manifest-loc__hdr">{{ loc.label }}</div>
+                          <select [ngModel]="selectedManifestPath()" (ngModelChange)="selectManifest($event)">
+                            <option value="">Select manifest…</option>
+                            @for (f of loc.files; track f) { <option [value]="f">{{ f.split('/').pop() }}</option> }
+                          </select>
+                        </div>
+                      }
+                    </div>
+                  }
+                  @if (nothingToCopy() && stepStatus('file_copy') !== 'complete' && stepStatus('file_copy') !== 'forced') {
+                    <div class="rg-nocopy">
+                      <span class="rg-nocopy__msg">{{ manifestLocations().length ? 'The manifest(s) for this release are present but empty — there are no files to copy.' : 'No file-copy manifest exists for this release — there is nothing to copy.' }}</span>
+                      <button type="button" class="rg-btn rg-btn--primary" (click)="markNothingToCopy()">Mark file copy complete</button>
+                    </div>
+                  }
+
                   @if (manifest().length) {
                     <div class="rg-table-wrap">
                       <table class="rg-table">
                         <thead><tr>
                           <th class="rg-th-chk"><input type="checkbox" [checked]="selectedItems().length === manifest().length" (change)="toggleAllItems()" /></th>
-                          <th>Source</th><th>Destination</th>
+                          <th>Source</th><th>Destination</th><th class="rg-th-st">State</th>
                         </tr></thead>
                         <tbody>
                           @for (it of manifest(); track $index; let i = $index) {
@@ -264,71 +311,107 @@
                               <td class="rg-th-chk"><input type="checkbox" [checked]="selectedItems().includes(i)" (change)="toggleItem(i)" /></td>
                               <td>{{ friendly(it.source) }}@if (it.source.trim().endsWith('*')) { <span class="rg-tag">folder</span> }</td>
                               <td>{{ friendly(it.destination) }}</td>
+                              <td class="rg-th-st">
+                                <span class="rg-fstate" [class]="'rg-fstate--' + itemState(it)">
+                                  {{ itemState(it) === 'copied' ? '✓ Copied' : itemState(it) === 'failed' ? '✗ Failed' : '⏳ Pending' }}
+                                </span>
+                              </td>
                             </tr>
                           }
                         </tbody>
                       </table>
                     </div>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'file_copy' || !selectedItems().length" (click)="runCopy()">
-                      {{ busy() === 'file_copy' ? 'Copying…' : 'Copy selected (' + selectedItems().length + ')' }}
-                    </button>
-                    @if (copyResults().length) {
-                      <ul class="rg-copylog">
-                        @for (r of copyResults(); track $index) {
-                          <li class="rg-copylog__item" [class.is-err]="!r.ok">
-                            <div class="rg-copylog__head">
-                              <span class="rg-copylog__status" [class.is-ok]="r.ok">{{ r.ok ? 'OK' : 'FAILED' }}</span>
-                              <span class="rg-copylog__path">{{ friendly(r.source) }} <span class="rg-copylog__arr">→</span> {{ friendly(r.destination) }}</span>
-                              @if (r.ok) { <span class="rg-copylog__count">{{ r.count }} file{{ r.count === 1 ? '' : 's' }}</span> }
-                              @else if (r.kind === 'folder' && r.count) { <span class="rg-copylog__count rg-copylog__count--partial">{{ r.count }} copied, then failed</span> }
-                            </div>
-                            @if (!r.ok && r.error) { <div class="rg-copylog__err">{{ r.error }}</div> }
-                            @if (r.ok && r.files?.length) {
-                              <ul class="rg-copylog__files">
-                                @for (f of r.files; track $index) { <li>{{ friendly(f) }}</li> }
-                              </ul>
-                            }
-                          </li>
-                        }
-                      </ul>
+                    <div class="rg-copyfoot">
+                      <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'file_copy' || !selectedItems().length" (click)="runCopy()">
+                        {{ busy() === 'file_copy' ? 'Copying…' : 'Copy selected (' + selectedItems().length + ')' }}
+                      </button>
+                      <button type="button" class="rg-btn" [disabled]="preflightBusy() || busy() === 'file_copy' || !selectedItems().length" (click)="runPreflight()"
+                        title="Check the ticked items are ready (source exists, destination writable, enough free space) before copying">
+                        {{ preflightBusy() ? 'Checking…' : 'Check readiness' }}
+                      </button>
+                      @if (copyRemaining() && (copyRemaining() < manifest().length || copyFailed())) {
+                        <button type="button" class="rg-btn rg-btn--retry" [disabled]="busy() === 'file_copy'" (click)="retryFailed()"
+                          title="Re-copy only the items not yet copied (failed + pending)">
+                          {{ copyFailed() ? 'Retry failed & remaining (' + copyRemaining() + ')' : 'Copy remaining (' + copyRemaining() + ')' }}
+                        </button>
+                      }
+                      <span class="rg-copyfoot__pending">{{ copyRemaining() }} of {{ manifest().length }} file(s) not yet copied@if (copyFailed()) { <span class="rg-copyfoot__failed"> · {{ copyFailed() }} failed</span> }</span>
+                      @if (copyResults().length && !copyProgress()) {
+                        <button type="button" class="rg-link rg-link--inline" (click)="openCopyDetail(copyResults())">View last result</button>
+                      }
+                    </div>
+                    @if (copyProgress(); as p) {
+                      <div class="rg-progress" role="progressbar" [attr.aria-valuenow]="p.done" [attr.aria-valuemax]="p.total">
+                        <div class="rg-progress__bar" [style.width.%]="p.total ? (p.done / p.total) * 100 : 0"></div>
+                        <span class="rg-progress__label">Copying… {{ p.done }} / {{ p.total }}</span>
+                      </div>
+                    }
+                    @if (preflight(); as pf) {
+                      <div class="rg-preflight" [class.rg-preflight--bad]="preflightIssues()">
+                        <div class="rg-preflight__hd">
+                          @if (preflightIssues()) { <span class="rg-preflight__warn">⚠ Pre-flight: {{ preflightIssues() }} of {{ pf.length }} item(s) not ready</span> }
+                          @else { <span class="rg-preflight__ok">✓ Pre-flight passed — {{ pf.length }} item(s) ready to copy</span> }
+                          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="preflight.set(null)" aria-label="Dismiss" title="Dismiss">×</button>
+                        </div>
+                        <div class="rg-ctable__wrap">
+                          <table class="rg-ctable">
+                            <thead><tr>
+                              <th class="rg-ctable__path">Source</th><th class="rg-ctable__path">Destination</th>
+                              <th class="rg-ctable__n">Source</th><th class="rg-ctable__n">Dest</th><th class="rg-ctable__n">Space</th><th class="rg-ctable__issue">Issue</th>
+                            </tr></thead>
+                            <tbody>
+                              @for (r of pf; track $index) {
+                                <tr [class.is-err]="!r.ok">
+                                  <td class="rg-ctable__path">{{ friendly(r.source) }}</td>
+                                  <td class="rg-ctable__path">{{ friendly(r.destination) }}</td>
+                                  <td class="rg-ctable__n">{{ r.source_ok ? '✓' : '✗' }}</td>
+                                  <td class="rg-ctable__n">{{ r.dest_ok ? '✓' : '✗' }}</td>
+                                  <td class="rg-ctable__n">{{ r.space_ok ? '✓' : '✗' }}</td>
+                                  <td class="rg-ctable__issue">{{ r.note || '—' }}</td>
+                                </tr>
+                              }
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     }
                   }
                 }
 
                 @case ('reset') {
-                  @if (scripts().length) {
-                    <div class="rg-row">
-                      <select [ngModel]="resetScript()" (ngModelChange)="resetScript.set($event)">
-                        <option value="">Select reset script…</option>
-                        @for (s of scripts(); track s) { <option [value]="s">{{ s }}</option> }
-                      </select>
-                      <select [ngModel]="resetDb()" (ngModelChange)="resetDb.set($event)">
-                        @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
-                      </select>
-                      <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetScript()" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset' }}</button>
-                    </div>
-                    @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
-                  } @else { <p class="rg-hint">Pull a release branch in <strong>Apply DB changes</strong> first to load scripts.</p> }
+                  <p class="rg-hint">Pick a database, then a reset script from its <code>RegressionTesting</code> folder.</p>
+                  <div class="rg-row">
+                    <select [ngModel]="resetDb()" (ngModelChange)="onResetDb($event)">
+                      @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+                    </select>
+                    <select [ngModel]="resetScript()" (ngModelChange)="resetScript.set($event)">
+                      <option value="">Select reset script…</option>
+                      @for (s of resetScripts(); track s) { <option [value]="s">{{ s }}</option> }
+                    </select>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetScript()" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset' }}</button>
+                  </div>
+                  @if (!resetScripts().length) { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(resetDb()) }}.</p> }
+                  @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
                 }
                 @case ('trigger') {
-                  @if (scripts().length) {
-                    <p class="rg-hint">Pick the "trigger all" script, or a per-business-line trigger script.</p>
-                    <div class="rg-row">
-                      <select [ngModel]="triggerScript()" (ngModelChange)="triggerScript.set($event)">
-                        <option value="">Select trigger script…</option>
-                        @for (s of scripts(); track s) { <option [value]="s">{{ s }}</option> }
-                      </select>
-                      <select [ngModel]="triggerDb()" (ngModelChange)="triggerDb.set($event)">
-                        @for (d of batchDatabases; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
-                      </select>
-                      <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerScript()" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger' }}</button>
-                    </div>
-                    @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
-                  } @else { <p class="rg-hint">Pull a release branch in <strong>Apply DB changes</strong> first to load scripts.</p> }
+                  <p class="rg-hint">Pick a database, then the "trigger all" or a per-business-line script from its <code>RegressionTesting</code> folder.</p>
+                  <div class="rg-row">
+                    <select [ngModel]="triggerDb()" (ngModelChange)="onTriggerDb($event)">
+                      @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+                    </select>
+                    <select [ngModel]="triggerScript()" (ngModelChange)="triggerScript.set($event)">
+                      <option value="">Select trigger script…</option>
+                      @for (s of triggerScripts(); track s) { <option [value]="s">{{ s }}</option> }
+                    </select>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerScript()" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger' }}</button>
+                  </div>
+                  @if (!triggerScripts().length) { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(triggerDb()) }}.</p> }
+                  @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
                 }
               }
               }
             </div>
+          }
           }
         </div>
       }
@@ -355,8 +438,8 @@
     <!-- ================= Monitoring ================= -->
     <section class="rg__monitor">
       <div class="rg-subtabs">
-        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches'); loadBatches()">Monitoring Batches</button>
         <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'activity'" (click)="monitorTab.set('activity'); loadActivity()">Regression Activity</button>
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches'); loadBatches()">Monitoring Batches</button>
       </div>
 
       @if (monitorTab() === 'batches') {
@@ -418,6 +501,53 @@
         </div>
       </div>
       @if (!consoleCollapsed()) { <pre class="rg-dock__body">{{ logContent() }}@if (consoleRunning()) {<span class="rg-dock__caret"></span>}</pre> }
+    </div>
+  }
+
+  <!-- ============ File-copy detail popup ============ -->
+  @if (copyDetail(); as det) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="File copy details">
+      <div class="rg-modal__backdrop" (click)="closeCopyDetail()"></div>
+      <div class="rg-modal__panel">
+        <div class="rg-modal__head">
+          <strong>File copy — result</strong>
+          <div class="rg-modal__head-actions">
+            <button type="button" class="rg-link rg-link--inline" (click)="downloadCopyReport()" title="Download this result as CSV">⤓ Download report (CSV)</button>
+            <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCopyDetail()" aria-label="Close" title="Close">×</button>
+          </div>
+        </div>
+        <div class="rg-modal__body">
+          <p class="rg-ctable__summary">{{ copySummary(det) }}</p>
+          <div class="rg-ctable__wrap">
+            <table class="rg-ctable">
+              <thead><tr>
+                <th class="rg-ctable__path">Source</th><th class="rg-ctable__path">Destination</th>
+                <th>Status</th><th class="rg-ctable__n">Files</th><th class="rg-ctable__n">Folders</th>
+                <th class="rg-ctable__n" title="Destination verified after copy (size, or size+SHA-256)">Verified</th>
+                <th>Started</th><th>Finished</th><th class="rg-ctable__n">Duration</th>
+              </tr></thead>
+              <tbody>
+                @for (r of det; track $index) {
+                  <tr [class.is-err]="!r.ok">
+                    <td class="rg-ctable__path">{{ friendly(r.source) }}</td>
+                    <td class="rg-ctable__path">{{ friendly(r.destination) }}</td>
+                    <td><span class="rg-cstatus" [class.is-ok]="r.ok">{{ r.ok ? 'Success' : 'Failed' }}</span></td>
+                    <td class="rg-ctable__n">{{ r.count || 0 }}</td>
+                    <td class="rg-ctable__n">{{ r.folders || 0 }}</td>
+                    <td class="rg-ctable__n">{{ verifyLabel(r) }}</td>
+                    <td class="rg-ctable__t">{{ r.started || '—' }}</td>
+                    <td class="rg-ctable__t">{{ r.finished || '—' }}</td>
+                    <td class="rg-ctable__t">{{ r.seconds == null ? '—' : fmtDuration(r.seconds) }}</td>
+                  </tr>
+                  @if (!r.ok && r.error) {
+                    <tr class="rg-ctable__errrow"><td colspan="9"><span class="rg-ctable__err">{{ r.error }}</span></td></tr>
+                  }
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   }
 </div>

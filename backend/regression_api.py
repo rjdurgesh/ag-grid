@@ -86,6 +86,10 @@ class ReleaseScriptsBody(Caller):
     dbs: list[str] = []            # chg*.sql are resolved PER DB (each DB has its own Scripts folder)
 
 
+class BatchDBScriptsBody(Caller):
+    db: str = ""                   # RegressionTesting scripts for this DB (Reset / Trigger batches steps)
+
+
 class RunSqlBody(Caller):
     run_id: int
     step_key: str                  # apply_db | reset | trigger
@@ -102,9 +106,22 @@ class FileBody(Caller):
     path: str
 
 
+class ManifestsBody(Caller):
+    release_date: str = ""         # discover filecopy_manifest*.json under Scripts/<date> per script-root
+
+
+class ReadManifestBody(Caller):
+    path: str                      # repo-relative path of the chosen manifest to read
+
+
 class CopyBody(Caller):
     run_id: int
-    items: list[dict]
+    items: list[dict]              # the items to copy NOW (a subset the operator ticked)
+    manifest: list[dict] = []      # the FULL manifest — so the step is Complete only when every item is done
+
+
+class PreflightBody(Caller):
+    items: list[dict]              # {source,destination} to readiness-check BEFORE copying (copies nothing)
 
 
 class MonitorBody(Caller):
@@ -347,6 +364,19 @@ def git_scripts(request: Request, body: Caller) -> dict:
     return {"status": "success", "scripts": ops.list_branch_scripts(config_loader.regression_scope_config(body.scope))}
 
 
+@router.post("/batch-db-scripts")
+def batch_db_scripts(request: Request, body: BatchDBScriptsBody) -> dict:
+    """.sql scripts from the selected DB's **RegressionTesting** folder — the Reset / Trigger batches steps
+    pick from here (separate from Apply's Scripts/<release_date>/chg*.sql). `{scripts: string[]}`."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        db = body.db or "cib_batch"
+        base = "CIB/Batch/RegressionTesting" if "batch" in db else "CIB/Reporting/RegressionTesting"
+        return {"status": "success", "scripts": [f"{base}/reset_batches.sql", f"{base}/trigger_all.sql",
+                                                 f"{base}/trigger_CB.sql", f"{base}/trigger_ALMT.sql"]}
+    return {"status": "success", "scripts": ops.list_batch_db_scripts(config_loader.regression_scope_config(body.scope), body.db)}
+
+
 @router.post("/git/tree")
 def git_tree(request: Request, body: Caller) -> dict:
     """The whole pulled branch (files) + info, so the operator can browse it and verify referenced
@@ -481,80 +511,223 @@ def log_read(request: Request, body: LogBody) -> dict:
 
 
 # ---- file copy -------------------------------------------------------------
+# Manifest lives IN the release repo at <Scripts-root>/<release_date>/filecopy_manifest*.json (NOT in
+# config). File Copy is Complete only when EVERY manifest item is copied; a subset → Partial. Per-item
+# state persists in the audit log (copy_item rows carry JSON), so ✓/⏳/✗ survive a reload.
+
+def _stamp(r: dict, started: datetime, finished: datetime) -> dict:
+    """Attach per-item timing (started / finished / duration seconds) to a copy result."""
+    r["started"] = started.strftime("%Y-%m-%d %H:%M:%S")
+    r["finished"] = finished.strftime("%Y-%m-%d %H:%M:%S")
+    r["seconds"] = max(0, int((finished - started).total_seconds()))
+    return r
+
+
+def _dummy_copy_results(items: list[dict]) -> list[dict]:
+    """Canned per-item copy results for the server-dummy path (folder → several files; 'fail'/'reports' → error)."""
+    results = []
+    now = datetime.now()
+    for i in items:
+        src = str(i.get("source", "")); dst = str(i.get("destination", ""))
+        folder = src.rstrip("/\\").endswith("*")
+        if folder and ("reports" in src.lower() or "partial" in src.lower()):
+            r = {"source": src, "destination": dst, "ok": False, "kind": "folder", "count": 450, "folders": 3,
+                 "error": "Folder copy FAILED after 450 file(s) — the WHOLE folder must be re-copied. "
+                          "Failed on report_0451.dat: ERROR 112 (0x70): There is not enough space on the disk."}
+        elif "missing" in src.lower() or "fail" in src.lower():
+            r = {"source": src, "destination": dst, "ok": False, "count": 0, "folders": 0,
+                 "error": "ERROR 5 (0x5): The system cannot find the path specified."}
+        else:
+            names = (["app.config", "log4j2.xml", "lib/core.jar"] if folder else [dst.split("\\")[-1]])
+            files = [f"{dst}\\{n}" for n in names]
+            r = {"source": src, "destination": dst, "ok": True, "count": len(files),
+                 "folders": 3 if folder else 0, "kind": "folder" if folder else "file", "verified": True, "verify": "size", "files": files}
+        results.append(_stamp(r, now, now))
+    return results
+
+
+def _copy_verify_mode(cfg) -> str:
+    """Post-copy integrity mode from config (off | size | hash); anything unknown falls back to size."""
+    m = str((cfg or {}).get("filecopy_verify") or "size").lower()
+    return m if m in ("off", "size", "hash") else "size"
+
+
+def _fmt_dur(secs: int) -> str:
+    """Human-readable duration: '8s', '2m 30s', '1h 05m' — never a raw '600s' for a 10-minute copy."""
+    secs = max(0, int(secs))
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m {s}s" if s else f"{m}m"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m" if m else f"{h}h"
+
+
+def _copy_summary(done: int, total: int, action_results: list[dict], fails: int) -> str:
+    """Two-part human summary written to the 'copy' audit row: what THIS run did (so a single-file copy
+    reads as its own operation) plus cumulative manifest progress. E.g.
+    'Run: 1 copied · 1 file · 1s.  Manifest: 4/5 copied (1 remaining).'"""
+    okc = sum(1 for r in action_results if r.get("ok"))
+    tf = sum(int(r.get("count") or 0) for r in action_results)
+    td = sum(int(r.get("folders") or 0) for r in action_results)
+    ts = sum(int(r.get("seconds") or 0) for r in action_results)
+    run = f"Run: {okc} copied" + (f", {fails} failed" if fails else "")
+    run += f" · {tf} file(s)" + (f" · {td} folder(s)" if td else "") + f" · {_fmt_dur(ts)}"
+    remaining = max(0, total - done)
+    man = f"Manifest: {done}/{total} copied" + (f" ({remaining} remaining)" if remaining else "")
+    return f"{run}.  {man}."
+
+
+def _dummy_preflight(items: list[dict]) -> list[dict]:
+    """Canned readiness results for the server-dummy path (a 'missing'/'fail' source → not found)."""
+    out = []
+    for i in items:
+        src = str(i.get("source", "")); dst = str(i.get("destination", ""))
+        bad = "missing" in src.lower() or "fail" in src.lower()
+        out.append({"source": src, "destination": dst, "source_ok": not bad, "dest_ok": True, "space_ok": True,
+                    "source_bytes": 0 if bad else 4096, "free_bytes": 5_000_000_000,
+                    "ok": not bad, "note": "" if not bad else "source not found"})
+    return out
+
+
+def _copy_state(cfg, run_id: int) -> dict:
+    """Per-item file-copy state (key 'src|dst' → latest {status,count,folders,error}) from the run's
+    copy_item audit rows (each row's comments is JSON)."""
+    state: dict = {}
+    for row in database.regression_copy_items(cfg, run_id):
+        try:
+            d = json.loads(row.get("comments") or "{}")
+        except Exception:  # noqa: BLE001
+            continue
+        src, dst = d.get("source"), d.get("destination")
+        if src and dst:
+            state[f"{src}|{dst}"] = {"source": src, "destination": dst, "status": row.get("status"),
+                                     "count": d.get("count", 0), "folders": d.get("folders", 0), "error": d.get("error")}
+    return state
+
+
+def _finalize_copy(cfg, run_id: int, caller: str, action_results: list[dict], manifest: list[dict]) -> str:
+    """Write the summary 'copy' row with the step status derived from the FULL manifest: complete only
+    when every item is copied, error on any failure, else partial. Returns the step status."""
+    state = _copy_state(cfg, run_id)
+    keys = [f"{i.get('source')}|{i.get('destination')}" for i in manifest if i.get("source") and i.get("destination")]
+    okc = sum(1 for r in action_results if r.get("ok"))
+    fails = len(action_results) - okc
+    if keys:
+        done = sum(1 for k in keys if state.get(k, {}).get("status") == "complete")
+        failed = any(state.get(k, {}).get("status") == "error" for k in keys)
+        total = len(keys)
+        status = "error" if failed else "complete" if done >= total else "partial" if done else "in_progress"
+    else:
+        done, total = okc, len(action_results)
+        status = "complete" if fails == 0 else "error"
+    summary = _copy_summary(done, total, action_results, fails)
+    database.regression_log_write(cfg, run_id, "file_copy", "copy", status, caller,
+                                  comments=json.dumps({"summary": summary, "items": action_results}))
+    return status
+
+
+@router.post("/file-copy/manifests")
+def file_copy_manifests(request: Request, body: ManifestsBody) -> dict:
+    """Discover filecopy_manifest*.json in the pulled branch under each Scripts root's <release_date>/
+    folder → one entry per folder that has one (the UI shows a labelled dropdown per folder)."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        d = body.release_date or "20260921"
+        return {"status": "success", "locations": [
+            {"root": "CIB/Batch/Scripts", "label": "CIB/Batch/Scripts", "files": [f"CIB/Batch/Scripts/{d}/filecopy_manifest_{d}.json"]},
+            {"root": "CIB/Reporting/Scripts", "label": "CIB/Reporting/Scripts", "files": [f"CIB/Reporting/Scripts/{d}/filecopy_manifest_{d}.json"]},
+        ]}
+    return {"status": "success", "locations": ops.list_filecopy_manifests(config_loader.regression_scope_config(body.scope), body.release_date)}
+
+
 @router.post("/file-copy/manifest")
-def file_copy_manifest(request: Request, body: Caller) -> dict:
+def file_copy_manifest(request: Request, body: ReadManifestBody) -> dict:
+    """Read one chosen manifest (by repo-relative path) → its {source,destination} items."""
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "items": [
             {"source": "\\\\eur17\\d$\\release\\cib\\app.config", "destination": "\\\\eur34\\e$\\apps\\cib\\app.config"},
             {"source": "\\\\eur17\\d$\\release\\cib\\scripts\\*", "destination": "\\\\eur34\\e$\\apps\\cib\\scripts"},
         ]}
-    manifest = config_loader.regression_scope_config(body.scope)["filecopy_manifest"]
-    if not manifest:
-        raise HTTPException(status_code=400, detail="No file-copy manifest configured for this scope (config/regression.json).")
     try:
-        return {"status": "success", "items": ops.read_manifest(manifest)}
+        return {"status": "success", "items": ops.read_manifest_file(config_loader.regression_scope_config(body.scope), body.path)}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not read the file-copy manifest: {exc}")
+        raise HTTPException(status_code=400, detail=f"Could not read the manifest: {exc}")
 
 
-def _copy_details(results: list[dict]) -> str:
-    """Human-readable CLOB body: per-item OK/FAIL with the files copied (or the failure reason)."""
-    lines: list[str] = []
-    for r in results:
-        if r.get("ok"):
-            lines.append(f"OK   {r.get('source')} -> {r.get('destination')}  ({r.get('count', 0)} file(s))")
-            lines.extend(f"       {f}" for f in (r.get("files") or []))
-        else:
-            lines.append(f"FAIL {r.get('source')} -> {r.get('destination')}: {r.get('error', '')}")
-    return "\n".join(lines)
+@router.post("/file-copy/preflight")
+def file_copy_preflight(request: Request, body: PreflightBody) -> dict:
+    """READ-ONLY readiness check before a copy — per item: source exists, destination reachable/writable,
+    enough free space. Copies + logs NOTHING; lets the operator catch problems before running the step."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "results": _dummy_preflight(body.items)}
+    return {"status": "success", "results": ops.preflight_items(body.items)}
 
 
 @router.post("/file-copy/run")
 def file_copy_run(request: Request, body: CopyBody) -> dict:
+    """Copy the selected items; log each incrementally (crash-safe) then a summary row whose status is
+    Complete/Partial/Error vs the full manifest. (Mock/stream variants share this shape.)"""
     cfg = _require_regression(request, body.caller)
     if not body.items:
         raise HTTPException(status_code=400, detail="Select at least one item to copy.")
     _require_step_free(cfg, body.run_id, "file_copy")
     _mark_in_progress(cfg, body.run_id, "file_copy", body.caller)
     if REGRESSION_USE_DUMMY:
-        results = []
-        for i in body.items:
-            src = str(i.get("source", "")); dst = str(i.get("destination", ""))
-            folder = src.rstrip("/\\").endswith("*")
-            if folder and ("reports" in src.lower() or "partial" in src.lower()):
-                results.append({"source": src, "destination": dst, "ok": False, "kind": "folder", "count": 450,
-                                "error": f"Folder copy FAILED after 450 file(s) — the WHOLE folder must be re-copied "
-                                         f"(re-run the step). Failed on {dst}\\report_0451.dat: ERROR 112 (0x70): There is not enough space on the disk."})
-                continue
-            if "missing" in src.lower() or "fail" in src.lower():
-                results.append({"source": src, "destination": dst, "ok": False,
-                                "error": "ERROR 5 (0x5): The system cannot find the path specified."})
-                continue
-            names = (["app.config", "bootstrap.properties", "log4j2.xml", "scripts\\run.bat", "lib\\core.jar"]
-                     if folder else [dst.split("\\")[-1]])
-            files = [f"{dst}\\{n}" for n in names] if folder else [dst]
-            results.append({"source": src, "destination": dst, "ok": True, "count": len(files),
-                            "kind": "folder" if folder else "file", "files": files})
-        return {"status": "success", "results": results}
-    # Copy + LOG each item incrementally, so if the server crashes / the connection drops mid-copy the
-    # audit table still records exactly which items completed (and which files) — the operator can see
-    # what was done and safely re-run the step (copies overwrite, so it's idempotent).
+        return {"status": "success", "results": _dummy_copy_results(body.items), "step_status": "complete"}
+    verify = _copy_verify_mode(cfg)
     results = []
     for item in body.items:
         started = datetime.now()
-        r = ops.copy_items([item])[0]
+        r = ops.copy_items([item], verify=verify)[0]
+        finished = datetime.now()
+        _stamp(r, started, finished)
         database.regression_log_write(cfg, body.run_id, "file_copy", "copy_item",
                                       "complete" if r.get("ok") else "error", body.caller,
-                                      comments=_copy_details([r]), start_time=started, end_time=datetime.now())
+                                      comments=json.dumps(r), start_time=started, end_time=finished)
         results.append(r)
-    ok = all(r.get("ok") for r in results)
-    fails = sum(1 for r in results if not r.get("ok"))
-    copied = sum((r.get("count") or 0) for r in results if r.get("ok"))
-    summary = f"{copied} file(s) across {len(results) - fails} item(s)" + (f"; {fails} item(s) FAILED" if fails else "")
-    database.regression_log_write(cfg, body.run_id, "file_copy", "copy", "complete" if ok else "error",
-                                  body.caller, comments=f"{summary}\n{_copy_details(results)}")
-    return {"status": "success", "results": results}
+    step_status = _finalize_copy(cfg, body.run_id, body.caller, results, body.manifest)
+    return {"status": "success", "results": results, "step_status": step_status}
+
+
+@router.post("/file-copy/run-stream")
+def file_copy_run_stream(request: Request, body: CopyBody):
+    """LIVE file copy: stream one event per item as it finishes (SSE) so the UI shows a progress bar +
+    per-file ✓/✗. Same incremental logging + manifest-based step status as /file-copy/run."""
+    cfg = _require_regression(request, body.caller)
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Select at least one item to copy.")
+    _require_step_free(cfg, body.run_id, "file_copy")
+    _mark_in_progress(cfg, body.run_id, "file_copy", body.caller)
+    total = len(body.items)
+
+    verify = _copy_verify_mode(cfg)
+
+    def gen():
+        results = []
+        for idx, item in enumerate(body.items, start=1):
+            if REGRESSION_USE_DUMMY:
+                time.sleep(0.25)
+                r = _dummy_copy_results([item])[0]
+            else:
+                started = datetime.now()
+                r = ops.copy_items([item], verify=verify)[0]
+                finished = datetime.now()
+                _stamp(r, started, finished)
+                database.regression_log_write(cfg, body.run_id, "file_copy", "copy_item",
+                                              "complete" if r.get("ok") else "error", body.caller,
+                                              comments=json.dumps(r), start_time=started, end_time=finished)
+            results.append(r)
+            yield _sse("item", {"result": r, "done": idx, "total": total})
+        step_status = ("complete" if all(x.get("ok") for x in results) else "error") if REGRESSION_USE_DUMMY \
+            else _finalize_copy(cfg, body.run_id, body.caller, results, body.manifest)
+        yield _sse("step", {"step_status": step_status})
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---- monitoring ------------------------------------------------------------

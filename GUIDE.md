@@ -343,11 +343,45 @@ header + the Regression Activity grid, so a month with two releases yields two c
 DB (a **grouped multi-select dropdown** of this **scope's own databases for the current env** — DEV/STG can have many,
 grouped **BATCH / REPORTING**; loaded from the grouped `refresh_databases` in `config/regression.json` via
 `/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact)
-→ Apply DB changes (chg files are loaded **per DB** from that DB's `<script_roots[db]>/<release_date>/chg*.sql`
-and run on that DB only — cib_batch←`CIB/Batch/Scripts`, cib_reporting←`CIB/Reporting/Scripts`, retail←`RET/Scripts`,
-group←`Scripts`; each DB's set streams to the console in turn) → File copy (developer JSON manifest, `*` = recurse) →
-Reset → Trigger (run a branch `.sql` on one of
-the 3 batch schedulers). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
+→ Apply DB changes (chg files load **per DB** from that DB's `<script_roots[db]>/<release_date>/chg*.sql` —
+cib_batch←`CIB/Batch/Scripts`, cib_reporting←`CIB/Reporting/Scripts`, retail←`RET/Scripts`, group←`Scripts` — shown as
+**per-file checkboxes** (all ticked by default; untick to run a subset now and the rest later, per-group All/Clear).
+Selection is keyed **per DB+file**, so the same chg filename appearing under two DBs is ticked independently, and
+adding/removing a target DB **preserves your existing ticks** (a newly-appearing file defaults on; one you unticked
+stays unticked) — plus a **refresh** icon re-scans the branch for new chg files mid-cycle. Each selected file runs on
+its own DB in listed order, streaming to the console) → File copy (the **manifest lives in
+the release repo** — `filecopy_manifest_<release_date>.json` under each Scripts folder for the release, discovered via
+`/api/regression/file-copy/manifests` and shown as a **labelled dropdown per folder** that has one, batch left /
+reporting right. Discovery is **config-driven**: it scans every `script_roots` folder for the scope (so a scope with a
+single Scripts folder shows one dropdown, and adding batch/reporting-style roots to that scope's `script_roots` makes
+both auto-appear — a folder with no manifest for the release simply isn't listed). If **no folder has a manifest, or the
+manifest(s) are empty** (a kept-but-empty file), the step shows **"nothing to copy"** with a one-click **Mark file copy
+complete** (logged, not a force). `*` = recurse. Switching dropdowns reloads that folder's items and clears the other folder's transient
+view (last result / pre-flight); a load-guard drops a stale response from a fast switch. Tick which files to copy — the
+step is **Complete only when every item across ALL discovered manifests (both folders) is copied** (the union), else
+**Partial** (doesn't unlock the next step — so copying only Batch while Reporting still has files leaves it Partial),
+or **Error** on a failure; each item shows ✓ Copied / ⏳ Pending / ✗ Failed (rebuilt from the audit so it survives a
+reload, and per-file state is independent per folder). The footer "N of M not yet copied" is per shown folder; the step
+badge reflects the union. Copying streams a **live progress bar + per-file
+✓/✗** (`file-copy/run-stream`), and the result opens a **detail popup** — Source · Destination · Status · Files ·
+Folders · **Verified** · Started · Finished · **Duration** (per-item start/finish clock + elapsed shown human-readably,
+e.g. `10m`, `1h 02m`, not a raw `600s`; **Verified** = each copied file's destination is integrity-checked right after
+copy — size by default, or size+SHA-256 when `filecopy_verify: hash` — so a short/zero-byte/corrupt copy is flagged
+failed, not a false success; the column shows ✓ size / ✓ hash / off), with the error on failed rows, a **summary totals
+line** at the top (e.g. "2/3 item(s) OK · 5001 file(s) · 40 folder(s) · 10m 3s total · 1 failed"), a **Download report
+(CSV)** button (per-item audit artifact for the release ticket; the filename carries the manifest's folder, e.g.
+`filecopy-report-cib-batch-scripts-<ts>.csv` vs `…-cib-reporting-scripts-…`), and a **horizontal scrollbar** for long
+UNC/source paths; the Regression Activity grid's copy rows show a two-part summary — **Run:** what this operation did
+(so a single-file copy reads as its own line) plus **Manifest:** cumulative N/M copied — and open the same popup on
+click. Activity rows read **Copy Operation — Started / Completed / Partially Completed / Errored**. The footer shows
+"**N of M file(s) not yet copied**" (failed + pending, with a red failed count) and a **Retry failed & remaining**
+button re-copies only the items not yet copied so a Partial/Error step can be driven to Complete without re-copying what
+already succeeded. A **Check readiness** button runs a read-only **pre-flight** (`file-copy/preflight`) over the ticked
+items — per item it verifies the **source exists**, the **destination is reachable + writable**, and there's **enough
+free space** — and shows a green/amber panel (Source · Dest · Space ✓/✗ + the issue) so a missing source, dead share,
+read-only path or full disk is caught **before** the copy runs, not mid-way) → Reset → Trigger (pick a **DB** — the scope's batch+reporting only, e.g. cib_batch/cib_reporting — then
+a `.sql` from that DB's **RegressionTesting** folder = `batch_db_script_roots[db]`, listed via `/api/regression/batch-db-scripts`).
+**Every workflow step is collapsible** (chevron in its header). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
 `run/complete` audit row, run status → Completed on screen, then Start new run). Apply DB also has
 a collapsible **release-branch browser** (`git/tree` + `git/file`) to walk the pulled branch tree and read any
 CHG/package/proc file on screen — verify a package exists / has the latest code before running (the browser is
@@ -368,7 +402,8 @@ logged) — the steps stay hidden until resumed. A header **Refresh-state** butt
 the same step (409) while it runs, and every action records **who did it** (`performed_by`, shown per step + in the
 log) — so multiple operators can share a run without stepping on each other. A step stuck `in_progress` past
 `REGRESSION_STEP_STALE_MINUTES` (crash between start and result) is flagged **stale** and offers a logged **Unlock**
-(→ error, re-runnable) so the run can't deadlock. Below it, two monitors: **Monitoring Batches** (a
+(→ error, re-runnable) so the run can't deadlock. Below it, two monitors (**Regression Activity is shown first** by
+default, then **Monitoring Batches**): **Monitoring Batches** (a
 `database.fetch_batch_monitor` query — returns the whole result set, capped only by `REGRESSION_BATCH_MAX_ROWS`
 (default 100k); shown in an **AG-Grid with pagination + per-column filter + sort**, fixed to **OLS CIB Batch**
 (no DB dropdown); icon **Refresh** + a live **"Last refreshed <ts> · N sec ago"** line) and

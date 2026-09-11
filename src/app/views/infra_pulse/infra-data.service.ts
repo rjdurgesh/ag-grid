@@ -127,7 +127,7 @@ export class InfraDataService {
         host_name: row.HOST_NAME,
         agent_listen_port: row.AGENT_LISTEN_PORT,
         host_platform: row.HOST_PLATFORM,
-        monitoring_config: row.MONITORING_CONFIG
+        monitoring_config: monitoringConfigOf(row)   // always a JSON object (never the raw CLOB string)
       })
       .pipe(
         timeout(HEALTH_CALL_TIMEOUT_MS),
@@ -334,8 +334,21 @@ function emptyHealth(app: InfraApp): AppHealth {
  * `{ name, script }[]`. A `"null"` (string) or null script means the agent manages the
  * service by name (e.g. a Windows service).
  */
+/** MONITORING_CONFIG should arrive as a parsed object, but a CLOB column can surface as a JSON string
+ *  (e.g. if the backend normalisation isn't in place yet) — normalise to the object so services flatten
+ *  and the metrics payload is real JSON, never a string that 422s. */
+function monitoringConfigOf(row: ServerHealthRow): ServerHealthRow['MONITORING_CONFIG'] {
+  const cfg = row.MONITORING_CONFIG as unknown;
+  if (typeof cfg === 'string') {
+    const s = cfg.trim();
+    if (!s) { return null; }
+    try { return JSON.parse(s); } catch { return null; }
+  }
+  return (cfg ?? null) as ServerHealthRow['MONITORING_CONFIG'];
+}
+
 function servicesOf(row: ServerHealthRow): MonitoredService[] {
-  const list = row.MONITORING_CONFIG?.services ?? [];
+  const list = monitoringConfigOf(row)?.services ?? [];
   return list.flatMap((obj) =>
     Object.entries(obj).map(([name, script]) => ({
       name,

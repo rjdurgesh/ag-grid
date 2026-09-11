@@ -183,6 +183,11 @@ def regression_scope_config(scope: str) -> dict:
     sr = s.get("script_roots")
     if not isinstance(sr, dict):
         sr = defaults.get("script_roots") if isinstance(defaults.get("script_roots"), dict) else {}
+    # batch_db_script_roots: DB-key → repo-relative RegressionTesting folder (parallel to Scripts), for the
+    # Reset / Trigger batches steps. Same shape/fallback as script_roots ('*' = catch-all).
+    br = s.get("batch_db_script_roots")
+    if not isinstance(br, dict):
+        br = defaults.get("batch_db_script_roots") if isinstance(defaults.get("batch_db_script_roots"), dict) else {}
     # refresh_databases: this SCOPE's refreshable DBs for THIS server's env (DEV/STG can have several,
     # both batch + reporting). Per-server file → DEV lists DEV DBs, STG lists STG DBs. Two shapes:
     #   grouped  {"BATCH": ["OLS1","OLS2"], "REPORTING": ["OLSR1"]}   (category = the key)
@@ -214,6 +219,7 @@ def regression_scope_config(scope: str) -> dict:
                 refresh_databases.append(row)
     return {
         "script_roots": {str(k): str(v) for k, v in sr.items()},
+        "batch_db_script_roots": {str(k): str(v) for k, v in br.items()},
         "refresh_databases": refresh_databases,
         "scope": scope,
         "log_dir": val("log_dir", "REGRESSION_LOG_DIR", ""),
@@ -230,6 +236,7 @@ def regression_scope_config(scope: str) -> dict:
         "sql_subdir": val("sql_subdir", "REGRESSION_SQL_SUBDIR", ""),
         "sqlplus_timeout": val("sqlplus_timeout", "REGRESSION_SQLPLUS_TIMEOUT", 3600),
         "git_timeout": val("git_timeout", "REGRESSION_GIT_TIMEOUT", 120),
-        "filecopy_manifest": val("filecopy_manifest", "REGRESSION_FILECOPY_MANIFEST", ""),
         "refresh_url": val("refresh_url", "REGRESSION_REFRESH_URL", ""),
+        # File-copy post-copy integrity check: off | size (default) | hash (size + SHA-256, slower).
+        "filecopy_verify": str(val("filecopy_verify", "REGRESSION_FILECOPY_VERIFY", "size")).lower(),
     }

@@ -76,6 +76,8 @@ export interface AgentMetricsResponse {
   AGENT_LISTEN_PORT?: number;
   /** False when the agent could not be reached (down / timed out). */
   reachable?: boolean;
+  /** When unreachable, the backend's reason (e.g. "connection refused", "timed out"). */
+  error?: string;
   os?: string;
   cpu_percent?: number;
   load_avg?: number[];
@@ -169,6 +171,8 @@ export interface HealthTarget {
   environment?: string;
   /** Short human description of the server's role, shown in the info dialog. */
   note?: string;
+  /** When unreachable, why (connection refused / timed out / HTTP status) — shown on the card. */
+  unreachableReason?: string;
   metrics: HealthMetric[];
   lastUpdated: string;
   /** Worst of {@link metrics} — the card's overall colour. */

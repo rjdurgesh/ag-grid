@@ -15,6 +15,7 @@ over STDIN (never on the command line). Only DEV/STG use this screen.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -161,6 +162,23 @@ def list_release_scripts(cfg: dict, release_date: str, db: str) -> list[str]:
     out = [str(p.relative_to(wd)).replace("\\", "/") for p in base.rglob("*")
            if p.is_file() and p.name.lower().startswith("chg") and p.name.lower().endswith(".sql")]
     return sorted(out)
+
+
+def _batch_db_root_for_db(cfg: dict, db: str) -> str:
+    """The RegressionTesting root for one DB: its own entry, else the '*' catch-all, else ''."""
+    roots = cfg.get("batch_db_script_roots") or {}
+    return roots.get(db) or roots.get("*") or ""
+
+
+def list_batch_db_scripts(cfg: dict, db: str) -> list[str]:
+    """.sql files under this DB's RegressionTesting folder (repo-relative posix paths) — the Reset /
+    Trigger batches steps pick from here. Recursive, so sub-folders are fine; empty when the folder is absent."""
+    wd = Path(cfg.get("git_workdir", ""))
+    root = _batch_db_root_for_db(cfg, db)
+    base = (wd / root) if root else wd
+    if not base.is_dir():
+        return []
+    return sorted(str(p.relative_to(wd)).replace("\\", "/") for p in base.rglob("*.sql") if p.is_file())
 
 
 def _script_abspath(cfg: dict, rel: str) -> Path:
@@ -398,10 +416,39 @@ class _PartialCopyError(Exception):
         super().__init__(f"copied {copied} file(s), then failed on {failed_file}: {cause}")
 
 
-def _copy_tree(src_dir: str, dst_dir: str) -> list[str]:
-    """Recurse-copy ``src_dir`` into ``dst_dir``; return the list of destination files written. If any
-    file fails, raise ``_PartialCopyError`` with the count copied so far (the folder is treated as a
-    single unit — the caller marks the whole item failed)."""
+def _sha256(path: str) -> str:
+    """Streaming SHA-256 of a file (1 MiB chunks — never loads the whole file into memory)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_file(src: str, dst: str, mode: str = "size") -> None:
+    """Post-copy integrity check. ``mode``: ``off`` skips it; ``size`` (default) requires the destination
+    to exist and its byte size to match the source — catches a silent short / zero-byte copy (disk full,
+    dropped share, AV lock); ``hash`` additionally compares SHA-256 (catches same-size corruption, at the
+    cost of re-reading both files). Raises ``OSError`` on mismatch so the caller marks the item failed."""
+    if mode == "off":
+        return
+    try:
+        s, d = os.path.getsize(src), os.path.getsize(dst)
+    except OSError as exc:
+        raise OSError(f"verification failed — cannot stat copied file: {exc}") from exc
+    if s != d:
+        raise OSError(f"verification failed — size mismatch (source {s:,} B vs copied {d:,} B)")
+    if mode == "hash":
+        hs, hd = _sha256(src), _sha256(dst)
+        if hs != hd:
+            raise OSError(f"verification failed — SHA-256 mismatch (source {hs[:12]}… vs copied {hd[:12]}…)")
+
+
+def _copy_tree(src_dir: str, dst_dir: str, verify: str = "size") -> list[str]:
+    """Recurse-copy ``src_dir`` into ``dst_dir``; return the list of destination files written. Each file
+    is verified right after it's written (``_verify_file`` — size or size+hash per ``verify``). If any file
+    fails to copy OR verify, raise ``_PartialCopyError`` with the count copied so far (the folder is treated
+    as a single unit — the caller marks the whole item failed)."""
     copied: list[str] = []
     for root, _dirs, files in os.walk(src_dir):
         rel = os.path.relpath(root, src_dir)
@@ -411,6 +458,7 @@ def _copy_tree(src_dir: str, dst_dir: str) -> list[str]:
             dstf = os.path.join(target, f)
             try:
                 shutil.copy2(os.path.join(root, f), dstf)
+                _verify_file(os.path.join(root, f), dstf, verify)
             except Exception as exc:  # noqa: BLE001
                 raise _PartialCopyError(len(copied), os.path.join(root, f), str(exc)) from exc
             copied.append(dstf)
@@ -421,33 +469,132 @@ def _copy_tree(src_dir: str, dst_dir: str) -> list[str]:
 _MAX_FILES = 1000
 
 
-def _copy_folder(src: str, dst: str, base: str) -> dict:
+def _copy_folder(src: str, dst: str, base: str, verify: str = "size") -> dict:
     """Copy a whole folder as ONE unit. Success → all files; partial failure → errored item that must
-    be re-copied in full (no file-level resume)."""
+    be re-copied in full (no file-level resume). `folders` = distinct destination directories touched."""
     try:
-        files = _copy_tree(base, dst)
-        return {"source": src, "destination": dst, "ok": True, "count": len(files), "kind": "folder", "files": files[:_MAX_FILES]}
+        files = _copy_tree(base, dst, verify)
+        folders = len({os.path.dirname(f) for f in files})
+        return {"source": src, "destination": dst, "ok": True, "count": len(files), "folders": folders,
+                "kind": "folder", "verified": verify != "off", "verify": verify, "files": files[:_MAX_FILES]}
     except _PartialCopyError as pe:
-        return {"source": src, "destination": dst, "ok": False, "kind": "folder", "count": pe.copied,
+        return {"source": src, "destination": dst, "ok": False, "kind": "folder", "count": pe.copied, "folders": 0,
                 "error": (f"Folder copy FAILED after {pe.copied} file(s) — the WHOLE folder must be re-copied "
                           f"(re-run the step). Failed on {pe.failed_file}: {pe.cause}")}
 
 
-def copy_items(items: list[dict]) -> list[dict]:
+def copy_items(items: list[dict], verify: str = "size") -> list[dict]:
     """Copy each {source,destination}. `*` (or a directory) → recurse the whole tree as ONE unit.
-    Returns per-item result. A folder that fails partway is reported errored (re-run re-copies it all)."""
+    Returns per-item result (with `count` files + `folders`). Each copied file is integrity-checked per
+    ``verify`` (off / size / hash). A folder that fails partway is reported errored (re-run re-copies it all)."""
     results = []
     for it in items:
         src, dst = it["source"], it["destination"]
         try:
             if src.rstrip("/\\").endswith("*"):
-                results.append(_copy_folder(src, dst, src.rstrip("*").rstrip("/\\")))
+                results.append(_copy_folder(src, dst, src.rstrip("*").rstrip("/\\"), verify))
             elif os.path.isdir(src):
-                results.append(_copy_folder(src, dst, src))
+                results.append(_copy_folder(src, dst, src, verify))
             else:
                 os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
                 shutil.copy2(src, dst)
-                results.append({"source": src, "destination": dst, "ok": True, "count": 1, "kind": "file", "files": [dst]})
+                _verify_file(src, dst, verify)   # post-copy integrity check — a short/corrupt copy fails, not "success"
+                results.append({"source": src, "destination": dst, "ok": True, "count": 1, "folders": 0, "kind": "file", "verified": verify != "off", "verify": verify, "files": [dst]})
         except Exception as exc:  # noqa: BLE001 — report per item, keep going
-            results.append({"source": src, "destination": dst, "ok": False, "error": str(exc)})
+            results.append({"source": src, "destination": dst, "ok": False, "count": 0, "folders": 0, "error": str(exc)})
     return results
+
+
+def _path_size(path: str) -> int:
+    """Total bytes of a file, or of a whole directory tree (best-effort; unreadable files skipped)."""
+    if os.path.isdir(path):
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        return total
+    return os.path.getsize(path)
+
+
+def _nearest_existing(path: str) -> str:
+    """Walk up ``path`` to the nearest ancestor that actually exists (so we can test a not-yet-created dest)."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return ""
+        p = parent
+    return p
+
+
+def preflight_items(items: list[dict]) -> list[dict]:
+    """READ-ONLY readiness check run BEFORE a copy: for each {source,destination} report whether the source
+    exists, the destination is reachable + writable, and the destination drive has enough free space for the
+    source's size — so problems (missing source, dead share, read-only path, full disk) surface up front
+    instead of failing mid-copy. Copies nothing; each item gets `ok` = all three checks passed."""
+    out = []
+    for it in items:
+        src = str(it.get("source", "")); dst = str(it.get("destination", ""))
+        is_folder = src.rstrip("/\\").endswith("*") or os.path.isdir(src)
+        base = src.rstrip("/\\").rstrip("*").rstrip("/\\") if src.rstrip("/\\").endswith("*") else src
+        source_ok = bool(base) and os.path.exists(base)
+        try:
+            source_bytes = _path_size(base) if source_ok else 0
+        except OSError:
+            source_bytes = 0
+        dst_parent = dst if is_folder else (os.path.dirname(dst) or ".")
+        anc = _nearest_existing(dst_parent)
+        dest_ok = bool(anc) and os.access(anc, os.W_OK)
+        try:
+            free_bytes = shutil.disk_usage(anc).free if anc else 0
+        except OSError:
+            free_bytes = 0
+        space_ok = (free_bytes >= source_bytes) if source_ok and dest_ok else (not source_ok or True)
+        notes = []
+        if not source_ok:
+            notes.append("source not found")
+        if not dest_ok:
+            notes.append("destination not reachable / not writable")
+        elif source_ok and not space_ok:
+            notes.append(f"not enough free space (need {source_bytes:,} B, {free_bytes:,} B free)")
+        out.append({"source": src, "destination": dst, "source_ok": source_ok, "dest_ok": dest_ok,
+                    "space_ok": bool(space_ok), "source_bytes": source_bytes, "free_bytes": free_bytes,
+                    "ok": bool(source_ok and dest_ok and space_ok), "note": "; ".join(notes)})
+    return out
+
+
+def list_filecopy_manifests(cfg: dict, release_date: str) -> list[dict]:
+    """Discover file-copy manifests in the pulled branch for a release: for each Scripts root (batch /
+    reporting / …) look under ``<root>/<release_date>/`` for ``filecopy_manifest*.json``. Returns one
+    entry per root that HAS at least one — ``[{root, label, files:[repo-rel paths]}]`` — so the UI can
+    show a labelled dropdown per folder (one if only one place has it, two if both do)."""
+    if not (release_date.isdigit() and len(release_date) == 8):
+        return []
+    wd = Path(cfg.get("git_workdir", ""))
+    out = []
+    seen = set()
+    for root in _script_roots(cfg).values():
+        if root in seen:
+            continue
+        seen.add(root)
+        base = (wd / root / release_date) if root else (wd / release_date)
+        if not base.is_dir():
+            continue
+        files = sorted(str(p.relative_to(wd)).replace("\\", "/")
+                       for p in base.iterdir()
+                       if p.is_file() and p.name.lower().startswith("filecopy_manifest") and p.name.lower().endswith(".json"))
+        if files:
+            out.append({"root": root, "label": (root or "/"), "files": files})
+    return out
+
+
+def read_manifest_file(cfg: dict, rel: str) -> list[dict]:
+    """Read one file-copy manifest by its repo-relative path (jailed to the work dir)."""
+    wd = Path(cfg.get("git_workdir", "")).resolve()
+    p = (wd / rel).resolve()
+    if not str(p).startswith(str(wd)) or not p.is_file():
+        raise RuntimeError("Manifest not found in the pulled branch.")
+    return read_manifest(str(p))

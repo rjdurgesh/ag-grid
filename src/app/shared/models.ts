@@ -404,15 +404,39 @@ export interface FileCopyItem {
   source: string;
   destination: string;
 }
+/** A discovered manifest location — one Scripts folder that has a filecopy_manifest*.json for the release. */
+export interface FileCopyManifestLocation {
+  root: string;                   // repo-relative Scripts root (e.g. CIB/Batch/Scripts)
+  label: string;                  // heading shown above its dropdown
+  files: string[];                // manifest file paths found under <root>/<release_date>/
+}
 /** A file-copy result per item. */
 export interface FileCopyResult {
   source: string;
   destination: string;
   ok: boolean;
-  count?: number;
+  count?: number;                 // files copied
+  folders?: number;               // distinct destination folders touched
   kind?: string;
   error?: string;
   files?: string[];               // the files actually copied (for the per-item log)
+  started?: string;               // when this item's copy started
+  finished?: string;              // when it finished
+  seconds?: number;               // how long it took
+  verified?: boolean;             // destination verified after copy (post-copy integrity check)
+  verify?: string;                // verification mode used: 'off' | 'size' | 'hash'
+}
+/** A pre-flight readiness check per item (run BEFORE copying — copies nothing). */
+export interface FileCopyPreflight {
+  source: string;
+  destination: string;
+  source_ok: boolean;             // the source exists
+  dest_ok: boolean;               // the destination is reachable + writable
+  space_ok: boolean;              // the destination drive has enough free space for the source
+  source_bytes?: number;
+  free_bytes?: number;
+  ok: boolean;                    // all three checks passed
+  note?: string;                  // human summary of any problem(s)
 }
 /** Batch-monitor grid payload. */
 export interface BatchMonitorResult {

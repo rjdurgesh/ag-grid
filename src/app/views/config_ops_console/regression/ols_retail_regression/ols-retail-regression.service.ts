@@ -6,7 +6,7 @@ import { API } from '../../../../shared/api-endpoints';
 import { environment } from '../../../../../environments/environment';
 import { RbacService } from '../../../../auth/rbac.service';
 import {
-  BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
+  BatchMonitorResult, FileCopyItem, FileCopyManifestLocation, FileCopyPreflight, FileCopyResult, RegressionActivityRow,
   RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
@@ -16,6 +16,14 @@ export interface RunSqlStreamHandlers {
   result: (r: RunSqlResult) => void;    // a script×db run finished (for the results list)
   step: (status: string) => void;       // overall step status (complete | error)
   done: () => void;                     // stream ended
+  error: (e: unknown) => void;
+}
+
+/** Live-stream callbacks for a file-copy run (progress bar + per-file ✓/✗). */
+export interface FileCopyStreamHandlers {
+  item: (r: FileCopyResult, done: number, total: number) => void;
+  step: (status: string) => void;
+  done: () => void;
   error: (e: unknown) => void;
 }
 
@@ -71,6 +79,10 @@ export class OlsRetailRegressionService {
   /** chg*.sql for a release, PER DB ({ db: paths[] }) — each DB runs only its own folder's scripts. */
   releaseScripts(release_date: string, dbs: string[]): Observable<{ scripts: Record<string, string[]> }> {
     return this.api.post(API.regression.releaseScripts, { caller: this.caller(), scope: this.scope, release_date, dbs });
+  }
+  /** .sql from the DB's RegressionTesting folder — the Reset / Trigger script pickers. */
+  batchDBScripts(db: string): Observable<{ scripts: string[] }> {
+    return this.api.post(API.regression.batchDBScripts, { caller: this.caller(), scope: this.scope, db });
   }
   gitTree(): Observable<{ workdir: string; branch: string; files: string[] }> {
     return this.api.post(API.regression.gitTree, { caller: this.caller(), scope: this.scope });
@@ -171,11 +183,68 @@ export class OlsRetailRegressionService {
   logRead(log_file: string): Observable<{ content: string }> {
     return this.api.post(API.regression.logRead, { caller: this.caller(), scope: this.scope, log_file });
   }
-  fileCopyManifest(): Observable<{ items: FileCopyItem[] }> {
-    return this.api.post(API.regression.fileCopyManifest, { caller: this.caller(), scope: this.scope });
+  /** Discover manifests in the pulled branch for a release → labelled dropdown(s) per Scripts folder. */
+  fileCopyManifests(release_date: string): Observable<{ locations: FileCopyManifestLocation[] }> {
+    return this.api.post(API.regression.fileCopyManifests, { caller: this.caller(), scope: this.scope, release_date });
   }
-  fileCopyRun(run_id: number, items: FileCopyItem[]): Observable<{ results: FileCopyResult[] }> {
-    return this.api.post(API.regression.fileCopyRun, { caller: this.caller(), scope: this.scope, run_id, items });
+  fileCopyManifest(path: string): Observable<{ items: FileCopyItem[] }> {
+    return this.api.post(API.regression.fileCopyManifest, { caller: this.caller(), scope: this.scope, path });
+  }
+  /** Readiness check BEFORE copying — source exists / dest writable / free space. Copies nothing. */
+  fileCopyPreflight(items: FileCopyItem[]): Observable<{ results: FileCopyPreflight[] }> {
+    return this.api.post(API.regression.fileCopyPreflight, { caller: this.caller(), scope: this.scope, items });
+  }
+  fileCopyRun(run_id: number, items: FileCopyItem[], manifest: FileCopyItem[]): Observable<{ results: FileCopyResult[]; step_status: string }> {
+    return this.api.post(API.regression.fileCopyRun, { caller: this.caller(), scope: this.scope, run_id, items, manifest });
+  }
+  /** LIVE copy: stream per-item results (progress + per-file ✓/✗). SSE for real; mock animates /file-copy/run. */
+  fileCopyRunStream(run_id: number, items: FileCopyItem[], manifest: FileCopyItem[], h: FileCopyStreamHandlers): void {
+    if (this.isMocked(API.regression.fileCopyRunStream)) {
+      this.fileCopyRun(run_id, items, manifest).subscribe({
+        next: (resp) => {
+          const results = resp.results ?? [];
+          let i = 0;
+          const next = (): void => {
+            if (i >= results.length) { h.step(resp.step_status); h.done(); return; }
+            const r = results[i++];
+            h.item(r, i, results.length);
+            setTimeout(next, 260);
+          };
+          next();
+        },
+        error: (e) => h.error(e)
+      });
+    } else {
+      void this.fileCopyStream(API.regression.fileCopyRunStream, { caller: this.caller(), scope: this.scope, run_id, items, manifest }, h);
+    }
+  }
+  private async fileCopyStream(url: string, body: unknown, h: FileCopyStreamHandlers): Promise<void> {
+    try {
+      const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(body) });
+      if (!resp.ok || !resp.body) { h.error(new Error(`Stream failed (HTTP ${resp.status})`)); return; }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { break; }
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, sep); buffer = buffer.slice(sep + 2);
+          let ev = 'message'; let data = '';
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) { ev = line.slice(6).trim(); }
+            else if (line.startsWith('data:')) { data += line.slice(5).trim(); }
+          }
+          if (!data) { continue; }
+          const p = JSON.parse(data);
+          if (ev === 'item') { h.item(p.result as FileCopyResult, p.done as number, p.total as number); }
+          else if (ev === 'step') { h.step(p.step_status as string); }
+        }
+      }
+      h.done();
+    } catch (e) { h.error(e); }
   }
   batchMonitor(db: string): Observable<BatchMonitorResult> {
     return this.api.post(API.regression.batchMonitor, { caller: this.caller(), scope: this.scope, db });

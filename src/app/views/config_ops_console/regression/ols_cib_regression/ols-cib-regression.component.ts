@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { AgGridAngular } from 'ag-grid-angular';
 import { ColDef } from 'ag-grid-community';
 import { ColorModeService } from '@coreui/angular';
-import { interval } from 'rxjs';
+import { forkJoin, interval } from 'rxjs';
 
 import { OlsCibRegressionService } from './ols-cib-regression.service';
 import { LoaderComponent } from '../../../../components/loader/loader.component';
@@ -13,7 +13,7 @@ import { ConfirmService } from '../../../../components/confirm/confirm.service';
 import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data/grid-data.model';
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
-  BatchMonitorResult, FileCopyItem, FileCopyResult, RegressionActivityRow,
+  BatchMonitorResult, FileCopyItem, FileCopyManifestLocation, FileCopyPreflight, FileCopyResult, RegressionActivityRow,
   RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
@@ -104,20 +104,64 @@ export class OlsCibRegressionComponent implements OnInit {
   // Apply DB — chg*.sql resolved PER DB from <script-root(db)>/<release_date>/ (never cross-product)
   readonly applyDbs = signal<string[]>(['cib_batch']);
   readonly applyScriptsByDb = signal<Record<string, string[]>>({});
+  readonly applySelected = signal<string[]>([]);   // chg files ticked to run (default: all loaded — run some now, rest later)
   readonly loadingApply = signal(false);
   readonly applyResults = signal<RunSqlResult[]>([]);
+  readonly applySelectedCount = computed(() => this.applySelected().length);
+  // Collapsible workflow steps (key → collapsed?).
+  readonly stepCollapsed = signal<Record<string, boolean>>({});
 
-  // File copy
-  readonly manifest = signal<FileCopyItem[]>([]);
-  readonly selectedItems = signal<number[]>([]);
-  readonly copyResults = signal<FileCopyResult[]>([]);
+  // File copy — manifest comes from the release repo (Scripts/<date>/filecopy_manifest_<date>.json),
+  // discovered per Scripts folder (one labelled dropdown each). Step is Complete only when ALL items copied.
+  readonly manifestLocations = signal<FileCopyManifestLocation[]>([]);
+  readonly selectedManifestPath = signal<string>('');
+  readonly loadingManifests = signal(false);
+  readonly manifest = signal<FileCopyItem[]>([]);          // the CURRENTLY SHOWN manifest (selected dropdown)
+  readonly allManifestItems = signal<FileCopyItem[]>([]);  // UNION across every discovered manifest — the step
+  readonly selectedItems = signal<number[]>([]);           // is Complete only when ALL of these are copied
+  readonly manifestsDiscovered = signal(false);            // discovery has finished (locations + their items loaded)
+  readonly copyResults = signal<FileCopyResult[]>([]);     // last action's per-item results (popup)
+  readonly copyProgress = signal<{ done: number; total: number } | null>(null);
+  readonly copyDetail = signal<FileCopyResult[] | null>(null);   // popup contents (last run, or a clicked log row)
+  readonly preflight = signal<FileCopyPreflight[] | null>(null); // last readiness check (before a copy)
+  readonly preflightBusy = signal(false);
+  /** Per-item copy state (key 'source|destination' → status) reconstructed from the run's audit rows. */
+  readonly copyState = computed(() => {
+    const m: Record<string, { status: string; count?: number; folders?: number; error?: string }> = {};
+    for (const row of this.activityRows()) {
+      if (row.step_key !== 'file_copy' || row.action !== 'copy_item') { continue; }
+      try {
+        const d = JSON.parse(row.comments || '{}');
+        const k = `${d.source}|${d.destination}`;
+        if (d.source && d.destination && !m[k]) {   // activity is newest-first → first seen is latest
+          m[k] = { status: row.status, count: d.count, folders: d.folders, error: d.error };
+        }
+      } catch { /* not a JSON copy row */ }
+    }
+    return m;
+  });
+  readonly copyPending = computed(() => this.manifest().filter((it) => this.itemState(it) === 'pending').length);
+  readonly copyFailed = computed(() => this.manifest().filter((it) => this.itemState(it) === 'failed').length);
+  /** Manifest items not yet copied (failed + pending) — the target of a "copy remaining / retry" run. */
+  readonly copyRemaining = computed(() => this.manifest().filter((it) => this.itemState(it) !== 'copied').length);
+  /** How many items failed the last readiness check (source missing / dest unwritable / no space). */
+  readonly preflightIssues = computed(() => (this.preflight() ?? []).filter((r) => !r.ok).length);
+  /** True once discovery has settled and there is genuinely nothing to copy for this release — no manifest
+   *  in any Scripts folder, or the manifest(s) are present but empty. The step can then be marked complete. */
+  readonly nothingToCopy = computed(() => this.manifestsDiscovered() && !this.loadingManifests() && this.allManifestItems().length === 0);
 
-  // Reset / Trigger
+  // Reset / Trigger — scripts come from the RegressionTesting folder for the selected DB (batch/reporting only).
+  readonly resetTriggerDbs = [
+    { key: 'cib_batch', label: 'OLS CIB Batch' },
+    { key: 'cib_reporting', label: 'OLS CIB Reporting' }
+  ];
   readonly resetScript = signal('');
   readonly resetDb = signal('cib_batch');
+  readonly resetScripts = signal<string[]>([]);
   readonly resetResults = signal<RunSqlResult[]>([]);
   readonly triggerScript = signal('');
   readonly triggerDb = signal('cib_batch');
+  readonly triggerScripts = signal<string[]>([]);
   readonly triggerResults = signal<RunSqlResult[]>([]);
 
   // Release-branch browser (collapsible)
@@ -138,7 +182,7 @@ export class OlsCibRegressionComponent implements OnInit {
   readonly consoleRunning = signal(false);      // a live run is streaming into the console
 
   // Monitoring
-  readonly monitorTab = signal<'batches' | 'activity'>('batches');
+  readonly monitorTab = signal<'batches' | 'activity'>('activity');   // Regression Activity shown first
   readonly monitorDb = signal('cib_batch');
   readonly batchResult = signal<BatchMonitorResult | null>(null);
   readonly activityRows = signal<RegressionActivityRow[]>([]);
@@ -173,25 +217,64 @@ export class OlsCibRegressionComponent implements OnInit {
     pagination: true,
     paginationPageSize: 100,
     paginationPageSizeSelector: [50, 100, 500, 1000],
+    onCellClicked: (e: { colDef?: { field?: string }; data?: RegressionActivityRow }) => this.onActivityCellClicked(e),
   };
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
     { field: 'load_dt', headerName: 'Date', maxWidth: 120 },
     { field: 'release_date', headerName: 'Release', maxWidth: 120 },
     { field: 'step_key', headerName: 'Step' },
-    { field: 'action', headerName: 'Action' },
+    { field: 'action', headerName: 'Action', minWidth: 180, valueFormatter: (p) => this.activityActionLabel(p) },
     { field: 'status', headerName: 'Status', maxWidth: 130,
       cellClassRules: {
         'rg-cell--ok': (p) => p.value === 'complete',
         'rg-cell--err': (p) => p.value === 'error',
-        'rg-cell--warn': (p) => p.value === 'forced',
+        'rg-cell--warn': (p) => p.value === 'forced' || p.value === 'partial',
       } },
     { field: 'performed_by', headerName: 'By' },
     { field: 'start_time', headerName: 'Start' },
     { field: 'end_time', headerName: 'End' },
     { field: 'task_completion_time', headerName: 'Dur (s)', maxWidth: 110 },
-    { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220, tooltipField: 'comments' },
+    { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220,
+      valueFormatter: (p) => this.activityCommentsLabel(p),
+      cellClassRules: { 'rg-cell--link': (p) => this.isCopyRow(p.data as RegressionActivityRow) } },
   ];
+  /** True for a file-copy log row whose comments hold a copy-results JSON (→ clickable detail popup). */
+  private isCopyRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.step_key === 'file_copy' && (r.action === 'copy' || r.action === 'copy_item');
+  }
+  activityActionLabel(p: { value?: unknown; data?: RegressionActivityRow }): string {
+    const r = p.data;
+    if (r?.step_key === 'file_copy') {
+      if (r.action === 'start') { return 'Copy Operation — Started'; }
+      if (r.action === 'copy_item') { return 'Copy Operation — Item'; }
+      if (r.action === 'copy') {
+        return r.status === 'complete' ? 'Copy Operation — Completed'
+          : r.status === 'error' ? 'Copy Operation — Errored'
+          : r.status === 'partial' ? 'Copy Operation — Partially Completed' : 'Copy Operation';
+      }
+    }
+    return String(p.value ?? '');
+  }
+  activityCommentsLabel(p: { value?: unknown; data?: RegressionActivityRow }): string {
+    const r = p.data;
+    if (this.isCopyRow(r)) {
+      try {
+        const d = JSON.parse(r!.comments || '{}');
+        if (r!.action === 'copy') { return `${d.summary || 'Copy results'}  ⋯`; }
+        return `${r!.status === 'complete' ? 'Success' : 'Failed'} · ${d.count || 0} file(s)  ⋯`;
+      } catch { /* fall through */ }
+    }
+    return String(p.value ?? '');
+  }
+  onActivityCellClicked(e: { colDef?: { field?: string }; data?: RegressionActivityRow }): void {
+    if (e.colDef?.field !== 'comments' || !this.isCopyRow(e.data)) { return; }
+    try {
+      const d = JSON.parse(e.data!.comments || '{}');
+      const items: FileCopyResult[] = e.data!.action === 'copy' ? (d.items || []) : (d.source ? [d] : []);
+      if (items.length) { this.openCopyDetail(items); }
+    } catch { /* not parseable */ }
+  }
 
   // "Last refreshed <ts> · N sec ago" per monitor tab (reuses the Home last-synced pattern).
   private readonly destroyRef = inject(DestroyRef);
@@ -232,8 +315,8 @@ export class OlsCibRegressionComponent implements OnInit {
       error: (e) => { this.loading.set(false); this.fail(e, 'Could not load the regression run'); }
     });
     this.loadRefreshDatabases(); // env-specific DBs for this scope's Refresh-DB picker
-    this.loadActivity();
-    this.loadBatches();          // show batch status by default — don't make the user click Refresh
+    this.loadActivity();         // Regression Activity is the default monitoring tab
+    this.loadBatches();          // preload batch status too — don't make the user click Refresh
     // Tick every second so the "N sec ago" last-refreshed labels stay live.
     interval(1000).pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.nowTick.set(Date.now()));
   }
@@ -248,7 +331,8 @@ export class OlsCibRegressionComponent implements OnInit {
       next: (r) => { if (r.scripts?.length) { this.scripts.set(r.scripts); this.pulled.set(true); } }
     });
     this.svc.releaseDates().subscribe({ next: (r) => this.availableDates.set(r.release_dates ?? []) });
-    if (run?.release_date) { this.loadReleaseScripts(); }
+    if (run?.release_date) { this.loadReleaseScripts(); this.loadManifests(); }
+    this.loadResetScripts(); this.loadTriggerScripts();       // RegressionTesting scripts for the default DB
   }
 
   /** Dismiss the resume banner and keep working on the existing run. */
@@ -296,12 +380,13 @@ export class OlsCibRegressionComponent implements OnInit {
       case 'complete': return 'st-complete';
       case 'forced': return 'st-forced';
       case 'error': return 'st-error';
+      case 'partial': return 'st-partial';
       case 'in_progress': return 'st-progress';
       default: return 'st-none';
     }
   }
   badgeLabel(status: string): string {
-    return { complete: 'Complete', forced: 'Forced', error: 'Error', in_progress: 'In progress', not_started: 'Not started' }[status] ?? status;
+    return { complete: 'Complete', forced: 'Forced', error: 'Error', partial: 'Partial', in_progress: 'In progress', not_started: 'Not started' }[status] ?? status;
   }
   /** Status to show: while this step is actively running, reflect "In progress". */
   effectiveStatus(key: string): string { return this.busy() === key ? 'in_progress' : this.stepStatus(key); }
@@ -366,12 +451,19 @@ export class OlsCibRegressionComponent implements OnInit {
         this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
         this.applyScriptsByDb.set({}); this.applyResults.set([]);
+        this.manifestLocations.set([]); this.selectedManifestPath.set(''); this.manifest.set([]);
         this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
+        this.loadResetScripts(); this.loadTriggerScripts();   // RegressionTesting scripts for the default DB
+        this.loadManifests();          // discover file-copy manifest(s) for this release
         this.loadActivity();
       },
       error: (e) => { this.starting.set(false); this.fail(e, 'Could not start the run'); }
     });
   }
+
+  // --- collapsible steps -----------------------------------------------------
+  isStepCollapsed(key: string): boolean { return !!this.stepCollapsed()[key]; }
+  toggleStepCollapse(key: string): void { this.stepCollapsed.update((m) => ({ ...m, [key]: !m[key] })); }
 
   /** Return to the "start a run" panel (after completing/abandoning) so the user picks a branch + date. */
   newRun(): void {
@@ -563,15 +655,47 @@ export class OlsCibRegressionComponent implements OnInit {
   }
   toggleApplyDb(d: string): void { this.applyDbs.set(this.toggle(this.applyDbs(), d)); this.loadReleaseScripts(); }
 
-  /** Load this run's chg*.sql for the selected DB(s) from their <release_date> folders (per DB). */
+  /** Selection key — chg files are keyed by DB **and** path, so the SAME filename under two DBs (e.g. a
+   *  chg present in both batch & reporting folders) is selected independently, not collapsed into one. */
+  applyKey(db: string, path: string): string { return `${db}|${path}`; }
+  applyIsSel(db: string, path: string): boolean { return this.applySelected().includes(this.applyKey(db, path)); }
+
+  /** Load this run's chg*.sql for the selected DB(s) from their <release_date> folders (per DB). A newly
+   *  appearing file is ticked by default (run all in one click); a file you had UNticked stays unticked and
+   *  a file you had ticked stays ticked when you add/remove another DB — your selection is preserved. */
   loadReleaseScripts(): void {
     const d = this.state().run?.release_date;
-    if (!d || !this.applyDbs().length) { this.applyScriptsByDb.set({}); return; }
+    if (!d || !this.applyDbs().length) { this.applyScriptsByDb.set({}); this.applySelected.set([]); return; }
+    const seq = ++this.applyLoadSeq;   // guard: only the newest load may apply its result (rapid DB toggles race)
     this.loadingApply.set(true);
     this.svc.releaseScripts(d, this.applyDbs()).subscribe({
-      next: (r) => { this.loadingApply.set(false); this.applyScriptsByDb.set(r.scripts ?? {}); },
-      error: (e) => { this.loadingApply.set(false); this.fail(e, 'Could not load release scripts'); }
+      next: (r) => {
+        if (seq !== this.applyLoadSeq) { return; }   // a later toggle superseded this response
+        this.loadingApply.set(false);
+        const map = r.scripts ?? {};
+        const prevKeys = new Set(this.applyKeysOf(this.applyScriptsByDb()));   // what was loaded before
+        const prevSel = new Set(this.applySelected());
+        const nextKeys = this.applyKeysOf(map);
+        this.applyScriptsByDb.set(map);
+        // keep prior intent: previously-known files keep their tick; brand-new files default to ticked
+        this.applySelected.set(nextKeys.filter((k) => prevSel.has(k) || !prevKeys.has(k)));
+      },
+      error: (e) => { if (seq === this.applyLoadSeq) { this.loadingApply.set(false); } this.fail(e, 'Could not load release scripts'); }
     });
+  }
+  /** All `${db}|${path}` keys present in a per-DB script map. */
+  private applyKeysOf(map: Record<string, string[]>): string[] {
+    return Object.entries(map).flatMap(([db, arr]) => arr.map((s) => this.applyKey(db, s)));
+  }
+  /** Tick/untick one chg file (under a specific DB) to run. */
+  toggleApplyScript(db: string, path: string): void { this.applySelected.set(this.toggle(this.applySelected(), this.applyKey(db, path))); }
+  applyGroupAllOn(db: string, scripts: string[]): boolean { return scripts.length > 0 && scripts.every((s) => this.applyIsSel(db, s)); }
+  /** Select / clear all chg files in one DB's group. */
+  toggleApplyGroup(db: string, scripts: string[]): void {
+    const allOn = this.applyGroupAllOn(db, scripts);
+    const cur = new Set(this.applySelected());
+    scripts.forEach((s) => (allOn ? cur.delete(this.applyKey(db, s)) : cur.add(this.applyKey(db, s))));
+    this.applySelected.set([...cur]);
   }
 
   async runApply(): Promise<void> {
@@ -579,10 +703,13 @@ export class OlsCibRegressionComponent implements OnInit {
     if (!d) { await this.notifyRequired('This run has no release date.'); return; }
     if (!this.applyDbs().length) { await this.notifyRequired('Select at least one target database.'); return; }
     const map = this.applyScriptsByDb();
-    // Each DB runs ONLY its own folder's chg scripts (batch on cib_batch, reporting on cib_reporting) — never cross-product.
-    const queue = this.applyDbs().map((db) => ({ db, scripts: map[db] ?? [] })).filter((q) => q.scripts.length);
+    const sel = new Set(this.applySelected());
+    // Each DB runs ONLY its own folder's SELECTED chg scripts (batch on cib_batch, reporting on cib_reporting) — never cross-product.
+    const queue = this.applyDbs()
+      .map((db) => ({ db, scripts: (map[db] ?? []).filter((s) => sel.has(this.applyKey(db, s))) }))
+      .filter((q) => q.scripts.length);
     if (!queue.length) {
-      await this.notifyRequired(`No chg*.sql found for release ${d} in the selected database folder(s). Pick a database that has scripts for this release.`);
+      await this.notifyRequired('Select at least one chg file to run (tick the files under each database).');
       return;
     }
     const total = queue.reduce((n, q) => n + q.scripts.length, 0);
@@ -599,6 +726,8 @@ export class OlsCibRegressionComponent implements OnInit {
 
   // Apply runs the DBs sequentially (each with its own scripts), streaming into the one console.
   private applyQueue: { db: string; scripts: string[] }[] = [];
+  private applyLoadSeq = 0;   // increments per loadReleaseScripts call; only the latest response is applied
+  private manifestLoadSeq = 0; // same guard for selectManifest (fast Batch↔Reporting switches)
   private runApplyQueue(): void {
     const next = this.applyQueue.shift();
     if (!next) {
@@ -621,11 +750,83 @@ export class OlsCibRegressionComponent implements OnInit {
   }
 
   // --- step 3: File copy -----------------------------------------------------
-  loadManifest(): void {
-    this.svc.fileCopyManifest().subscribe({
-      next: (r) => { this.manifest.set(r.items ?? []); this.selectedItems.set([]); },
-      error: (e) => this.fail(e, 'Could not read the file-copy manifest')
+  /** Discover filecopy_manifest*.json in the pulled branch for this run's release → dropdown(s). */
+  loadManifests(): void {
+    const d = this.state().run?.release_date;
+    if (!d) { this.manifestLocations.set([]); this.allManifestItems.set([]); this.manifestsDiscovered.set(false); return; }
+    this.loadingManifests.set(true);
+    this.manifestsDiscovered.set(false);
+    this.svc.fileCopyManifests(d).subscribe({
+      next: (r) => {
+        this.loadingManifests.set(false);
+        const locs = r.locations ?? [];
+        this.manifestLocations.set(locs);
+        const all = locs.flatMap((l) => l.files);
+        this.loadAllManifestItems(all);   // union of EVERY discovered manifest → drives step Complete/Partial
+        if (all.length === 1 && !this.selectedManifestPath()) { this.selectManifest(all[0]); }   // single → auto-open
+      },
+      error: (e) => { this.loadingManifests.set(false); this.fail(e, 'Could not discover file-copy manifests'); }
     });
+  }
+  /** Fetch every discovered manifest's items and union them (dedup by source|destination) so the step is
+   *  Complete only when ALL files across BOTH folders (Batch + Reporting) are copied — copying just one
+   *  folder's manifest leaves the step Partial, not Complete. */
+  private loadAllManifestItems(paths: string[]): void {
+    if (!paths.length) { this.allManifestItems.set([]); this.manifestsDiscovered.set(true); return; }
+    forkJoin(paths.map((p) => this.svc.fileCopyManifest(p))).subscribe({
+      next: (resList) => {
+        const seen = new Set<string>(); const union: FileCopyItem[] = [];
+        for (const res of resList) {
+          for (const it of (res.items ?? [])) {
+            const k = `${it.source}|${it.destination}`;
+            if (!seen.has(k)) { seen.add(k); union.push(it); }
+          }
+        }
+        this.allManifestItems.set(union);
+        this.manifestsDiscovered.set(true);
+      },
+      error: () => { this.manifestsDiscovered.set(true); /* keep what we had; selected manifest still governs the copy */ }
+    });
+  }
+  /** No files to copy for this release (no manifest, or empty manifest) → complete the step cleanly (logged,
+   *  NOT a force-override, since there is legitimately nothing to do). */
+  async markNothingToCopy(): Promise<void> {
+    const note = this.manifestLocations().length
+      ? 'Manifest(s) present but empty — no files to copy for this release.'
+      : 'No file-copy manifest for this release — nothing to copy.';
+    const ok = await this.confirm.ask({
+      title: 'Nothing to copy', message: `${note} Mark the File copy step complete?`,
+      confirmLabel: 'Mark complete', tone: 'primary'
+    });
+    if (!ok) { return; }
+    this.svc.markStep(this.runId, 'file_copy', 'complete', false, note).subscribe({
+      next: () => { this.toast.set({ kind: 'ok', text: 'File copy marked complete — nothing to copy.' }); this.reloadState(); this.loadActivity(); },
+      error: (e) => this.fail(e, 'Could not mark the step complete')
+    });
+  }
+  /** Load the chosen manifest's items; pre-tick the not-yet-copied ones. Switching folders (Batch ↔
+   *  Reporting) clears the previous manifest's transient view (last result / progress / pre-flight) so
+   *  nothing from the other folder lingers, and a load-guard ignores a stale response from a fast switch. */
+  selectManifest(path: string): void {
+    this.selectedManifestPath.set(path);
+    this.copyResults.set([]); this.copyDetail.set(null); this.preflight.set(null);   // drop the other manifest's view
+    if (this.busy() !== 'file_copy') { this.copyProgress.set(null); }                // keep an in-flight copy's bar
+    if (!path) { this.manifest.set([]); this.selectedItems.set([]); return; }
+    const seq = ++this.manifestLoadSeq;
+    this.svc.fileCopyManifest(path).subscribe({
+      next: (r) => {
+        if (seq !== this.manifestLoadSeq) { return; }   // a later switch superseded this response
+        const items = r.items ?? [];
+        this.manifest.set(items);
+        this.selectedItems.set(items.map((_, i) => i).filter((i) => this.itemState(items[i]) !== 'copied'));
+      },
+      error: (e) => this.fail(e, 'Could not read the manifest')
+    });
+  }
+  /** Per-item copy state for the manifest row: copied ✓ / failed ✗ / pending ⏳. */
+  itemState(it: FileCopyItem): 'copied' | 'failed' | 'pending' {
+    const s = this.copyState()[`${it.source}|${it.destination}`];
+    return s?.status === 'complete' ? 'copied' : s?.status === 'error' ? 'failed' : 'pending';
   }
   toggleItem(i: number): void {
     const cur = this.selectedItems();
@@ -639,26 +840,135 @@ export class OlsCibRegressionComponent implements OnInit {
     const m = /^\\\\[^\\]+\\([a-zA-Z])\$\\(.*)$/.exec(p);
     return m ? `${m[1].toLowerCase()}:\\${m[2]}` : p;
   }
+  /** LIVE copy of the ticked items — progress bar + per-file ✓/✗, then the detail popup. */
   async runCopy(): Promise<void> {
-    const items = this.selectedItems().map((i) => this.manifest()[i]);
-    if (!items.length) { await this.notifyRequired('Select at least one item to copy.'); return; }
-    const ok = await this.confirmStepRun(this.step('file_copy'),
-      `Copy ${items.length} item(s) to their destinations?`, 'Copy');
+    const items = this.selectedItems().map((i) => this.manifest()[i]).filter(Boolean);
+    if (!items.length) { await this.notifyRequired('Tick at least one file to copy.'); return; }
+    const ok = await this.confirmStepRun(this.step('file_copy'), `Copy ${items.length} item(s) to their destinations?`, 'Copy');
     if (!ok) { return; }
     this.busy.set('file_copy');
-    this.svc.fileCopyRun(this.runId, items).subscribe({
-      next: (r) => {
-        this.busy.set('');
-        this.copyResults.set(r.results ?? []);
-        const fails = (r.results ?? []).filter((x) => !x.ok).length;
-        this.toast.set(fails ? { kind: 'err', text: `${fails} item(s) failed.` } : { kind: 'ok', text: 'Files copied.' });
-        this.reloadState();
+    this.copyResults.set([]);
+    this.preflight.set(null);   // a new copy supersedes the last readiness check
+    this.copyProgress.set({ done: 0, total: items.length });
+    // finalize the step against EVERY discovered manifest (Batch + Reporting), not just the selected one,
+    // so copying one folder leaves the step Partial until the other is copied too.
+    const fullManifest = this.allManifestItems().length ? this.allManifestItems() : this.manifest();
+    this.svc.fileCopyRunStream(this.runId, items, fullManifest, {
+      item: (r, done, total) => { this.copyResults.update((a) => [...a, r]); this.copyProgress.set({ done, total }); },
+      step: () => { /* badge updates from reloadState */ },
+      done: () => {
+        this.busy.set(''); this.copyProgress.set(null);
+        const fails = this.copyResults().filter((x) => !x.ok).length;
+        this.copyDetail.set(this.copyResults());     // open the detail popup
+        this.toast.set(fails ? { kind: 'err', text: `${fails} item(s) failed — see details.` } : { kind: 'ok', text: 'Copy completed.' });
+        this.reloadState(); this.loadActivity();
       },
-      error: (e) => { this.busy.set(''); this.fail(e, 'File copy failed'); }
+      error: (e) => { this.busy.set(''); this.copyProgress.set(null); this.fail(e, 'File copy failed'); }
     });
+  }
+  openCopyDetail(items: FileCopyResult[]): void { this.copyDetail.set(items); }
+  closeCopyDetail(): void { this.copyDetail.set(null); }
+  /** Readiness check for the ticked items BEFORE copying — source exists / dest writable / free space. */
+  runPreflight(): void {
+    const items = this.selectedItems().map((i) => this.manifest()[i]).filter(Boolean);
+    if (!items.length) { void this.notifyRequired('Tick at least one file to check.'); return; }
+    this.preflightBusy.set(true);
+    this.svc.fileCopyPreflight(items).subscribe({
+      next: (r) => {
+        this.preflightBusy.set(false);
+        this.preflight.set(r.results ?? []);
+        const bad = (r.results ?? []).filter((x) => !x.ok).length;
+        this.toast.set(bad
+          ? { kind: 'err', text: `Pre-flight found ${bad} issue(s) — resolve before copying.` }
+          : { kind: 'ok', text: 'Pre-flight passed — all sources, destinations and space look good.' });
+      },
+      error: (e) => { this.preflightBusy.set(false); this.fail(e, 'Pre-flight check failed'); }
+    });
+  }
+  /** Re-copy only the items not yet copied (failed + pending) — drives a Partial/Error step toward Complete. */
+  retryFailed(): void {
+    const items = this.manifest();
+    const idx = items.map((_, i) => i).filter((i) => this.itemState(items[i]) !== 'copied');
+    if (!idx.length) { return; }
+    this.selectedItems.set(idx);
+    void this.runCopy();
+  }
+  /** Human-readable duration: '8s', '2m 30s', '1h 05m' — never a raw '600s' for a 10-minute copy. */
+  fmtDuration(secs?: number): string {
+    if (secs == null) { return '—'; }
+    const s = Math.max(0, Math.round(secs));
+    if (s < 60) { return `${s}s`; }
+    const m = Math.floor(s / 60), rs = s % 60;
+    if (m < 60) { return rs ? `${m}m ${rs}s` : `${m}m`; }
+    const h = Math.floor(m / 60), rm = m % 60;
+    return rm ? `${h}h ${String(rm).padStart(2, '0')}m` : `${h}h`;
+  }
+  /** Label for how a copied item was integrity-checked (shown in the popup Verified column + CSV). */
+  verifyLabel(r: FileCopyResult): string {
+    if (!r.ok) { return '—'; }
+    if (r.verified === false || r.verify === 'off') { return 'off'; }
+    return r.verify === 'hash' ? '✓ hash' : '✓ size';
+  }
+  /** One-line totals for the shown results (popup header): items OK, files, folders, elapsed, failures. */
+  copySummary(rows: FileCopyResult[]): string {
+    const ok = rows.filter((r) => r.ok).length;
+    const fails = rows.length - ok;
+    const files = rows.reduce((n, r) => n + (r.count || 0), 0);
+    const folders = rows.reduce((n, r) => n + (r.folders || 0), 0);
+    const secs = rows.reduce((n, r) => n + (r.seconds || 0), 0);
+    const parts = [`${ok}/${rows.length} item(s) OK`, `${files} file(s)`];
+    if (folders) { parts.push(`${folders} folder(s)`); }
+    parts.push(`${this.fmtDuration(secs)} total`);
+    if (fails) { parts.push(`${fails} failed`); }
+    return parts.join('  ·  ');
+  }
+  /** Folder slug for the report filename (from the manifest path) so batch vs reporting downloads differ. */
+  private reportSlug(): string {
+    const p = this.selectedManifestPath();
+    if (p) {
+      const parts = p.split(/[\\/]/).filter(Boolean).slice(0, -1)   // drop the manifest filename
+        .filter((x) => !/^\d{8}$/.test(x));                          // drop the YYYYMMDD release folder
+      if (parts.length) { return parts.join('-').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+    }
+    return 'cib';
+  }
+  /** Export the shown per-item results as a CSV audit artifact (attach to the release ticket). */
+  downloadCopyReport(): void {
+    const rows = this.copyDetail() ?? [];
+    if (!rows.length) { return; }
+    const head = ['Source', 'Destination', 'Status', 'Files', 'Folders', 'Verified', 'Started', 'Finished', 'Seconds', 'Duration', 'Error'];
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [head.map(esc).join(',')];
+    for (const r of rows) {
+      lines.push([r.source, r.destination, r.ok ? 'Success' : 'Failed', r.count || 0, r.folders || 0,
+        r.ok ? (r.verified === false ? 'off' : (r.verify || 'size')) : '', r.started || '', r.finished || '',
+        r.seconds ?? '', r.seconds == null ? '' : this.fmtDuration(r.seconds), r.error || ''].map(esc).join(','));
+    }
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `filecopy-report-${this.reportSlug()}-${new Date().toISOString().slice(0, 19).replace(/[:T-]/g, '')}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   // --- steps 4 & 5: Reset / Trigger -----------------------------------------
+  /** Load the RegressionTesting scripts for the selected Reset DB. */
+  loadResetScripts(): void {
+    this.svc.batchDBScripts(this.resetDb()).subscribe({
+      next: (r) => { this.resetScripts.set(r.scripts ?? []); if (!this.resetScripts().includes(this.resetScript())) { this.resetScript.set(''); } },
+      error: (e) => this.fail(e, 'Could not load reset scripts')
+    });
+  }
+  loadTriggerScripts(): void {
+    this.svc.batchDBScripts(this.triggerDb()).subscribe({
+      next: (r) => { this.triggerScripts.set(r.scripts ?? []); if (!this.triggerScripts().includes(this.triggerScript())) { this.triggerScript.set(''); } },
+      error: (e) => this.fail(e, 'Could not load trigger scripts')
+    });
+  }
+  onResetDb(db: string): void { this.resetDb.set(db); this.loadResetScripts(); }
+  onTriggerDb(db: string): void { this.triggerDb.set(db); this.loadTriggerScripts(); }
+
   async runReset(): Promise<void> {
     if (!this.resetScript()) { await this.notifyRequired('Pick a reset script to run.'); return; }
     const ok = await this.confirmStepRun(this.step('reset'),
@@ -732,7 +1042,9 @@ export class OlsCibRegressionComponent implements OnInit {
   }
   loadActivity(): void {
     this.svc.activity(this.runId || undefined).subscribe({
-      next: (r) => { this.activityRows.set(r.rows ?? []); this.activityAt.set(new Date()); this.nowTick.set(Date.now()); }
+      // spread into a fresh array so the signal always emits (the dev mock returns its live store ref) →
+      // the copyState computed + the activity grid refresh.
+      next: (r) => { this.activityRows.set([...(r.rows ?? [])]); this.activityAt.set(new Date()); this.nowTick.set(Date.now()); }
     });
   }
   cell(v: unknown): string { return v === null || v === undefined ? '' : String(v); }

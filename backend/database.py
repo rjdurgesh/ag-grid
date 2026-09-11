@@ -2222,6 +2222,29 @@ def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 
             connection.close()
 
 
+def regression_copy_items(db_config: Any, run_id: int) -> list[dict]:
+    """Per-item file-copy audit rows for a run (oldest first): status + comments (JSON per item). The
+    API reconstructs which manifest items are copied/failed from these — so File Copy's Partial/Complete
+    state and per-file ✓/⏳/✗ survive a page reload."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT status, comments, start_time
+              FROM ols_regression_log
+             WHERE run_id = :r AND step_key = 'file_copy' AND action = 'copy_item'
+             ORDER BY log_id ASC
+        """, {"r": run_id})
+        return [{"status": s, "comments": _cell(c), "start_time": _cell(t)} for (s, c, t) in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
 # Batch-monitor query — REPLACE the SQL body with your real batch-status query. It runs against the
 # selected DB and its result set is shown as-is in the "Monitoring Batches" grid.
 BATCH_MONITOR_SQL = """

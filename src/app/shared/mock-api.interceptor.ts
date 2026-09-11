@@ -1043,6 +1043,15 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       regSave();
       return { status: 'success', release_dates: REG_DATES,
                scripts: ['reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
+    case '/api/regression/batch-db-scripts': {
+      // .sql from the DB's RegressionTesting folder (Reset / Trigger pickers), scope + db specific.
+      const db = String(body['db'] || '');
+      const batch = db.includes('batch');
+      const base = curScope === 'retail' ? 'RET/RegressionTesting'
+                 : curScope === 'group' ? 'RegressionTesting'
+                 : (batch ? 'CIB/Batch/RegressionTesting' : 'CIB/Reporting/RegressionTesting');
+      return { status: 'success', scripts: [`${base}/reset_batches.sql`, `${base}/trigger_all.sql`, `${base}/trigger_CB.sql`, `${base}/trigger_ALMT.sql`] };
+    }
     case '/api/regression/release/dates':
       return { status: 'success', release_dates: REG_DATES };
     case '/api/regression/release/scripts': {
@@ -1092,7 +1101,25 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
     }
     case '/api/regression/log/read':
       return { status: 'success', content: `Dummy sqlplus log for ${body['log_file']}\nConnected.\nPL/SQL procedure successfully completed.\nSpool off.` };
-    case '/api/regression/file-copy/manifest':
+    case '/api/regression/file-copy/manifests': {
+      // Discover the manifest per Scripts folder for the release → labelled dropdown(s), scope-specific.
+      const rd = String(body['release_date'] || '20260921');
+      const roots = curScope === 'retail' ? ['RET/Scripts']
+                  : curScope === 'group' ? ['Scripts']
+                  : ['CIB/Batch/Scripts', 'CIB/Reporting/Scripts'];
+      return { status: 'success', locations: roots.map((root) => ({ root, label: root, files: [`${root}/${rd}/filecopy_manifest_${rd}.json`] })) };
+    }
+    case '/api/regression/file-copy/manifest': {
+      // Distinct content per folder so switching dropdowns is testable: Reporting lists different files
+      // (and different app servers) than Batch — a real manifest-switch bug would show stale/mismatched rows.
+      const mpath = String(body['path'] || '');
+      if (/reporting/i.test(mpath)) {
+        return { status: 'success', items: [
+          { source: '\\\\eur17\\d$\\release\\cib\\reporting\\report_defs.xml', destination: '\\\\eur40\\f$\\apps\\reporting\\report_defs.xml' },
+          { source: '\\\\eur17\\d$\\release\\cib\\reporting\\templates\\*', destination: '\\\\eur40\\f$\\apps\\reporting\\templates' },
+          { source: '\\\\eur17\\d$\\release\\cib\\reporting\\jasper.properties', destination: '\\\\eur40\\f$\\apps\\reporting\\jasper.properties' }
+        ] };
+      }
       return { status: 'success', items: [
         { source: '\\\\eur17\\d$\\release\\cib\\app.config', destination: '\\\\eur34\\e$\\apps\\cib\\app.config' },
         { source: '\\\\eur17\\d$\\release\\cib\\bootstrap.properties', destination: '\\\\eur34\\e$\\apps\\cib\\bootstrap.properties' },
@@ -1100,34 +1127,75 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
         { source: '\\\\eur17\\d$\\release\\cib\\reports\\*', destination: '\\\\eur34\\e$\\apps\\cib\\reports' },
         { source: '\\\\eur17\\d$\\release\\cib\\missing\\legacy.dll', destination: '\\\\eur34\\e$\\apps\\cib\\legacy.dll' }
       ] };
+    }
+    case '/api/regression/file-copy/preflight': {
+      const pf = (body['items'] as { source: string; destination: string }[]) ?? [];
+      return { status: 'success', results: pf.map((i) => {
+        const bad = /missing|fail/i.test(i.source);
+        const tight = /reports/i.test(i.source);   // demo a low-space warning on the reports folder
+        return { source: i.source, destination: i.destination, source_ok: !bad, dest_ok: true,
+          space_ok: !tight, source_bytes: bad ? 0 : tight ? 9_000_000_000 : 4096, free_bytes: 5_000_000_000,
+          ok: !bad && !tight, note: bad ? 'source not found' : tight ? 'not enough free space (need 9,000,000,000 B, 5,000,000,000 B free)' : '' };
+      }) };
+    }
     case '/api/regression/file-copy/run': {
       const items = (body['items'] as { source: string; destination: string }[]) ?? [];
+      const manifest = (body['manifest'] as { source: string; destination: string }[]) ?? [];
+      regLog('file_copy', 'start', 'in_progress', {});   // "Copy Operation — Started" in the activity log
+      let clock = Date.now();
+      const stamp = <T extends object>(r: T, secs: number) => {
+        const s = new Date(clock); const f = new Date(clock + secs * 1000); clock += secs * 1000;
+        const fmt = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
+        return { ...r, started: fmt(s), finished: fmt(f), seconds: secs };
+      };
       const results = items.map((i) => {
         const folder = i.source.trim().endsWith('*');
-        // demo: a FOLDER that fails partway → the whole item is errored, whole folder re-copied on re-run
         if (folder && /reports|partial/i.test(i.source)) {
-          return { source: i.source, destination: i.destination, ok: false, kind: 'folder', count: 450,
-            error: `Folder copy FAILED after 450 file(s) — the WHOLE folder must be re-copied (re-run the step). Failed on ${i.destination}\\report_0451.dat: ERROR 112 (0x70): There is not enough space on the disk.` };
+          return stamp({ source: i.source, destination: i.destination, ok: false, kind: 'folder', count: 450, folders: 3,
+            error: `Folder copy FAILED after 450 file(s) — the WHOLE folder must be re-copied (re-run the step). Failed on ${i.destination}\\report_0451.dat: ERROR 112 (0x70): There is not enough space on the disk.` }, 7);
         }
-        // demo: a source under a "missing"/"fail" path reports a real failure with details
         if (/missing|fail/i.test(i.source)) {
-          return { source: i.source, destination: i.destination, ok: false,
-            error: 'ERROR 5 (0x5): The system cannot find the path specified.\n  robocopy exit code 8 — source path is unavailable.' };
+          return stamp({ source: i.source, destination: i.destination, ok: false, count: 0, folders: 0,
+            error: 'ERROR 5 (0x5): The system cannot find the path specified.' }, 1);
         }
-        const names = folder
-          ? ['app.config', 'bootstrap.properties', 'log4j2.xml', 'scripts\\run.bat', 'scripts\\stop.bat', 'lib\\core.jar', 'lib\\util.jar']
-          : [i.destination.split('\\').pop() ?? 'file'];
+        const names = folder ? ['app.config', 'log4j2.xml', 'lib\\core.jar'] : [i.destination.split('\\').pop() ?? 'file'];
         const files = folder ? names.map((n) => `${i.destination}\\${n}`) : [i.destination];
-        return { source: i.source, destination: i.destination, ok: true, count: files.length, kind: folder ? 'folder' : 'file', files };
+        return stamp({ source: i.source, destination: i.destination, ok: true, count: files.length, folders: folder ? 3 : 0, kind: folder ? 'folder' : 'file', verified: true, verify: 'size', files }, folder ? 4 : 1);
       });
+      // Log each item as JSON (per-file state + the detail popup read this), mirroring the backend.
+      for (const r of results) { regLog('file_copy', 'copy_item', r.ok ? 'complete' : 'error', { comments: JSON.stringify(r) }); }
+      // Cumulative copied/failed across ALL copy_item rows vs the FULL manifest → Complete only when all done.
+      const cur = store();
+      const state: Record<string, string> = {};
+      for (const row of cur.activity) {
+        if (row['step_key'] !== 'file_copy' || row['action'] !== 'copy_item') { continue; }
+        try { const d = JSON.parse(String(row['comments'] || '{}')); const k = `${d.source}|${d.destination}`; if (d.source && !(k in state)) { state[k] = String(row['status']); } } catch { /* skip */ }
+      }
+      const keys = manifest.map((m) => `${m.source}|${m.destination}`);
       const fails = results.filter((r) => !r.ok).length;
-      const copied = results.reduce((n, r) => n + (r.ok ? (r.count ?? 0) : 0), 0);
-      const detail = `${copied} file(s) across ${results.length - fails} item(s)` + (fails ? `; ${fails} item(s) FAILED` : '') + '\n'
-        + results.map((r) => r.ok
-            ? `OK   ${r.source} -> ${r.destination} (${r.count})\n${(r.files ?? []).map((f) => '       ' + f).join('\n')}`
-            : `FAIL ${r.source} -> ${r.destination}: ${r.error}`).join('\n');
-      regSetStep('file_copy', fails ? 'error' : 'complete', undefined, detail);
-      return { status: 'success', results };
+      let step: string; let done: number;
+      if (keys.length) {
+        done = keys.filter((k) => state[k] === 'complete').length;
+        step = keys.some((k) => state[k] === 'error') ? 'error' : done >= keys.length ? 'complete' : done ? 'partial' : 'in_progress';
+      } else {
+        done = results.filter((r) => r.ok).length;
+        step = fails ? 'error' : 'complete';
+      }
+      const totalItems = keys.length || results.length;
+      const okThisRun = results.filter((r) => r['ok']).length;
+      const totalFiles = results.reduce((n, r) => n + (Number(r['count']) || 0), 0);
+      const totalFolders = results.reduce((n, r) => n + (Number(r['folders']) || 0), 0);
+      const totalSecs = results.reduce((n, r) => n + (Number(r['seconds']) || 0), 0);
+      const fmtDur = (s: number) => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;
+      const remaining = Math.max(0, totalItems - done);
+      const runPart = `Run: ${okThisRun} copied` + (fails ? `, ${fails} failed` : '')
+        + ` · ${totalFiles} file(s)` + (totalFolders ? ` · ${totalFolders} folder(s)` : '') + ` · ${fmtDur(totalSecs)}`;
+      const manPart = `Manifest: ${done}/${totalItems} copied` + (remaining ? ` (${remaining} remaining)` : '');
+      const summary = `${runPart}.  ${manPart}.`;
+      if (cur.run) { cur.steps['file_copy'] = { status: step, performed_by: environment.username, start_time: regNow(), end_time: regNow(), task_completion_time: 1 }; }
+      regLog('file_copy', 'copy', step, { comments: JSON.stringify({ summary, items: results }) });
+      regSave();
+      return { status: 'success', results, step_status: step };
     }
     case '/api/regression/batch-monitor':
       return { status: 'success', columns: ['BUSINESS_LINE', 'BATCH', 'STATUS_ID', 'STARTED', 'FINISHED'],

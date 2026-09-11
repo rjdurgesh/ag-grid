@@ -18,17 +18,37 @@ for a real HTTP call to the agent and a real disk-usage read.
 
 from __future__ import annotations
 
+import json
 import shutil
 from typing import Any
 
 from env_loader import env_bool  # importing also loads backend/.env into os.environ
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _coerce_json(value: Any) -> Any:
+    """``MONITORING_CONFIG`` is stored as a JSON **string** (CLOB) in the DB, but every consumer
+    (the browser model, the services flattening, the metrics payload) expects a JSON **object**.
+    Parse a string → dict/list; pass a dict/list/None through unchanged; tolerate empty or malformed
+    JSON as ``None`` (logged) rather than propagating a string that would 422 or break the UI."""
+    if value is None or isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except (ValueError, TypeError):
+            logger.warning("MONITORING_CONFIG is not valid JSON — treating as empty")
+            return None
+    return value
 
 router = APIRouter(prefix="/api/infra_health", tags=["infra_health"])
 
@@ -51,6 +71,14 @@ class MetricsRequest(BaseModel):
     agent_listen_port: int
     host_platform: str | None = None
     monitoring_config: dict | None = None
+
+    @field_validator("monitoring_config", mode="before")
+    @classmethod
+    def _accept_json_string(cls, v: Any) -> Any:
+        # The browser may echo MONITORING_CONFIG back as the raw CLOB string — accept it (parse to a
+        # dict) instead of 422-ing, so a stringy config never fails the whole metrics call.
+        parsed = _coerce_json(v)
+        return parsed if isinstance(parsed, dict) else None
 
 
 class ShareRequest(BaseModel):
@@ -152,10 +180,20 @@ def read_share_space(host_address: str) -> dict:
 
 @router.post("")
 def infra_health_config(req: ConfigRequest, request: Request) -> dict:
-    """Config catalogue (DB). `app_env` + `username` come in the body (not the URL)."""
+    """Config catalogue (DB). `app_env` + `username` come in the body (not the URL). MONITORING_CONFIG is
+    normalised from its JSON-string CLOB to an object here so the browser always receives structured
+    config (services flatten correctly, and the metrics payload is real JSON, never a string)."""
     group_db_config = request.app.state.db_configs.get("group")
     logger.info("infra_health config (app_env=%s, user=%s)", req.app_env, req.username)
-    return retrieve_server_health_details(group_db_config, req.app_env)
+    return _normalize_config_rows(retrieve_server_health_details(group_db_config, req.app_env))
+
+
+def _normalize_config_rows(result: dict) -> dict:
+    """Parse each row's MONITORING_CONFIG CLOB string into an object (no-op if already an object)."""
+    for row in (result or {}).get("data", []) or []:
+        if isinstance(row, dict) and "MONITORING_CONFIG" in row:
+            row["MONITORING_CONFIG"] = _coerce_json(row["MONITORING_CONFIG"])
+    return result
 
 
 @router.post("/metrics")

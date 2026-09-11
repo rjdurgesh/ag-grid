@@ -52,10 +52,14 @@ work/log dirs and NAS feed manifest. `defaults` applies to every scope unless a 
 | `git_ssh_key` / `git_known_hosts` | SSH auth for an `ssh://` `git_url`: private-key path (+ optional known_hosts path). The engine builds `GIT_SSH_COMMAND` from them and sets it on the git subprocess (so it works even if `.env` isn't in `os.environ`). **Use forward slashes** (`C:/Users/keys/id_ed25519`). Usually set once in `defaults`. Full override: `git_ssh_command`. |
 | `git_workdir` | local checkout dir for that scope |
 | `refresh_databases` | this scope's **refreshable DBs for THIS server's env**, **grouped by category** (DEV/STG can have several per group; per-server file → DEV lists DEV DBs, STG lists STG DBs). Drives the Refresh-DB grouped multi-select dropdown. Grouped object `{ "BATCH": ["OLS_CIB_BATCH_DEV","OLS_CIB_BATCH_DEV_02"], "REPORTING": ["OLS_CIB_REPORTING_DEV"] }` (or a flat array of names / `{key,label,category}`). |
+| `batch_db_script_roots` | map of **DB key → repo-relative RegressionTesting folder** (parallel to Scripts); the **Reset / Trigger batches** steps list `.sql` from here. Same shape as `script_roots` (`"*"` catch-all). e.g. cib `{ "cib_batch": "CIB/Batch/RegressionTesting", "cib_reporting": "CIB/Reporting/RegressionTesting" }`. |
 | `script_roots` | map of **DB key → repo-relative Scripts folder**; the tool appends the run's `<release_date>` (YYYYMMDD) folder and runs `chg*.sql` from it. Use `"*"` as the key when one root serves every DB. e.g. cib `{ "cib_batch": "CIB/Batch/Scripts", "cib_reporting": "CIB/Reporting/Scripts" }`, retail `{ "*": "RET/Scripts" }`, group `{ "*": "Scripts" }`. Falls back to `sql_subdir` if unset. |
 | `log_dir` | base dir for sqlplus run logs (`<dir>\<YYYYMMDD>\<script>__<db>.log`) |
-| `filecopy_manifest` | developer file-copy JSON (`{items:[{source,destination}]}`) |
 | `refresh_url` | step-1 DB-refresh API (dummy for now) |
+
+> **File-copy manifest is NOT config** — it lives in the release repo at
+> `<Scripts-root>/<release_date>/filecopy_manifest_<release_date>.json`. The tool discovers it under each
+> `script_roots` folder for the run's release date; File Copy shows a labelled dropdown per folder that has one.
 
 | Key (`defaults`) | Meaning | Default |
 |------------------|---------|---------|
@@ -65,6 +69,7 @@ work/log dirs and NAS feed manifest. `defaults` applies to every scope unless a 
 | `sqlplus_timeout` / `git_timeout` | seconds | `3600` / `120` |
 | `step_stale_minutes` | in-progress step older than this → stale/unlockable | `30` |
 | `batch_max_rows` | Monitoring-Batches safety cap | `100000` |
+| `filecopy_verify` | File-copy post-copy integrity check: `off` / `size` / `hash` (size+SHA-256) | `size` |
 
 ## `occ.json` — Oracle Command Center
 
