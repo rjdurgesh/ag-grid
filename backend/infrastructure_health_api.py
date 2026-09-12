@@ -68,7 +68,7 @@ class ConfigRequest(BaseModel):
 
 class MetricsRequest(BaseModel):
     host_name: str
-    agent_listen_port: int
+    agent_listen_port: int | None = None   # tolerate a missing/odd config value → clean "unreachable", never a 422
     host_platform: str | None = None
     monitoring_config: dict | None = None
 
@@ -114,7 +114,7 @@ def _gb_str(gb: float) -> str:
     return f"{gb:.2f} GB"
 
 
-def call_agent(host_name: str, agent_listen_port: int, host_platform: str | None,
+def call_agent(host_name: str, agent_listen_port: int | None, host_platform: str | None,
                monitoring_config: dict | None) -> dict:
     """Collect live metrics from one server's agent.
 
@@ -128,6 +128,9 @@ def call_agent(host_name: str, agent_listen_port: int, host_platform: str | None
     card, not a whole-panel error. The per-server agent URL is built server-side (inside
     ``_agent_over_http``), so it never reaches the browser's network tab.
     """
+    if not agent_listen_port:
+        # A config row missing its agent port can't be called — report unreachable (clear reason), never 422.
+        return {"HOST_NAME": host_name, "reachable": False, "error": "No agent port configured for this server."}
     try:
         if INFRA_HEALTH_USE_DUMMY:
             return synthetic_agent(host_name, agent_listen_port, host_platform, monitoring_config)

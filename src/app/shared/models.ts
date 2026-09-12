@@ -367,6 +367,7 @@ export interface RegressionRun {
   started_by: string;
   git_branch?: string;            // the release/* branch this run applied
   release_date?: string;          // YYYYMMDD release folder — which release we regressed
+  change_number?: string;         // Change (CHG) ticket this run is tagged to
   start_time?: string;
 }
 /** Current status of one step (latest log row). */
@@ -438,6 +439,35 @@ export interface FileCopyPreflight {
   ok: boolean;                    // all three checks passed
   note?: string;                  // human summary of any problem(s)
 }
+/** One Server-Space-Cleanup manifest entry (a path to clean + its rules). */
+export interface CleanupItem {
+  path: string;                   // directory to clean up
+  include_subdir?: string;        // 'Y' = recurse into subdirectories; 'N' (default) = only files directly in path
+  remove_empty_dir?: string;      // 'Y' = also delete empty subdirectories (never the configured root); 'N' (default)
+  include_pattern?: string;       // '*' = all (default); or comma list of extensions/globs, e.g. '.log' / '.csv,.dat' / '*.tmp'
+  exclude_pattern?: string;       // '' = exclude nothing (default); same token syntax — files matching are KEPT
+  older_than_days?: number;       // 0 = no age filter (default); else only files older than N days are removed
+}
+/** A per-path cleanup result (real run OR dry-run preview). */
+export interface CleanupResult extends CleanupItem {
+  ok: boolean;
+  deleted?: number;               // files deleted (or, in a preview, that WOULD be deleted)
+  bytes_freed?: number;           // bytes freed (or that would be)
+  dirs_removed?: number;          // empty directories removed (or that would be)
+  sample?: string[];              // capped list of affected file paths (for the preview / detail popup)
+  errors?: string[];              // per-file errors (capped)
+  error?: string;                 // top-level error / summary when the path failed
+  dry_run?: boolean;              // true for a preview result (nothing was actually deleted)
+  started?: string;
+  finished?: string;
+  seconds?: number;
+}
+/** A discovered cleanup manifest location — one Scripts folder with a cleanup_manifest*.json for the release. */
+export interface CleanupManifestLocation {
+  root: string;
+  label: string;
+  files: string[];
+}
 /** Batch-monitor grid payload. */
 export interface BatchMonitorResult {
   columns: string[];
@@ -450,6 +480,7 @@ export interface RegressionActivityRow {
   log_id: number;
   run_id: number;
   release_date?: string;          // which release this run targeted (joined from the run)
+  change_number?: string;         // the Change ticket this run is tagged to (joined from the run)
   business_line?: string;
   step_key: string;
   action: string;

@@ -951,6 +951,7 @@ function regLog(step_key: string, action: string, status: string, extra: Record<
   const s = store();
   s.activity.unshift({
     log_id: s.nextLog++, run_id: (s.run?.['run_id'] ?? 1), release_date: (s.run?.['release_date'] ?? null),
+    change_number: (s.run?.['change_number'] ?? null),
     load_dt: regNow().slice(0, 10),
     step_key, action, status, performed_by: environment.username, start_time: regNow(), end_time: regNow(),
     task_completion_time: 0, forced_by: null, comments: null, ...extra
@@ -958,13 +959,57 @@ function regLog(step_key: string, action: string, status: string, extra: Record<
   regSave();
 }
 
-function regSetStep(key: string, status: string, forced_by?: string, details?: string): void {
+function regSetStep(key: string, status: string, forced_by?: string, details?: string, log = true): void {
   // simulate a realistic elapsed time so the per-step "Run time" line has a value in dev
   const secs = status === 'in_progress' ? 0 : 1 + Math.floor(Math.random() * 6);
   const now = regNow();
   const cur = store();
   cur.steps[key] = { status, forced_by, task_completion_time: secs, start_time: now, end_time: now, performed_by: environment.username };
-  regLog(key, forced_by ? 'forced' : status, status, { forced_by: forced_by ?? null, comments: details ?? null, task_completion_time: secs });
+  // `log=false` updates only the step state (badge) — the caller already logs its own audit row (e.g. run-sql
+  // writes per-script + a run_sql_done summary, so a duplicate step row here would be noise).
+  if (log) { regLog(key, forced_by ? 'forced' : status, status, { forced_by: forced_by ?? null, comments: details ?? null, task_completion_time: secs }); }
+  else { regSave(); }   // regLog() saves; when it's skipped, still persist the badge so it survives a reload
+}
+
+/** Normalise a Server-Space-Cleanup manifest entry (YN flags, include default '*', numeric age) — mirrors
+ *  the backend ops._norm_cleanup_entry so the dev mock behaves like the real engine. */
+function cleanNorm(it: Record<string, unknown>): Record<string, unknown> {
+  const yn = (v: unknown) => ['Y', 'YES', 'TRUE', '1'].includes(String(v ?? 'N').trim().toUpperCase()) ? 'Y' : 'N';
+  const older = Math.max(0, parseInt(String(it['older_than_days'] ?? 0), 10) || 0);
+  return {
+    path: String(it['path'] ?? '').trim(),
+    include_subdir: yn(it['include_subdir']),
+    remove_empty_dir: yn(it['remove_empty_dir']),
+    include_pattern: (String(it['include_pattern'] ?? '*').trim() || '*'),
+    exclude_pattern: String(it['exclude_pattern'] ?? '').trim(),
+    older_than_days: older,
+  };
+}
+/** Simulated per-path cleanup result (dev mock): a path containing 'fail'/'missing' errors; an extension
+ *  include yields fewer files; Include_Subdir=Y multiplies; Remove_Empty_Dir=Y removes a couple of dirs. */
+function mockCleanupResults(items: Record<string, unknown>[], dryRun: boolean): Record<string, unknown>[] {
+  return items.map((it) => {
+    const e = cleanNorm(it);
+    const p = String(e['path']).toLowerCase();
+    if (p.includes('missing') || p.includes('fail')) {
+      return { ...e, ok: false, deleted: 0, bytes_freed: 0, dirs_removed: 0, sample: [], errors: [`${e['path']}: path not found`], error: 'path not found', dry_run: dryRun };
+    }
+    const all = ['', '*'].includes(String(e['include_pattern']).trim());
+    let n = all ? 3 : 2;
+    if (e['include_subdir'] === 'Y') { n *= 4; }
+    const dirs = (e['include_subdir'] === 'Y' && e['remove_empty_dir'] === 'Y') ? 2 : 0;
+    const ext = all ? '' : String(e['include_pattern']).split(',')[0];
+    const sample = Array.from({ length: Math.min(n, 8) }, (_, i) => `${e['path']}\\file_${String(i + 1).padStart(2, '0')}${ext}`);
+    return { ...e, ok: true, deleted: n, bytes_freed: n * 1_048_576, dirs_removed: dirs, sample, errors: [], dry_run: dryRun };
+  });
+}
+/** Human-readable byte size for the cleanup summary line ('12.0 MB freed'), matching the backend _fmt_bytes. */
+function fmtBytesMock(n: number): string {
+  n = Math.max(0, n || 0);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return u === 0 ? `${n} B` : `${n.toFixed(1)} ${units[u]}`;
 }
 
 function mockRegression(path: string, body: Record<string, unknown>): Record<string, unknown> {
@@ -1005,9 +1050,10 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
     case '/api/regression/run/start': {
       const branch = String(body['branch'] ?? lastBranch());
       const rd = String(body['release_date'] ?? '');
+      const chg = String(body['change_number'] ?? '').trim();
       regLastBranches[curScope] = branch;
       rs.run = { run_id: 1, app_env: environment.appEnv, status: 'in_progress', started_by: environment.username,
-                 git_branch: branch, release_date: rd, start_time: regNow() };
+                 git_branch: branch, release_date: rd, change_number: chg, start_time: regNow() };
       rs.steps = {}; rs.activity = []; rs.nextLog = 1;
       regLog('run', 'start', 'in_progress');
       return { status: 'success', run: rs.run, steps: rs.steps };
@@ -1033,8 +1079,35 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
     }
     case '/api/regression/refresh-db': {
       const rdbs = (body['dbs'] as string[]) ?? [];
-      regSetStep('refresh_db', 'complete', undefined, `Refresh API (dummy) called for: ${rdbs.join(', ') || '(none)'}`);
-      return { status: 'success', result: { status: 'complete', message: `Refresh triggered for ${rdbs.length} database(s) (dummy).`, details: `DB(s): ${rdbs.join(', ')}` } };
+      const fmtTs = (dt: Date) => dt.toISOString().slice(0, 19).replace('T', ' ');
+      // One audit row per database — status + start/finish timing + a professional detail message — then a
+      // run-summary row. A DB name containing "ERR" simulates a refresh-API failure (dev-only trigger) so the
+      // failed path (error status, error comment, step→Error, "N failed" summary) is demoable.
+      const rresults = rdbs.map((d) => {
+        const failed = d.toUpperCase().includes('ERR');
+        const status = failed ? 'error' : 'complete';
+        const secs = 4 + Math.floor(Math.random() * 40);     // simulate a realistic refresh duration
+        const end = new Date();
+        const start = new Date(end.getTime() - secs * 1000);
+        const message = failed
+          ? 'Database refresh failed — the refresh API returned an error.'
+          : 'Database refresh completed successfully.';
+        regLog('refresh_db', 'refresh', status, {
+          comments: JSON.stringify({ db: d, message }),
+          start_time: fmtTs(start), end_time: fmtTs(end), task_completion_time: secs,
+        });
+        return { db: d, status, message };
+      });
+      const rfail = rresults.filter((r) => r.status !== 'complete').length;
+      const rstep = rfail ? 'error' : 'complete';
+      const rsummary = `Refreshed ${rresults.length} database(s) — ${rresults.length - rfail} succeeded`
+        + (rfail ? `, ${rfail} failed` : '') + '.';
+      regLog('refresh_db', 'refresh_done', rstep, { comments: JSON.stringify({ summary: rsummary, items: rresults }) });
+      regSetStep('refresh_db', rstep, undefined, rsummary, false);   // update badge only — no duplicate activity row
+      const rmsg = rfail
+        ? `Refresh completed with ${rfail} failure(s) — check the activity log.`
+        : `Refresh completed for ${rdbs.length} database(s).`;
+      return { status: 'success', result: { status: rstep, message: rmsg, details: `Database(s): ${rdbs.join(', ') || '(none)'}` } };
     }
     case '/api/regression/git/branches':
       return { status: 'success', branches: ['release/2026-09-10', 'release/2026-08-15'] };
@@ -1094,8 +1167,15 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
                  tail: `Connected to ${d}.\n@${s}\n${status === 'error' ? 'ORA-00942: table or view does not exist' : 'PL/SQL procedure successfully completed.'}\nSpool off.` };
       }));
       const stepStatus = results.some((r) => r.status !== 'complete') ? 'error' : 'complete';
-      results.forEach((r) => regLog(stepKey, 'run_sql', r.status, { details: `${r.script} on ${r.db} -> ${r.status}` }));
-      regSetStep(stepKey, stepStatus, undefined, `${scripts.length} script(s) x ${dbList.length} db(s)`);
+      // Per script: a "Started" row (in_progress, no log yet) then a "Completed/Error" row (with the log path).
+      for (const r of results) {
+        regLog(stepKey, 'run_sql', 'in_progress', { comments: `${r.script}  →  ${r.db}  ·  in_progress` });
+        regLog(stepKey, 'run_sql', r.status, { comments: `${r.script}  →  ${r.db}  ·  ${r.status}  ·  log: ${r.log_file}` });
+      }
+      const okc = results.filter((r) => r.status === 'complete').length;
+      const summary = `Ran ${results.length} script(s) on ${dbList.join(', ')} — ${okc} completed` + (results.length - okc ? `, ${results.length - okc} failed` : '') + '.';
+      regLog(stepKey, 'run_sql_done', stepStatus, { comments: JSON.stringify({ summary, items: results.map((r) => ({ script: r.script, db: r.db, status: r.status, log_file: r.log_file })) }) });
+      regSetStep(stepKey, stepStatus, undefined, summary, false);   // update badge only — no duplicate activity row
       void dbs;
       return { status: 'success', results, step_status: stepStatus };
     }
@@ -1196,6 +1276,72 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       regLog('file_copy', 'copy', step, { comments: JSON.stringify({ summary, items: results }) });
       regSave();
       return { status: 'success', results, step_status: step };
+    }
+    case '/api/regression/cleanup/manifests': {
+      // Discover the cleanup manifest per Scripts folder for the release → labelled dropdown(s), scope-specific.
+      const rd = String(body['release_date'] || '20260921');
+      const roots = curScope === 'retail' ? ['RET/Scripts']
+                  : curScope === 'group' ? ['Scripts']
+                  : ['CIB/Batch/Scripts'];
+      return { status: 'success', locations: roots.map((root) => ({ root, label: root, files: [`${root}/${rd}/cleanup_manifest_${rd}.json`] })) };
+    }
+    case '/api/regression/cleanup/manifest': {
+      // Sample cleanup manifest exercising every flag combination (a 'fail' path demos the error branch).
+      return { status: 'success', items: [
+        { path: 'D:\\ols\\temp', include_subdir: 'N', remove_empty_dir: 'N', include_pattern: '*', exclude_pattern: '', older_than_days: 0 },
+        { path: 'D:\\ols\\logs\\archive', include_subdir: 'Y', remove_empty_dir: 'Y', include_pattern: '.log,.tmp', exclude_pattern: '.keep', older_than_days: 30 },
+        { path: 'D:\\ols\\import\\staging', include_subdir: 'Y', remove_empty_dir: 'N', include_pattern: '*', exclude_pattern: '.dat', older_than_days: 0 }
+      ] };
+    }
+    case '/api/regression/cleanup/preview': {
+      // DRY-RUN — report what WOULD be deleted; deletes + logs nothing.
+      const citems = (body['items'] as Record<string, unknown>[]) ?? [];
+      return { status: 'success', results: mockCleanupResults(citems, true) };
+    }
+    case '/api/regression/cleanup/run': {
+      const citems = (body['items'] as Record<string, unknown>[]) ?? [];
+      const cmanifest = (body['manifest'] as Record<string, unknown>[]) ?? [];
+      regLog('space_cleanup', 'start', 'in_progress', {});   // "Server Space Cleanup — Started" in the activity log
+      let cclock = Date.now();
+      const cstamp = <T extends object>(r: T, secs: number) => {
+        const s = new Date(cclock); const f = new Date(cclock + secs * 1000); cclock += secs * 1000;
+        const fmt = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
+        return { ...r, started: fmt(s), finished: fmt(f), seconds: secs };
+      };
+      const cresults = mockCleanupResults(citems, false).map((r) => cstamp(r, r['ok'] ? (r['include_subdir'] === 'Y' ? 4 : 1) : 1));
+      // Log each path as JSON (the detail popup + per-path state read this), mirroring the backend.
+      for (const r of cresults) { regLog('space_cleanup', 'clean_item', r['ok'] ? 'complete' : 'error', { comments: JSON.stringify(r) }); }
+      // Cumulative cleaned/failed across ALL clean_item rows vs the FULL manifest → Complete only when all done.
+      const ccur = store();
+      const cstate: Record<string, string> = {};
+      for (const row of ccur.activity) {
+        if (row['step_key'] !== 'space_cleanup' || row['action'] !== 'clean_item') { continue; }
+        try { const d = JSON.parse(String(row['comments'] || '{}')); if (d.path && !(d.path in cstate)) { cstate[d.path] = String(row['status']); } } catch { /* skip */ }
+      }
+      const ckeys = cmanifest.map((m) => String(m['path']));
+      const cfails = cresults.filter((r) => !r['ok']).length;
+      let cstep: string; let cdone: number;
+      if (ckeys.length) {
+        cdone = ckeys.filter((k) => cstate[k] === 'complete').length;
+        cstep = ckeys.some((k) => cstate[k] === 'error') ? 'error' : cdone >= ckeys.length ? 'complete' : cdone ? 'partial' : 'in_progress';
+      } else {
+        cdone = cresults.filter((r) => r['ok']).length;
+        cstep = cfails ? 'error' : 'complete';
+      }
+      const ctotalItems = ckeys.length || cresults.length;
+      const cok = cresults.filter((r) => r['ok']).length;
+      const cfiles = cresults.reduce((n, r) => n + (Number(r['deleted']) || 0), 0);
+      const cdirs = cresults.reduce((n, r) => n + (Number(r['dirs_removed']) || 0), 0);
+      const cbytes = cresults.reduce((n, r) => n + (Number(r['bytes_freed']) || 0), 0);
+      const cremaining = Math.max(0, ctotalItems - cdone);
+      const crunPart = `Run: ${cok} path(s) cleaned` + (cfails ? `, ${cfails} failed` : '')
+        + ` · ${cfiles} file(s)` + (cdirs ? ` · ${cdirs} dir(s)` : '') + ` · ${fmtBytesMock(cbytes)} freed`;
+      const cmanPart = `Manifest: ${cdone}/${ctotalItems} cleaned` + (cremaining ? ` (${cremaining} remaining)` : '');
+      const csummary = `${crunPart}.  ${cmanPart}.`;
+      if (ccur.run) { ccur.steps['space_cleanup'] = { status: cstep, performed_by: environment.username, start_time: regNow(), end_time: regNow(), task_completion_time: 1 }; }
+      regLog('space_cleanup', 'clean', cstep, { comments: JSON.stringify({ summary: csummary, items: cresults }) });
+      regSave();
+      return { status: 'success', results: cresults, step_status: cstep };
     }
     case '/api/regression/batch-monitor':
       return { status: 'success', columns: ['BUSINESS_LINE', 'BATCH', 'STATUS_ID', 'STARTED', 'FINISHED'],

@@ -209,6 +209,9 @@
                             </svg>
                             <span>
                               Server not responding accurately — service status unavailable.
+                              @if (server.unreachableReason) {
+                                <span class="isc-unreachable__reason">{{ server.unreachableReason }}</span>
+                              }
                               Please reach out to OLS Team on
                               <a class="isc-unreachable__mail" [href]="'mailto:' + supportEmail">{{ supportEmail }}</a>.
                             </span>

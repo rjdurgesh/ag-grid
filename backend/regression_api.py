@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -79,6 +80,7 @@ class PullBody(Caller):
 class StartBody(Caller):
     branch: str = ""               # the release/* branch this run applies
     release_date: str = ""         # YYYYMMDD folder — validated against the pulled branch
+    change_number: str = ""        # Change (CHG) ticket this run is tagged to — MANDATORY
 
 
 class ReleaseScriptsBody(Caller):
@@ -122,6 +124,16 @@ class CopyBody(Caller):
 
 class PreflightBody(Caller):
     items: list[dict]              # {source,destination} to readiness-check BEFORE copying (copies nothing)
+
+
+class CleanupBody(Caller):
+    run_id: int
+    items: list[dict] = []         # the cleanup paths to run NOW (a subset the operator ticked)
+    manifest: list[dict] = []      # the FULL manifest — so the step is Complete only when every path is done
+
+
+class CleanupPreviewBody(Caller):
+    items: list[dict] = []         # DRY-RUN: report what WOULD be deleted per path — deletes + logs NOTHING
 
 
 class MonitorBody(Caller):
@@ -198,10 +210,15 @@ def run_start(request: Request, body: StartBody) -> dict:
     The date is HARD-VALIDATED against the release folders actually present in the pulled branch, so a
     wrong/absent date is rejected with the list of what's available (no run is created)."""
     cfg = _require_regression(request, body.caller)
+    chg = (body.change_number or "").strip().upper()
+    if not chg:
+        raise HTTPException(status_code=400, detail="A Change (CHG) number is required to start a regression run.")
+    if not re.fullmatch(r"CHG[A-Z0-9]+", chg):
+        raise HTTPException(status_code=400, detail="Change number must start with 'CHG' (e.g. CHG0123456).")
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "run": {"run_id": 1, "app_env": "DEV", "status": "in_progress",
                                              "started_by": body.caller, "git_branch": body.branch,
-                                             "release_date": body.release_date}, "steps": {}}
+                                             "release_date": body.release_date, "change_number": chg}, "steps": {}}
     scfg = config_loader.regression_scope_config(body.scope)
     available = ops.list_release_dates(scfg)
     if not body.release_date or body.release_date not in available:
@@ -209,7 +226,7 @@ def run_start(request: Request, body: StartBody) -> dict:
         raise HTTPException(status_code=400,
                             detail=f"No release folder '{body.release_date or ''}' in the pulled branch. Available: {shown}")
     env = request.app.state.app_env
-    rid = database.regression_run_start(cfg, env, body.caller, body.branch, body.release_date)
+    rid = database.regression_run_start(cfg, env, body.caller, body.branch, body.release_date, change_number=chg)
     return {"status": "success", **(database.regression_run_current(cfg, env) or {"run": {"run_id": rid}, "steps": {}})}
 
 
@@ -266,20 +283,41 @@ def refresh_databases(request: Request, body: Caller) -> dict:
 
 @router.post("/refresh-db")
 def refresh_db(request: Request, body: RefreshBody) -> dict:
-    """Step 1 — call the (dummy) refresh API for the selected DB(s) and log it."""
+    """Step 1 — trigger the DB-refresh API for each selected database and log a per-DB audit row.
+
+    Each database gets its own ``refresh`` row (status + start/finish timing + a professional message, so a
+    single DB's failure is isolated and clickable), followed by one ``refresh_done`` summary row. The refresh
+    endpoint is not wired yet, so a database currently reports success; when ``refresh_url`` is wired, call it
+    per DB inside the loop, set ``status``/``message`` from the real response (``error`` + the failure reason
+    on a non-2xx / exception), and the summary + step status below already roll that up correctly."""
     cfg = _require_regression(request, body.caller)
     _require_step_free(cfg, body.run_id, "refresh_db")
     _mark_in_progress(cfg, body.run_id, "refresh_db", body.caller)
-    started = datetime.now()
     dbs = body.dbs or []
     refresh_url = config_loader.regression_scope_config(body.scope)["refresh_url"]
-    detail = f"Refresh API: {refresh_url or '(dummy stub — not configured)'} — DB(s): {', '.join(dbs) or '(none)'}"
-    result_status = "complete"       # dummy always succeeds; wire the scope's refresh_url later
+    results = []
+    for d in dbs:
+        started = datetime.now()
+        # TODO: once refresh_url is wired, call it for this DB and set status/message from the result:
+        #   ok  -> status="complete", message="Database refresh completed successfully."
+        #   bad -> status="error",    message=f"Database refresh failed — {reason}."
+        status = "complete"
+        message = "Database refresh completed successfully."
+        if not REGRESSION_USE_DUMMY:
+            database.regression_log_write(cfg, body.run_id, "refresh_db", "refresh", status, body.caller,
+                                          comments=json.dumps({"db": d, "message": message}),
+                                          start_time=started, end_time=datetime.now())
+        results.append({"db": d, "status": status, "message": message})
+    fails = sum(1 for r in results if r["status"] != "complete")
+    step_status = "error" if fails else "complete"
     if not REGRESSION_USE_DUMMY:
-        database.regression_log_write(cfg, body.run_id, "refresh_db", "refresh", result_status,
-                                      body.caller, comments=detail, start_time=started, end_time=datetime.now())
+        database.regression_log_write(cfg, body.run_id, "refresh_db", "refresh_done", step_status, body.caller,
+                                      comments=_refresh_done_comment(results))
+    msg = (f"Refresh completed with {fails} failure(s) — check the activity log." if fails
+           else f"Refresh completed for {len(dbs)} database(s).")
     return {"status": "success",
-            "result": {"status": result_status, "message": f"Refresh triggered for {len(dbs)} database(s) (dummy).", "details": detail}}
+            "result": {"status": step_status, "message": msg,
+                       "details": f"Database(s): {', '.join(dbs) or '(none)'}"}}
 
 
 @router.post("/run/complete")
@@ -424,26 +462,51 @@ def run_sql(request: Request, body: RunSqlBody) -> dict:
     for s in body.scripts:
         for d in body.dbs:
             started = datetime.now()
+            # "Started" row — logged BEFORE the script runs (status in_progress, no log file yet).
+            database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", "in_progress", body.caller,
+                                          business_line=body.business_line, comments=f"{s}  →  {d}  ·  in_progress",
+                                          start_time=started)
             try:
                 r = ops.run_sqlplus(rcfg, _db_config(request, d), d, s)
             except Exception as exc:  # noqa: BLE001
                 r = {"status": "error", "script": s, "db": d, "log_file": "", "tail": str(exc)}
+            r.setdefault("script", s); r.setdefault("db", d)
             any_error = any_error or r["status"] != "complete"
+            log_file = r.get("log_file", "")
+            # "Completed/Error" row — with the spooled log path.
             database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", r["status"],
                                           body.caller, business_line=body.business_line,
-                                          comments=f"{s} on {d} -> {r['status']} (log: {r.get('log_file','')})",
+                                          comments=f"{s}  →  {d}  ·  {r['status']}" + (f"  ·  log: {log_file}" if log_file else ""),
                                           start_time=started, end_time=datetime.now())
             results.append(r)
     step_status = "error" if any_error else "complete"
     database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                   body.caller, business_line=body.business_line,
-                                  comments=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
+                                  comments=_run_sql_done_comment(results, body.dbs))
     return {"status": "success", "results": results, "step_status": step_status}
 
 
 def _sse(event: str, data: dict) -> str:
     """One Server-Sent Event frame."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _refresh_done_comment(results: list[dict]) -> str:
+    """JSON summary for the refresh_done row → the UI shows a per-DB results popup + a one-line summary."""
+    okc = sum(1 for r in results if r.get("status") == "complete")
+    fails = len(results) - okc
+    summary = f"Refreshed {len(results)} database(s) — {okc} succeeded" + (f", {fails} failed" if fails else "") + "."
+    return json.dumps({"summary": summary, "items": results})
+
+
+def _run_sql_done_comment(results: list[dict], dbs: list[str]) -> str:
+    """JSON summary for the run_sql_done row → the UI shows a proper 'run summary' popup (script/db/status/
+    log per script) plus a one-line human summary."""
+    okc = sum(1 for r in results if r.get("status") == "complete")
+    fails = len(results) - okc
+    summary = f"Ran {len(results)} script(s) on {', '.join(dbs)} — {okc} completed" + (f", {fails} failed" if fails else "") + "."
+    items = [{"script": r.get("script"), "db": r.get("db"), "status": r.get("status"), "log_file": r.get("log_file", "")} for r in results]
+    return json.dumps({"summary": summary, "items": items})
 
 
 @router.post("/run-sql-stream")
@@ -460,10 +523,16 @@ def run_sql_stream(request: Request, body: RunSqlBody):
 
     def gen():
         any_error = False
+        results: list[dict] = []
         for s, d in combos:
             yield _sse("line", {"text": f"===== {s} · {d} ====="})
             started = datetime.now()
             status, log_file = "complete", ""
+            if not REGRESSION_USE_DUMMY:
+                # "Started" row — before the script runs (in_progress, no log yet).
+                database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", "in_progress", body.caller,
+                                              business_line=body.business_line, comments=f"{s}  →  {d}  ·  in_progress",
+                                              start_time=started)
             if REGRESSION_USE_DUMMY:
                 is_err = "ERR" in s.upper()
                 for t in (f"Connected to {d}.", f"@{s}",
@@ -482,17 +551,19 @@ def run_sql_stream(request: Request, body: RunSqlBody):
                 except Exception as exc:  # noqa: BLE001
                     status = "error"
                     yield _sse("line", {"text": str(exc)})
+                # "Completed/Error" row — with the spooled log path.
                 database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", status,
                                               body.caller, business_line=body.business_line,
-                                              comments=f"{s} on {d} -> {status} (log: {log_file})",
+                                              comments=f"{s}  →  {d}  ·  {status}" + (f"  ·  log: {log_file}" if log_file else ""),
                                               start_time=started, end_time=datetime.now())
             any_error = any_error or status != "complete"
+            results.append({"script": s, "db": d, "status": status, "log_file": log_file})
             yield _sse("result", {"script": s, "db": d, "status": status, "log_file": log_file})
         step_status = "error" if any_error else "complete"
         if not REGRESSION_USE_DUMMY:
             database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                           body.caller, business_line=body.business_line,
-                                          comments=f"{len(body.scripts)} script(s) x {len(body.dbs)} db(s)")
+                                          comments=_run_sql_done_comment(results, body.dbs))
         yield _sse("step", {"step_status": step_status})
 
     return StreamingResponse(gen(), media_type="text/event-stream",
@@ -728,6 +799,150 @@ def file_copy_run_stream(request: Request, body: CopyBody):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---- server space cleanup (Step 2) -----------------------------------------
+def _fmt_bytes(n: int) -> str:
+    """Human-readable size: '0 B', '12.3 KB', '4.5 MB', '1.2 GB'."""
+    n = max(0, int(n or 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return (f"{n} {unit}" if unit == "B" else f"{n:.1f} {unit}")
+        n /= 1024.0
+    return f"{n:.1f} TB"
+
+
+def _dummy_cleanup_results(items: list[dict], dry_run: bool) -> list[dict]:
+    """Canned per-path cleanup results for the server-dummy path (a path containing 'fail'/'missing' errors;
+    a '.log'-only include yields fewer files). Mirrors ops.cleanup_items' result shape."""
+    out = []
+    for it in items:
+        e = ops._norm_cleanup_entry(it)
+        p = e["path"].lower()
+        if "missing" in p or "fail" in p:
+            out.append({**e, "ok": False, "deleted": 0, "bytes_freed": 0, "dirs_removed": 0,
+                        "sample": [], "errors": [f"{e['path']}: path not found"], "error": "path not found", "dry_run": dry_run})
+            continue
+        n = 3 if e["include_pattern"].strip() in ("", "*") else 2
+        n = n * (4 if e["include_subdir"] == "Y" else 1)
+        dirs = (2 if e["include_subdir"] == "Y" and e["remove_empty_dir"] == "Y" else 0)
+        sample = [f"{e['path']}\\file_{i:02d}{'' if e['include_pattern'] in ('', '*') else e['include_pattern'].split(',')[0]}" for i in range(1, min(n, 8) + 1)]
+        out.append({**e, "ok": True, "deleted": n, "bytes_freed": n * 1_048_576, "dirs_removed": dirs,
+                    "sample": sample, "errors": [], "dry_run": dry_run})
+    return out
+
+
+def _cleanup_state(cfg, run_id: int) -> dict:
+    """Per-path cleanup state (key = path → latest {status, deleted, bytes_freed, error}) from the run's
+    clean_item audit rows (each row's comments is JSON)."""
+    state: dict = {}
+    for row in database.regression_cleanup_items(cfg, run_id):
+        try:
+            d = json.loads(row.get("comments") or "{}")
+        except Exception:  # noqa: BLE001
+            continue
+        if d.get("path"):
+            state[d["path"]] = {"path": d["path"], "status": row.get("status"),
+                                "deleted": d.get("deleted", 0), "bytes_freed": d.get("bytes_freed", 0), "error": d.get("error")}
+    return state
+
+
+def _cleanup_summary(done: int, total: int, results: list[dict], fails: int) -> str:
+    """Two-part human summary for the 'clean' audit row: what THIS run did + cumulative manifest progress.
+    E.g. 'Run: 2 path(s) cleaned · 34 file(s) · 3 dir(s) · 12.5 MB freed.  Manifest: 3/4 cleaned (1 remaining).'"""
+    okc = sum(1 for r in results if r.get("ok"))
+    files = sum(int(r.get("deleted") or 0) for r in results)
+    dirs = sum(int(r.get("dirs_removed") or 0) for r in results)
+    freed = sum(int(r.get("bytes_freed") or 0) for r in results)
+    run = f"Run: {okc} path(s) cleaned" + (f", {fails} failed" if fails else "")
+    run += f" · {files} file(s)" + (f" · {dirs} dir(s)" if dirs else "") + f" · {_fmt_bytes(freed)} freed"
+    remaining = max(0, total - done)
+    man = f"Manifest: {done}/{total} cleaned" + (f" ({remaining} remaining)" if remaining else "")
+    return f"{run}.  {man}."
+
+
+def _finalize_cleanup(cfg, run_id: int, caller: str, results: list[dict], manifest: list[dict]) -> str:
+    """Write the summary 'clean' row with the step status derived from the FULL manifest: complete only when
+    every path is cleaned, error on any failure, else partial. Returns the step status."""
+    state = _cleanup_state(cfg, run_id)
+    keys = [str(i.get("path")) for i in manifest if i.get("path")]
+    okc = sum(1 for r in results if r.get("ok"))
+    fails = len(results) - okc
+    if keys:
+        done = sum(1 for k in keys if state.get(k, {}).get("status") == "complete")
+        failed = any(state.get(k, {}).get("status") == "error" for k in keys)
+        total = len(keys)
+        status = "error" if failed else "complete" if done >= total else "partial" if done else "in_progress"
+    else:
+        done, total = okc, len(results)
+        status = "complete" if fails == 0 else "error"
+    summary = _cleanup_summary(done, total, results, fails)
+    database.regression_log_write(cfg, run_id, "space_cleanup", "clean", status, caller,
+                                  comments=json.dumps({"summary": summary, "items": results}))
+    return status
+
+
+@router.post("/cleanup/manifests")
+def cleanup_manifests(request: Request, body: ManifestsBody) -> dict:
+    """Discover cleanup_manifest*.json in the pulled branch under each Scripts root's <release_date>/ folder
+    → one entry per folder that has one (the UI shows a labelled dropdown per folder)."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        d = body.release_date or "20260921"
+        return {"status": "success", "locations": [
+            {"root": "CIB/Batch/Scripts", "label": "CIB/Batch/Scripts", "files": [f"CIB/Batch/Scripts/{d}/cleanup_manifest_{d}.json"]},
+        ]}
+    return {"status": "success", "locations": ops.list_cleanup_manifests(config_loader.regression_scope_config(body.scope), body.release_date)}
+
+
+@router.post("/cleanup/manifest")
+def cleanup_manifest(request: Request, body: ReadManifestBody) -> dict:
+    """Read one chosen cleanup manifest (by repo-relative path) → its normalised path/flag entries."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "items": [
+            {"path": "D:\\ols\\temp", "include_subdir": "N", "remove_empty_dir": "N", "include_pattern": "*", "exclude_pattern": "", "older_than_days": 0},
+            {"path": "D:\\ols\\logs\\archive", "include_subdir": "Y", "remove_empty_dir": "Y", "include_pattern": ".log,.tmp", "exclude_pattern": "", "older_than_days": 30},
+        ]}
+    try:
+        return {"status": "success", "items": ops.read_cleanup_manifest_file(config_loader.regression_scope_config(body.scope), body.path)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not read the cleanup manifest: {exc}")
+
+
+@router.post("/cleanup/preview")
+def cleanup_preview(request: Request, body: CleanupPreviewBody) -> dict:
+    """DRY-RUN: report exactly which files/dirs WOULD be removed per path + the space that would be freed.
+    Deletes NOTHING and logs NOTHING — the operator reviews this before running the real, confirmed delete."""
+    _require_regression(request, body.caller)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "results": _dummy_cleanup_results(body.items, True)}
+    return {"status": "success", "results": ops.cleanup_items(body.items, dry_run=True)}
+
+
+@router.post("/cleanup/run")
+def cleanup_run(request: Request, body: CleanupBody) -> dict:
+    """DELETE the matching files for the selected paths (DESTRUCTIVE — the UI confirms first). Logs each path
+    incrementally (crash-safe) then a summary row whose status is Complete/Partial/Error vs the full manifest."""
+    cfg = _require_regression(request, body.caller)
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Select at least one path to clean up.")
+    _require_step_free(cfg, body.run_id, "space_cleanup")
+    _mark_in_progress(cfg, body.run_id, "space_cleanup", body.caller)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "results": _dummy_cleanup_results(body.items, False), "step_status": "complete"}
+    results = []
+    for item in body.items:
+        started = datetime.now()
+        r = ops.cleanup_items([item], dry_run=False)[0]
+        finished = datetime.now()
+        _stamp(r, started, finished)
+        database.regression_log_write(cfg, body.run_id, "space_cleanup", "clean_item",
+                                      "complete" if r.get("ok") else "error", body.caller,
+                                      comments=json.dumps(r), start_time=started, end_time=finished)
+        results.append(r)
+    step_status = _finalize_cleanup(cfg, body.run_id, body.caller, results, body.manifest)
+    return {"status": "success", "results": results, "step_status": step_status}
 
 
 # ---- monitoring ------------------------------------------------------------

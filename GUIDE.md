@@ -333,16 +333,46 @@ reports a **per-date result** (each target ✓ rolled / ✗ failed with the DB e
 `ols_app_access` **`REGRESSION`** grant — `rbac.regressionVisible(scope)`; hidden otherwise, NOT tied to the
 ops-admin table)
 drives the pre-prod cycle as a gated, force-markable, fully-audited workflow. **A run targets a specific release:**
-starting one is a wizard — pick the `release/*` **branch** (the list is the **newest `branch_limit`**, default 10,
+starting one is a wizard — first enter the **Change (CHG) number** (mandatory, **must start with `CHG`** e.g.
+`CHG0123456`, auto-uppercased, inline error on a bad value; **"Load release branches" is disabled until it's valid**),
+then pick the `release/*` **branch** (the list is the **newest `branch_limit`**, default 10,
 newest first), Pull it, then choose the **release date** with a
 **date picker** (native `type=date`, auto-converted to the canonical `YYYYMMDD` folder name). The pulled branch's
-actual release folders are listed as a hint, and **Start is disabled unless the chosen date is a real folder** in
-that branch (`canStart = pulled && dateKnown`); the run/start endpoint **re-validates server-side** too (rejects with
-the available list — no run created). Branch + date are stored on `ols_regression_run` (`git_branch`, `release_date`) and shown in the run
-header + the Regression Activity grid, so a month with two releases yields two clearly-labelled runs. Steps: Refresh
+actual release folders are listed as a hint, and **Start is disabled unless a CHG is set AND the chosen date is a real
+folder** in that branch (`canStart = chgOk && pulled && dateKnown`); the run/start endpoint **re-validates server-side**
+too (a missing CHG or an absent date → 400, no run created). CHG + branch + date are stored on `ols_regression_run`
+(`change_number`, `git_branch`, `release_date`) and shown in the run header + the Regression Activity grid — one CHG per
+release (a CHG may span several run ids), so a month with two releases yields two clearly-labelled runs. Steps: Refresh
 DB (a **grouped multi-select dropdown** of this **scope's own databases for the current env** — DEV/STG can have many,
 grouped **BATCH / REPORTING**; loaded from the grouped `refresh_databases` in `config/regression.json` via
-`/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact)
+`/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact.
+Each DB row also shows its **last-refreshed timestamp** (`last refreshed <YYYY-MM-DD HH:MM>` in green, or a muted *never refreshed*),
+reconstructed from the activity log so the operator sees at a glance which DBs are stale. The **confirm dialog lists the actual DB names**
+(not just a count) before the refresh runs. Like the sqlplus steps, Refresh writes **one Regression Activity row per database** — a
+**Database Refresh — Completed / Error** row whose Comments cell opens a per-DB detail popup (database · status · **started ·
+finished** · a professional message: *Database refresh completed successfully.* or, on failure, *Database refresh failed — <reason>.*)
+— plus one **Database Refresh — Run summary** row whose popup shows the **per-database results table** (# · database · status ·
+message) and a one-line roll-up (*Refreshed N database(s) — X succeeded[, Y failed].*). **A refresh can fail per database:** a failed
+DB logs its own `error` row with the failure reason, the step badge and summary go **Error**, only **successful** refreshes count
+toward a DB's *last refreshed* timestamp, and the post-run toast turns into an error notice. `/api/regression/refresh-db` loops per
+DB, logging a `refresh` row each (start/finish timing + status) and a final `refresh_done` JSON summary; the refresh API itself is
+still a stub (each DB reports success until `refresh_url` is wired per DB — the failure plumbing is already in place, and the dev
+mock simulates a failure for any DB whose name contains "ERR"))
+→ **Server Space Cleanup** (Step 2 — frees server disk by deleting old / disposable files. Like File Copy, the manifest lives in
+the release repo: `<script_roots[db]>/<release_date>/cleanup_manifest_<release_date>.json`, discovered per Scripts folder
+(`/api/regression/cleanup/manifests`) → a labelled dropdown each. Each JSON entry is `{path, include_subdir, remove_empty_dir,
+include_pattern, exclude_pattern, older_than_days}`: **include_subdir** [N] Y=recurse, N=only files directly in `path`;
+**remove_empty_dir** [N] Y=also delete empty subdirs (never the configured root, and only with include_subdir=Y);
+**include_pattern** [*] `*`=all or a comma list of extensions/globs (`.log`, `.csv,.dat`, `*.tmp`); **exclude_pattern** [empty]
+keeps matching files even if included; **older_than_days** [0] only deletes files older than N days. An **ⓘ info popover** on the
+step spells out every rule so operators edit the JSON carefully. Because deletes are **permanent**, the step has a **Preview**
+(dry-run, `/api/regression/cleanup/preview`) that lists exactly which files/dirs would be removed + the space that would be freed
+**without deleting anything**, and the real **Clean** (`/api/regression/cleanup/run`) is confirmed with the path list first. It logs
+**one `clean_item` row per path** (files deleted · space freed · empty dirs · timing — clickable to a per-path detail popup with the
+deleted-file list) + a **`clean` run-summary** row (`Run: N path(s) cleaned · F file(s) · D dir(s) · S freed. Manifest: n/N cleaned.`);
+step status is **Complete** only when every manifest path is cleaned, else **Partial**, and **Error** if any path fails (a failed path
+logs its reason and turns the toast into an error). Engine: `regression_ops.cleanup_items(items, dry_run)`; dev mock simulates a
+failure for any path containing "fail"/"missing")
 → Apply DB changes (chg files load **per DB** from that DB's `<script_roots[db]>/<release_date>/chg*.sql` —
 cib_batch←`CIB/Batch/Scripts`, cib_reporting←`CIB/Reporting/Scripts`, retail←`RET/Scripts`, group←`Scripts` — shown as
 **per-file checkboxes** (all ticked by default; untick to run a subset now and the rest later, per-group All/Clear).
@@ -388,7 +418,23 @@ CHG/package/proc file on screen — verify a package exists / has the latest cod
 empty until a branch is pulled, then reflects that exact branch). Every sqlplus run (Apply/Reset/Trigger) streams
 **live** into a **collapsible, dockable sqlplus-style console** — output appears line-by-line as it executes
 (`run-sql-stream`, Server-Sent Events; the dev mock animates the same), with collapse / expand / maximize /
-Download. Each step shows its **last-run timestamp + run time**, badges **In progress** while running, blocks
+Download. **Each script writes TWO Regression Activity rows** — a **SQL Script Execution — Started** row (status
+In Progress, before it runs) and a **SQL Script Execution — Completed / Error** row (with the spooled log path) — plus
+one **SQL Script Execution — Run summary** row per run (the authoritative step‑status roll‑up: `error` if ANY script
+failed). Step column reads the friendly step name (Apply DB changes / Reset batches / Trigger batches). **Clicking a
+Comments cell opens a popup**: the per‑script popup shows script · database · status · duration · started/finished (the
+Started popup omits the log — it's not there yet; the Completed popup has **View log** + **Download log**), and the
+Run‑summary popup shows the **per‑script results table** (**# execution order** · script · db · status · View log each). View/Download read the
+spooled file **from the server** (`log/read`), so logs stay viewable/downloadable **after a screen refresh**. The spooled log file
+lives on the server at **`<scope log_dir>\<YYYYMMDD run-day>\<script-stem>__<db>.log`** (e.g.
+`D:\ols\regression\cib\logs\20260921\CHG_20260921__cib_batch.log`) — the exact path is in that row's Comments, so it's
+always recoverable. (Apply/Reset/Trigger all share this — they're the same `run_sql` rows.) Activity actions read
+**SQL Script Execution — Started / Script / Completed / Error** (the "Completed/Error" row is the authoritative
+step‑status roll‑up — it's `error` if ANY script failed, not just the last one, so the badge reflects the whole run).
+**Apply, Reset AND Trigger are all multi‑select + ordered**: tick the script(s), each shows a **1·2·3 execution‑order
+badge**, and **▲▼** buttons reorder them (the run executes in that exact order, per DB, no cross‑product); a **view**
+link reads a script's SQL inline before running. The two monitoring grids (Regression Activity + Monitoring Batches)
+allow **cell text selection/copy** (`enableCellTextSelection`). Each step shows its **last-run timestamp + run time**, badges **In progress** while running, blocks
 Apply with a validation popup when no script/DB is picked, and prompts a confirm when re-running an already-complete
 step. File copy shows a per-item log (files copied / failure detail) and writes a **durable per-item audit row**
 (`copy_item`) as each item completes — so a crash / dropped connection mid-copy still records exactly what was
@@ -408,12 +454,14 @@ default, then **Monitoring Batches**): **Monitoring Batches** (a
 (default 100k); shown in an **AG-Grid with pagination + per-column filter + sort**, fixed to **OLS CIB Batch**
 (no DB dropdown); icon **Refresh** + a live **"Last refreshed <ts> · N sec ago"** line) and
 **Regression Activity** (the `ols_regression_log` audit — also an **AG-Grid** with pagination/filter/sort, icon
-Refresh + the same live last-refreshed line). Backend
+Refresh + the same live last-refreshed line; columns: **Action Date · Release Date · Change # · Step · Action · Status ·
+Action performed By · Start Date · End Date · Duration · Comments** — Change # + Release Date are joined from the run,
+Duration is human-readable (`10m`, `1h 02m`, not raw seconds), Step/Action are friendly-labelled). Backend
 [`regression_api.py`](backend/regression_api.py) + `regression_ops.py` (git/sqlplus/copy) + `database.py`;
 release-date endpoints `release/dates` (folders in the pulled branch) + `release/scripts` (`{db: chg[]}` per DB);
 `git/pull` also returns `release_dates`. `regression_ops.list_repo_tree` prunes `.git`/`node_modules`/… **during**
 the walk and caps the count, so the branch browser can't hang on a big repo. Tables `sql/regression_setup.sql`
-(run table carries `git_branch` + `release_date`, with an idempotent ALTER migration); **per-scope config in
+(run table carries `git_branch` + `release_date` + `change_number`, each with an idempotent ALTER migration); **per-scope config in
 `config/regression.json`** (each scope's git repo, **`script_roots` DB→Scripts-folder map**, work/log dirs, NAS
 feed manifest — resolved via `config_loader.regression_scope_config(scope)`), git token in `.env`.
 **Server prereqs: git + sqlplus.** The sqlplus password is fed over STDIN and **masked** in every log; it is
@@ -925,15 +973,15 @@ Markdown docs are addressed by an **opaque `id`** (never a filesystem path); wik
 browser never sees the per-server agent URLs):
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/infra_health` | `{ app_env, username }` | `{ status, data: ServerHealthRow[] }` — config catalogue (DB). Body, not query, so nothing sensitive is in the URL. |
-| `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ reachable, cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. **Always HTTP 200**: a dead/500/timed-out agent returns `{ reachable: false }` (never an error status), so one bad server = one red card, not a whole-panel failure. |
+| `POST /api/infra_health` | `{ app_env, username }` | `{ status, data: ServerHealthRow[] }` — config catalogue (DB). Body, not query, so nothing sensitive is in the URL. **`MONITORING_CONFIG` is normalised from its JSON-string CLOB to an object here** (`_normalize_config_rows`/`_coerce_json`), so the browser always gets structured config — services flatten and the metrics payload is real JSON, never a string. |
+| `POST /api/infra_health/metrics` | `{ host_name, agent_listen_port, host_platform, monitoring_config }` | agent `/system-metrics` reading `{ reachable, error?, cpu_percent, ram{bytes,percent}, disk_storage{drive→{used,total,percent}}, os, load_avg }`. Backend builds `http://{host}:{port}/system-metrics` and calls it — **URL never reaches the browser**. One call per server. `monitoring_config` accepts a dict **or a JSON string** (a `field_validator` parses it) so a stringy config never 422s; `agent_listen_port` is optional (a config row missing its port → clean `reachable:false`, never a 422). **Always HTTP 200**: a dead/500/timed-out agent returns `{ reachable: false, error }` (never an error status), so one bad server = one red card **showing the reason**, not a whole-panel failure. |
 | `POST /api/infra_health/share` | `{ host_address, app_name }` | `ShareSpaceResponse` `{ used, total, unit, reachable }` — computed directly (no agent). `reachable: false` when the path can't be read → the card shows a red "Share path unreachable" state instead of a misleading `0.00/0.00 GB`. |
 
 **Service Console** (new contract — reuses the `POST /api/infra_health` catalogue for the
 server list, then one agent proxy for status + actions):
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/service_console/service-manage` (bulk status) | `{ host_name, agent_listen_port, host_platform, services: [names] }` | `{ HOST_NAME, <name>: { service, status }, …, reachable }`. Backend forms `http://{host}:{port}/service-manage` and calls it — **URL never reaches the browser**. `reachable: false` → the server shows a red "Unreachable" state. |
+| `POST /api/service_console/service-manage` (bulk status) | `{ host_name, agent_listen_port, host_platform, services: [names] }` | `{ HOST_NAME, <name>: { service, status }, …, reachable, error? }`. Backend forms `http://{host}:{port}/service-manage` and calls it — **URL never reaches the browser**. `reachable: false` → the server shows a red "Unreachable" state **with the reason**. `agent_listen_port` optional (missing → clean `reachable:false`, not a 422). One dead server never blanks the panel (per-server `catchError`, per-panel error state, per-server retry) — **reproduced + confirmed**: with one server returning HTTP 500, that server shows Unreachable while the rest render normally. |
 | `POST /api/service_console/service-manage` (action) | `{ host_name, agent_listen_port, host_platform, service, action }` (`action` = start\|stop\|status; `service` = script path, or the name for a script-less Windows service) | `{ action, message, service, success }`. The UI shows the message as a toast, then re-fetches status. |
 
 **Oracle Command Center** (`backend/oracle_cc_api.py`, prefix `/api/oracle_cc`; set `false` in

@@ -6,8 +6,8 @@ import { API } from '../../../../shared/api-endpoints';
 import { environment } from '../../../../../environments/environment';
 import { RbacService } from '../../../../auth/rbac.service';
 import {
-  BatchMonitorResult, FileCopyItem, FileCopyManifestLocation, FileCopyPreflight, FileCopyResult, RegressionActivityRow,
-  RegressionDb, RegressionState, RunSqlResult
+  BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 /** Live-stream callbacks for a run-sql-stream (Apply / Reset / Trigger). */
@@ -44,8 +44,8 @@ export class OlsRetailRegressionService {
   runCurrent(): Observable<RegressionState> {
     return this.api.post(API.regression.runCurrent, { caller: this.caller(), scope: this.scope });
   }
-  runStart(branch: string, release_date: string): Observable<RegressionState> {
-    return this.api.post(API.regression.runStart, { caller: this.caller(), scope: this.scope, branch, release_date });
+  runStart(branch: string, release_date: string, change_number: string): Observable<RegressionState> {
+    return this.api.post(API.regression.runStart, { caller: this.caller(), scope: this.scope, branch, release_date, change_number });
   }
   markStep(run_id: number, step_key: string, status: string, forced = false, details?: string): Observable<RegressionState> {
     return this.api.post(API.regression.stepMark, { caller: this.caller(), scope: this.scope, run_id, step_key, status, forced, details });
@@ -196,6 +196,23 @@ export class OlsRetailRegressionService {
   }
   fileCopyRun(run_id: number, items: FileCopyItem[], manifest: FileCopyItem[]): Observable<{ results: FileCopyResult[]; step_status: string }> {
     return this.api.post(API.regression.fileCopyRun, { caller: this.caller(), scope: this.scope, run_id, items, manifest });
+  }
+  // --- Server Space Cleanup (Step 2) ---
+  /** Discover cleanup_manifest*.json in the pulled branch for a release → labelled dropdown(s) per folder. */
+  cleanupManifests(release_date: string): Observable<{ locations: CleanupManifestLocation[] }> {
+    return this.api.post(API.regression.cleanupManifests, { caller: this.caller(), scope: this.scope, release_date });
+  }
+  /** Read one chosen cleanup manifest (by repo path) → its normalised path/flag entries. */
+  cleanupManifest(path: string): Observable<{ items: CleanupItem[] }> {
+    return this.api.post(API.regression.cleanupManifest, { caller: this.caller(), scope: this.scope, path });
+  }
+  /** DRY-RUN preview: report what WOULD be deleted per path. Deletes + logs nothing. */
+  cleanupPreview(items: CleanupItem[]): Observable<{ results: CleanupResult[] }> {
+    return this.api.post(API.regression.cleanupPreview, { caller: this.caller(), scope: this.scope, items });
+  }
+  /** REAL cleanup: delete the matching files for the selected paths (the UI confirms first). */
+  cleanupRun(run_id: number, items: CleanupItem[], manifest: CleanupItem[]): Observable<{ results: CleanupResult[]; step_status: string }> {
+    return this.api.post(API.regression.cleanupRun, { caller: this.caller(), scope: this.scope, run_id, items, manifest });
   }
   /** LIVE copy: stream per-item results (progress + per-file ✓/✗). SSE for real; mock animates /file-copy/run. */
   fileCopyRunStream(run_id: number, items: FileCopyItem[], manifest: FileCopyItem[], h: FileCopyStreamHandlers): void {

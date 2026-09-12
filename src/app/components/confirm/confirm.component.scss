@@ -57,6 +57,7 @@
   font-size: 14.5px;
   line-height: 1.6;
   color: var(--cui-secondary-color, #5b6470);
+  white-space: pre-line;   /* honour \n in messages (e.g. a per-line list of databases) */
 }
 
 .ols-confirm-box__actions {

@@ -19,6 +19,7 @@ CREATE TABLE ols_regression_run (
   started_by  VARCHAR2(64)  NOT NULL,
   git_branch    VARCHAR2(160),                       -- the release/* branch this run pulled + applied
   release_date  VARCHAR2(8),                          -- YYYYMMDD release folder (WHICH release we regressed)
+  change_number VARCHAR2(50),                         -- Change (CHG) number this regression run is tagged to
   start_time  TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,   -- run start
   end_time    TIMESTAMP,                                     -- run finish
   CONSTRAINT ols_regression_run_pk PRIMARY KEY (run_id)
@@ -50,6 +51,7 @@ COMMENT ON COLUMN ols_regression_log.task_completion_time IS 'Elapsed seconds = 
 COMMENT ON COLUMN ols_regression_log.comments IS 'What was done: scripts+DBs, files copied, rows affected, ORA errors, force notes, log-file path.';
 COMMENT ON COLUMN ols_regression_run.git_branch   IS 'release/* branch this run pulled + applied.';
 COMMENT ON COLUMN ols_regression_run.release_date IS 'YYYYMMDD release folder — which release this regression cycle targeted (distinguishes 2 releases in a month).';
+COMMENT ON COLUMN ols_regression_run.change_number IS 'Change (CHG) number this regression run is tagged to (one CHG per release; a CHG may have >1 run).';
 
 --------------------------------------------------------------------------------
 -- Migration — add git_branch / release_date to an EXISTING ols_regression_run (safe to re-run;
@@ -65,5 +67,6 @@ DECLARE
 BEGIN
   add_col('ALTER TABLE ols_regression_run ADD (git_branch VARCHAR2(160))');
   add_col('ALTER TABLE ols_regression_run ADD (release_date VARCHAR2(8))');
+  add_col('ALTER TABLE ols_regression_run ADD (change_number VARCHAR2(50))');
 END;
 /

@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/service_console", tags=["service_console"])
 
 class ServiceManageRequest(BaseModel):
     host_name: str
-    agent_listen_port: int
+    agent_listen_port: int | None = None   # tolerate a missing/odd config value → clean "unreachable", never a 422
     host_platform: str | None = None
     # ACTION mode:
     service: str | None = None          # script path (Linux) or service name (Windows)
@@ -58,6 +58,10 @@ def call_service_agent(req: ServiceManageRequest) -> dict:
     below). Never raises to the caller — a dead agent returns ``{ reachable: false }`` so one
     bad server renders as a single "Unreachable" server, not a whole-panel error.
     """
+    if not req.agent_listen_port:
+        # A config row missing its agent port can't be called — report it as unreachable (with a clear
+        # reason) rather than 422-ing, so one bad row never fails the panel.
+        return {"HOST_NAME": req.host_name, "reachable": False, "error": "No agent port configured for this server."}
     try:
         # ─── DUMMY ↔ REAL SWITCH — change these two lines to go live ─────────────
         # DUMMY (synthetic data, no agent needed) — ACTIVE:

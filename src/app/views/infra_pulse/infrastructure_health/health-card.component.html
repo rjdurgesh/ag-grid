@@ -82,6 +82,9 @@
       </svg>
       <span class="ipcard__unreachable-body">
         <span class="ipcard__unreachable-msg">{{ target().kind === 'share' ? 'Share path unreachable — data unavailable' : 'Server not responding — data unavailable' }}</span>
+        @if (target().unreachableReason) {
+          <span class="ipcard__unreachable-reason">{{ target().unreachableReason }}</span>
+        }
         <a class="ipcard__unreachable-help" [href]="'mailto:' + supportEmail">Please reach out to OLS Team on {{ supportEmail }}</a>
       </span>
     </div>

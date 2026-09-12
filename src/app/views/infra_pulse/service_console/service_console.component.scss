@@ -746,6 +746,15 @@
     font-weight: 700;
     text-decoration: underline;
   }
+
+  /* The actual failure reason (connection refused / timed out / HTTP status). */
+  &__reason {
+    display: block;
+    margin: 3px 0;
+    font-weight: 500;
+    opacity: 0.9;
+    word-break: break-word;
+  }
 }
 
 /* ---- Action result toast ------------------------------------------------- */

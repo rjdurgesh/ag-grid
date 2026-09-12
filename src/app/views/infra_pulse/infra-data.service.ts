@@ -118,8 +118,8 @@ export class InfraDataService {
         .post<ShareSpaceResponse>(API.infra.healthShare, { host_address: row.HOST_ADDRESS, app_name: row.APP_NAME })
         .pipe(
           timeout(HEALTH_CALL_TIMEOUT_MS),
-          map((res) => (res?.reachable === false ? unreachableTarget(row) : shareTarget(row, res))),
-          catchError(() => of(unreachableTarget(row)))
+          map((res) => (res?.reachable === false ? unreachableTarget(row, res?.error) : shareTarget(row, res))),
+          catchError((err) => of(unreachableTarget(row, httpReason(err))))
         );
     }
     return this.api
@@ -131,8 +131,8 @@ export class InfraDataService {
       })
       .pipe(
         timeout(HEALTH_CALL_TIMEOUT_MS),
-        map((res) => (res?.reachable === false ? unreachableTarget(row) : serverTarget(row, res))),
-        catchError(() => of(unreachableTarget(row)))
+        map((res) => (res?.reachable === false ? unreachableTarget(row, res?.error) : serverTarget(row, res))),
+        catchError((err) => of(unreachableTarget(row, httpReason(err))))
       );
   }
 
@@ -186,8 +186,8 @@ export class InfraDataService {
       })
       .pipe(
         timeout(HEALTH_CALL_TIMEOUT_MS),
-        map((res) => (res?.['reachable'] === false ? unreachableServer(row, cfg) : serverServicesFrom(row, cfg, res))),
-        catchError(() => of(unreachableServer(row, cfg)))
+        map((res) => (res?.['reachable'] === false ? unreachableServer(row, cfg, reasonFrom(res)) : serverServicesFrom(row, cfg, res))),
+        catchError((err) => of(unreachableServer(row, cfg, httpReason(err))))
       );
   }
 
@@ -287,7 +287,7 @@ function shareTarget(row: ServerHealthRow, res: ShareSpaceResponse): HealthTarge
 const OS_RANK: Record<TargetOs, number> = { windows: 0, linux: 1, share: 2 };
 
 /** A card for a server/share whose agent (or share path) couldn't be reached. */
-function unreachableTarget(row: ServerHealthRow): HealthTarget {
+function unreachableTarget(row: ServerHealthRow, reason?: string): HealthTarget {
   return {
     id: row.HOST_NAME,
     name: row.HOST_NAME,
@@ -299,7 +299,8 @@ function unreachableTarget(row: ServerHealthRow): HealthTarget {
     metrics: [],
     lastUpdated: new Date().toISOString(),
     status: 'crit',
-    unreachable: true
+    unreachable: true,
+    unreachableReason: friendlyReason(reason)
   };
 }
 
@@ -385,13 +386,39 @@ function serverServicesFrom(row: ServerHealthRow, cfg: MonitoredService[], res: 
 }
 
 /** A server whose agent couldn't be reached — its row shows a red "Unreachable" state. */
-function unreachableServer(row: ServerHealthRow, cfg: MonitoredService[]): ServerServices {
+function unreachableServer(row: ServerHealthRow, cfg: MonitoredService[], reason?: string): ServerServices {
   const now = new Date().toISOString();
   return {
     ...serverInfoOf(row),
     unreachable: true,
+    unreachableReason: friendlyReason(reason),
     services: cfg.map((s) => ({ id: s.name, name: s.name, state: serviceStateFrom(undefined), lastHeartbeat: now }))
   };
+}
+
+/** Reason from a bulk-status agent response (`error` string when reachable:false). */
+function reasonFrom(res: ServiceStatusResponse | null | undefined): string | undefined {
+  const e = res?.['error'];
+  return typeof e === 'string' ? e : undefined;
+}
+
+/** Turn an HttpErrorResponse (or timeout) into a short, friendly reason for the Unreachable card. */
+function httpReason(err: unknown): string {
+  const e = err as { name?: string; status?: number; error?: { detail?: string } | string; message?: string };
+  if (e?.name === 'TimeoutError') { return 'Timed out — the agent did not respond in time.'; }
+  if (e?.status === 0) { return 'No connection — the agent is down or refused the connection.'; }
+  if (typeof e?.status === 'number' && e.status > 0) {
+    const detail = typeof e.error === 'object' ? e.error?.detail : (typeof e.error === 'string' ? e.error : undefined);
+    return `Agent returned HTTP ${e.status}${detail ? ` — ${detail}` : ''}.`;
+  }
+  return e?.message || 'The agent could not be reached.';
+}
+
+/** Trim/cap a backend reason string for display (keep it one readable line). */
+function friendlyReason(reason?: string): string | undefined {
+  const s = (reason ?? '').trim();
+  if (!s) { return undefined; }
+  return s.length > 200 ? s.slice(0, 197) + '…' : s;
 }
 
 function assembleServices(app: InfraApp, servers: ServerServices[]): AppServices {

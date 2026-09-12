@@ -110,6 +110,10 @@ export const API = {
     fileCopyPreflight: `${API_BASE_URL}/api/regression/file-copy/preflight`,
     fileCopyRun: `${API_BASE_URL}/api/regression/file-copy/run`,
     fileCopyRunStream: `${API_BASE_URL}/api/regression/file-copy/run-stream`,
+    cleanupManifests: `${API_BASE_URL}/api/regression/cleanup/manifests`,
+    cleanupManifest: `${API_BASE_URL}/api/regression/cleanup/manifest`,
+    cleanupPreview: `${API_BASE_URL}/api/regression/cleanup/preview`,
+    cleanupRun: `${API_BASE_URL}/api/regression/cleanup/run`,
     batchMonitor: `${API_BASE_URL}/api/regression/batch-monitor`,
     activity: `${API_BASE_URL}/api/regression/activity`
   },

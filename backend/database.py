@@ -2037,9 +2037,11 @@ def execute_sql(db_config: Any, sql: str) -> dict:
 # =============================================================================
 
 def regression_run_start(db_config: Any, app_env: str, started_by: str,
-                         git_branch: str | None = None, release_date: str | None = None) -> int:
+                         git_branch: str | None = None, release_date: str | None = None,
+                         change_number: str | None = None) -> int:
     """Open a new regression run for this env; returns run_id. `git_branch` + `release_date` record
-    WHICH release this cycle targets (a month can have >1). Commits."""
+    WHICH release this cycle targets (a month can have >1); `change_number` is the Change ticket the run is
+    tagged to (one CHG per release, may span >1 run). Commits."""
     connection = None
     cursor = None
     try:
@@ -2047,10 +2049,10 @@ def regression_run_start(db_config: Any, app_env: str, started_by: str,
         cursor = connection.cursor()
         rid = cursor.var(int)
         cursor.execute("""
-            INSERT INTO ols_regression_run (app_env, status, started_by, git_branch, release_date)
-            VALUES (:env, 'in_progress', :sb, :br, :rd)
+            INSERT INTO ols_regression_run (app_env, status, started_by, git_branch, release_date, change_number)
+            VALUES (:env, 'in_progress', :sb, :br, :rd, :chg)
             RETURNING run_id INTO :rid
-        """, {"env": app_env, "sb": started_by, "br": git_branch, "rd": release_date, "rid": rid})
+        """, {"env": app_env, "sb": started_by, "br": git_branch, "rd": release_date, "chg": change_number, "rid": rid})
         connection.commit()
         return int(rid.getvalue()[0])
     finally:
@@ -2086,7 +2088,7 @@ def regression_run_current(db_config: Any, app_env: str) -> dict | None:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT run_id, app_env, status, started_by, git_branch, release_date, start_time
+            SELECT run_id, app_env, status, started_by, git_branch, release_date, change_number, start_time
               FROM ols_regression_run
              WHERE app_env = :env AND status = 'in_progress'
              ORDER BY run_id DESC FETCH FIRST 1 ROW ONLY
@@ -2205,7 +2207,7 @@ def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 
             binds["r"] = run_id
         where_l = where.replace("run_id", "l.run_id") if where else ""
         cursor.execute(f"""
-            SELECT l.load_dt, l.log_id, l.run_id, r.release_date, l.business_line, l.step_key, l.action,
+            SELECT l.load_dt, l.log_id, l.run_id, r.release_date, r.change_number, l.business_line, l.step_key, l.action,
                    l.status, l.performed_by, l.start_time, l.end_time, l.task_completion_time,
                    l.forced_by, l.comments
               FROM ols_regression_log l
@@ -2235,6 +2237,29 @@ def regression_copy_items(db_config: Any, run_id: int) -> list[dict]:
             SELECT status, comments, start_time
               FROM ols_regression_log
              WHERE run_id = :r AND step_key = 'file_copy' AND action = 'copy_item'
+             ORDER BY log_id ASC
+        """, {"r": run_id})
+        return [{"status": s, "comments": _cell(c), "start_time": _cell(t)} for (s, c, t) in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_cleanup_items(db_config: Any, run_id: int) -> list[dict]:
+    """Per-path Server-Space-Cleanup audit rows for a run (oldest first): status + comments (JSON per path).
+    The API reconstructs which manifest paths are cleaned/failed from these — so the step's Partial/Complete
+    state survives a page reload (same pattern as regression_copy_items)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT status, comments, start_time
+              FROM ols_regression_log
+             WHERE run_id = :r AND step_key = 'space_cleanup' AND action = 'clean_item'
              ORDER BY log_id ASC
         """, {"r": run_id})
         return [{"status": s, "comments": _cell(c), "start_time": _cell(t)} for (s, c, t) in cursor.fetchall()]

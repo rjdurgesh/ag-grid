@@ -15,11 +15,13 @@ over STDIN (never on the command line). Only DEV/STG use this screen.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -598,3 +600,191 @@ def read_manifest_file(cfg: dict, rel: str) -> list[dict]:
     if not str(p).startswith(str(wd)) or not p.is_file():
         raise RuntimeError("Manifest not found in the pulled branch.")
     return read_manifest(str(p))
+
+
+# ---- server space cleanup (Step 2) -----------------------------------------
+# Deletes old/disposable files from configured paths to free server space. DESTRUCTIVE + irreversible, so
+# every run is preceded by a confirmed dialog and can be dry-run previewed first (see the API layer).
+_CLEANUP_SAMPLE = 200          # cap the sample file list returned per path (preview / result popup)
+_CLEANUP_ERRORS = 50           # cap the per-path error list
+
+
+def _cleanup_tokens(spec: str) -> list[str]:
+    """Split a comma-separated include/exclude spec into trimmed, non-empty tokens."""
+    return [t.strip() for t in str(spec or "").split(",") if t.strip()]
+
+
+def _token_matches(name_low: str, token: str) -> bool:
+    """One pattern token against a lower-cased filename. ``*`` = everything; a leading-dot token with no
+    wildcard (e.g. ``.log``) = that extension; anything else = an fnmatch glob (e.g. ``*.log``, ``tmp_*``)."""
+    t = token.lower()
+    if t == "*":
+        return True
+    if t.startswith(".") and "*" not in t and "?" not in t:
+        return name_low.endswith(t)
+    return fnmatch.fnmatch(name_low, t)
+
+
+def _name_selected(name: str, inc: list[str], exc: list[str]) -> bool:
+    """Included if ``inc`` is empty OR any include token matches; then dropped if any exclude token matches."""
+    low = name.lower()
+    if inc and not any(_token_matches(low, t) for t in inc):
+        return False
+    return not any(_token_matches(low, t) for t in exc)
+
+
+def _norm_cleanup_entry(it: dict) -> dict:
+    """Normalise one manifest entry: YN flags upper-cased (default N), patterns as strings (include default
+    ``*`` = all), older_than_days a non-negative int (default 0 = no age filter)."""
+    def yn(v):
+        return "Y" if str(v if v is not None else "N").strip().upper() in ("Y", "YES", "TRUE", "1") else "N"
+    try:
+        older = max(0, int(it.get("older_than_days", 0) or 0))
+    except (TypeError, ValueError):
+        older = 0
+    return {
+        "path": str(it.get("path", "")).strip(),
+        "include_subdir": yn(it.get("include_subdir")),
+        "remove_empty_dir": yn(it.get("remove_empty_dir")),
+        "include_pattern": str(it.get("include_pattern", "*") or "*").strip(),
+        "exclude_pattern": str(it.get("exclude_pattern", "") or "").strip(),
+        "older_than_days": older,
+    }
+
+
+def read_cleanup_manifest(path: str) -> list[dict]:
+    """Parse the developer cleanup JSON: ``{items:[{path, include_subdir, remove_empty_dir, include_pattern,
+    exclude_pattern, older_than_days}]}`` or a bare list. Entries without a ``path`` are dropped."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    items = data.get("items", []) if isinstance(data, dict) else data
+    return [e for e in (_norm_cleanup_entry(it) for it in items) if e["path"]]
+
+
+def list_cleanup_manifests(cfg: dict, release_date: str) -> list[dict]:
+    """Discover cleanup manifests in the pulled branch for a release — same per-Scripts-root scan as the
+    file-copy manifests, but for ``cleanup_manifest*.json``. Returns ``[{root, label, files}]``."""
+    if not (release_date.isdigit() and len(release_date) == 8):
+        return []
+    wd = Path(cfg.get("git_workdir", ""))
+    out, seen = [], set()
+    for root in _script_roots(cfg).values():
+        if root in seen:
+            continue
+        seen.add(root)
+        base = (wd / root / release_date) if root else (wd / release_date)
+        if not base.is_dir():
+            continue
+        files = sorted(str(p.relative_to(wd)).replace("\\", "/")
+                       for p in base.iterdir()
+                       if p.is_file() and p.name.lower().startswith("cleanup_manifest") and p.name.lower().endswith(".json"))
+        if files:
+            out.append({"root": root, "label": (root or "/"), "files": files})
+    return out
+
+
+def read_cleanup_manifest_file(cfg: dict, rel: str) -> list[dict]:
+    """Read one cleanup manifest by its repo-relative path (jailed to the work dir)."""
+    wd = Path(cfg.get("git_workdir", "")).resolve()
+    p = (wd / rel).resolve()
+    if not str(p).startswith(str(wd)) or not p.is_file():
+        raise RuntimeError("Cleanup manifest not found in the pulled branch.")
+    return read_cleanup_manifest(str(p))
+
+
+def _clean_one(entry: dict, dry_run: bool) -> dict:
+    """Delete (or, when ``dry_run``, only count) the files matching one manifest entry, honouring
+    include_subdir, the include/exclude patterns, the age filter, and remove_empty_dir. remove_empty_dir
+    NEVER removes the configured root path itself, and with include_subdir=N no subdirectory is touched at
+    all. Returns a per-path result: deleted count, bytes freed, dirs removed, a capped sample of affected
+    files, and any per-file errors — never raises for a single bad path."""
+    e = _norm_cleanup_entry(entry)
+    path = e["path"]
+    recurse = e["include_subdir"] == "Y"
+    rm_empty = e["remove_empty_dir"] == "Y"
+    inc = _cleanup_tokens(e["include_pattern"]) or ["*"]
+    exc_toks = _cleanup_tokens(e["exclude_pattern"])
+    cutoff = (time.time() - e["older_than_days"] * 86400) if e["older_than_days"] > 0 else None
+
+    res = {**e, "ok": True, "deleted": 0, "bytes_freed": 0, "dirs_removed": 0,
+           "sample": [], "errors": [], "dry_run": dry_run}
+
+    if not path:
+        res["ok"] = False; res["error"] = "empty path"; return res
+    if not os.path.exists(path):
+        res["ok"] = False; res["error"] = f"path not found: {path}"; return res
+    if not os.path.isdir(path):
+        res["ok"] = False; res["error"] = f"path is not a directory: {path}"; return res
+
+    def age_ok(fp: str) -> bool:
+        if cutoff is None:
+            return True
+        try:
+            return os.path.getmtime(fp) <= cutoff
+        except OSError:
+            return False
+
+    def take_file(fp: str, fn: str) -> None:
+        if not _name_selected(fn, inc, exc_toks) or not age_ok(fp):
+            return
+        try:
+            sz = os.path.getsize(fp)
+        except OSError:
+            sz = 0
+        if not dry_run:
+            try:
+                os.remove(fp)
+            except OSError as exc:
+                if len(res["errors"]) < _CLEANUP_ERRORS:
+                    res["errors"].append(f"{fp}: {exc}")
+                return
+        res["deleted"] += 1
+        res["bytes_freed"] += sz
+        if len(res["sample"]) < _CLEANUP_SAMPLE:
+            res["sample"].append(fp)
+
+    root_abs = os.path.abspath(path)
+    if recurse:
+        would_remove: set[str] = set()   # dry-run: dirs that would end up empty
+        for cur, dirs, files in os.walk(path, topdown=False):
+            for fn in files:
+                take_file(os.path.join(cur, fn), fn)
+            if rm_empty and os.path.abspath(cur) != root_abs:
+                if dry_run:
+                    left_files = any(not (_name_selected(f, inc, exc_toks) and age_ok(os.path.join(cur, f))) for f in files)
+                    left_dirs = any(os.path.join(cur, d) not in would_remove for d in dirs)
+                    if not left_files and not left_dirs:
+                        would_remove.add(cur); res["dirs_removed"] += 1
+                else:
+                    try:
+                        if not os.listdir(cur):
+                            os.rmdir(cur); res["dirs_removed"] += 1
+                    except OSError:
+                        pass
+    else:
+        try:
+            names = os.listdir(path)
+        except OSError as exc:
+            res["ok"] = False; res["error"] = f"cannot list {path}: {exc}"; return res
+        for fn in names:
+            fp = os.path.join(path, fn)
+            if os.path.isfile(fp):
+                take_file(fp, fn)
+        # include_subdir=N → subdirectories (and their emptiness) are intentionally left untouched.
+
+    if res["errors"]:
+        res["ok"] = False
+        res["error"] = f"{len(res['errors'])} file(s) could not be deleted"
+    return res
+
+
+def cleanup_items(items: list[dict], dry_run: bool = False) -> list[dict]:
+    """Run (or, when ``dry_run``, preview) the cleanup for each manifest entry. Per-entry results; a single
+    bad path is reported errored and the rest continue."""
+    out = []
+    for it in items:
+        try:
+            out.append(_clean_one(it, dry_run))
+        except Exception as exc:  # noqa: BLE001
+            out.append({**_norm_cleanup_entry(it), "ok": False, "deleted": 0, "bytes_freed": 0,
+                        "dirs_removed": 0, "sample": [], "errors": [str(exc)], "error": str(exc), "dry_run": dry_run})
+    return out

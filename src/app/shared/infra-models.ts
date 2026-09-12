@@ -25,6 +25,8 @@ export interface ShareSpaceResponse {
   unit: string;
   /** False when the share path could not be reached/read. */
   reachable?: boolean;
+  /** When unreachable, the backend's reason. */
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +285,8 @@ export interface ServerServices {
   services: ServiceInfo[];
   /** True when the server's agent couldn't be reached — the row shows a red "Unreachable" state. */
   unreachable?: boolean;
+  /** When unreachable, why (connection refused / timed out / HTTP status) — shown on the row. */
+  unreachableReason?: string;
   /** IP / FQDN — shown in the server info dialog. */
   host?: string;
   /** Deployment environment (APP_ENV) — shown in the info dialog. */

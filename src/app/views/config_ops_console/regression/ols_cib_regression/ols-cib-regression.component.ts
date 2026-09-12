@@ -1,4 +1,4 @@
-import { Component, DestroyRef, computed, effect, inject, OnInit, signal } from '@angular/core';
+import { Component, DestroyRef, WritableSignal, computed, effect, inject, OnInit, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -13,8 +13,8 @@ import { ConfirmService } from '../../../../components/confirm/confirm.service';
 import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data/grid-data.model';
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
-  BatchMonitorResult, FileCopyItem, FileCopyManifestLocation, FileCopyPreflight, FileCopyResult, RegressionActivityRow,
-  RegressionDb, RegressionState, RunSqlResult
+  BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 interface StepDef { key: string; title: string; }
@@ -40,6 +40,7 @@ export class OlsCibRegressionComponent implements OnInit {
 
   readonly steps: StepDef[] = [
     { key: 'refresh_db', title: 'Refresh DB' },
+    { key: 'space_cleanup', title: 'Server Space Cleanup' },
     { key: 'apply_db', title: 'Apply DB changes' },
     { key: 'file_copy', title: 'File copy' },
     { key: 'reset', title: 'Reset batches' },
@@ -85,6 +86,23 @@ export class OlsCibRegressionComponent implements OnInit {
     const n = this.refreshDbs().length;
     return n === 0 ? 'Select databases…' : `${n} database${n === 1 ? '' : 's'} selected`;
   });
+  /** DB key → most-recent successful refresh timestamp, reconstructed from the activity log (newest-first,
+   *  so the first refresh row seen per DB is the latest). Shown next to each DB in the picker. */
+  readonly lastRefreshedByDb = computed(() => {
+    const m: Record<string, string> = {};
+    for (const row of this.activityRows()) {
+      if (row.step_key !== 'refresh_db' || row.action !== 'refresh' || row.status !== 'complete') { continue; }
+      const d = this.parseRefreshComment(row.comments);
+      const ts = row.end_time || row.start_time || '';
+      if (d.db && !m[d.db]) { m[d.db] = ts; }   // activity is newest-first → first seen is latest
+    }
+    return m;
+  });
+  /** Friendly "last refreshed" label for a DB in the picker (seconds trimmed; empty if never refreshed). */
+  lastRefreshedLabel(dbKey: string): string {
+    const ts = this.lastRefreshedByDb()[dbKey];
+    return ts ? `last refreshed ${ts.slice(0, 16)}` : 'never refreshed';
+  }
   readonly loading = signal(true);
   readonly toast = signal<Toast | null>(null);
   // Auto-dismiss any toast a few seconds after it appears (e.g. "State refreshed.") so it doesn't linger.
@@ -93,7 +111,8 @@ export class OlsCibRegressionComponent implements OnInit {
   });
   readonly busy = signal<string>('');            // step_key currently running
 
-  // Start a run: pick the release/* branch + the release date (YYYYMMDD folder). BOTH identify the release.
+  // Start a run: tag a CHG number (mandatory), then pick the release/* branch + release date (YYYYMMDD folder).
+  readonly chgNumber = signal('');                    // Change ticket — MUST be filled before loading branches
   readonly branches = signal<string[]>([]);
   readonly selectedBranch = signal('');
   readonly scripts = signal<string[]>([]);
@@ -150,16 +169,50 @@ export class OlsCibRegressionComponent implements OnInit {
    *  in any Scripts folder, or the manifest(s) are present but empty. The step can then be marked complete. */
   readonly nothingToCopy = computed(() => this.manifestsDiscovered() && !this.loadingManifests() && this.allManifestItems().length === 0);
 
+  // Server Space Cleanup (Step 2) — a cleanup_manifest_<date>.json in the release repo lists disposable paths
+  // to delete (free server space). DESTRUCTIVE, so it is dry-run "Preview"-able and confirmed before deleting.
+  readonly cleanupLocations = signal<CleanupManifestLocation[]>([]);
+  readonly selectedCleanupPath = signal<string>('');
+  readonly loadingCleanupManifests = signal(false);
+  readonly cleanupManifest = signal<CleanupItem[]>([]);          // the CURRENTLY SHOWN manifest (selected dropdown)
+  readonly allCleanupItems = signal<CleanupItem[]>([]);          // UNION across every discovered manifest — the step
+  readonly cleanupSelected = signal<number[]>([]);              // is Complete only when ALL of these are cleaned
+  readonly cleanupManifestsDiscovered = signal(false);
+  readonly cleanupPreview = signal<CleanupResult[] | null>(null); // last dry-run preview (deletes nothing)
+  readonly cleanupPreviewBusy = signal(false);
+  readonly cleanupResults = signal<CleanupResult[]>([]);          // last real run's per-path results (popup)
+  readonly cleanupDetail = signal<CleanupResult[] | null>(null);  // detail popup (last run, or a clicked activity row)
+  readonly cleanupInfoOpen = signal(false);                       // the ⓘ "manifest rules" popover
+  /** Per-path cleanup state (path → latest status) reconstructed from the run's clean_item audit rows. */
+  readonly cleanupState = computed(() => {
+    const m: Record<string, { status: string; deleted?: number; bytes_freed?: number; error?: string }> = {};
+    for (const row of this.activityRows()) {
+      if (row.step_key !== 'space_cleanup' || row.action !== 'clean_item') { continue; }
+      try {
+        const d = JSON.parse(row.comments || '{}');
+        if (d.path && !m[d.path]) {   // activity is newest-first → first seen is latest
+          m[d.path] = { status: row.status, deleted: d.deleted, bytes_freed: d.bytes_freed, error: d.error };
+        }
+      } catch { /* not a JSON clean row */ }
+    }
+    return m;
+  });
+  readonly cleanupSelectedCount = computed(() => this.cleanupSelected().length);
+  /** How many previewed paths reported a problem (missing path, undeletable files). */
+  readonly cleanupPreviewIssues = computed(() => (this.cleanupPreview() ?? []).filter((r) => !r.ok).length);
+  /** True once discovery settled and there is genuinely nothing to clean this release (no/empty manifest). */
+  readonly nothingToClean = computed(() => this.cleanupManifestsDiscovered() && !this.loadingCleanupManifests() && this.allCleanupItems().length === 0);
+
   // Reset / Trigger — scripts come from the RegressionTesting folder for the selected DB (batch/reporting only).
   readonly resetTriggerDbs = [
     { key: 'cib_batch', label: 'OLS CIB Batch' },
     { key: 'cib_reporting', label: 'OLS CIB Reporting' }
   ];
-  readonly resetScript = signal('');
+  readonly resetSelected = signal<string[]>([]);     // ordered — run order = array order
   readonly resetDb = signal('cib_batch');
   readonly resetScripts = signal<string[]>([]);
   readonly resetResults = signal<RunSqlResult[]>([]);
-  readonly triggerScript = signal('');
+  readonly triggerSelected = signal<string[]>([]);   // ordered — run order = array order
   readonly triggerDb = signal('cib_batch');
   readonly triggerScripts = signal<string[]>([]);
   readonly triggerResults = signal<RunSqlResult[]>([]);
@@ -211,19 +264,22 @@ export class OlsCibRegressionComponent implements OnInit {
     pagination: true,
     paginationPageSize: 50,
     paginationPageSizeSelector: [25, 50, 100, 500],
+    enableCellTextSelection: true, ensureDomOrder: true,   // let the user select + copy cell text
   };
   readonly activityGridOptions = {
     defaultColDef: { resizable: true, sortable: true, filter: true, floatingFilter: true, minWidth: 120 },
     pagination: true,
     paginationPageSize: 100,
     paginationPageSizeSelector: [50, 100, 500, 1000],
+    enableCellTextSelection: true, ensureDomOrder: true,   // let the user select + copy cell text
     onCellClicked: (e: { colDef?: { field?: string }; data?: RegressionActivityRow }) => this.onActivityCellClicked(e),
   };
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
-    { field: 'load_dt', headerName: 'Date', maxWidth: 120 },
-    { field: 'release_date', headerName: 'Release', maxWidth: 120 },
-    { field: 'step_key', headerName: 'Step' },
+    { field: 'load_dt', headerName: 'Action Date', maxWidth: 130 },
+    { field: 'release_date', headerName: 'Release Date', maxWidth: 130 },
+    { field: 'change_number', headerName: 'Change #', maxWidth: 150 },
+    { field: 'step_key', headerName: 'Step', valueFormatter: (p) => this.stepLabel(p) },
     { field: 'action', headerName: 'Action', minWidth: 180, valueFormatter: (p) => this.activityActionLabel(p) },
     { field: 'status', headerName: 'Status', maxWidth: 130,
       cellClassRules: {
@@ -231,17 +287,69 @@ export class OlsCibRegressionComponent implements OnInit {
         'rg-cell--err': (p) => p.value === 'error',
         'rg-cell--warn': (p) => p.value === 'forced' || p.value === 'partial',
       } },
-    { field: 'performed_by', headerName: 'By' },
-    { field: 'start_time', headerName: 'Start' },
-    { field: 'end_time', headerName: 'End' },
-    { field: 'task_completion_time', headerName: 'Dur (s)', maxWidth: 110 },
+    { field: 'performed_by', headerName: 'Action performed By' },
+    { field: 'start_time', headerName: 'Start Date' },
+    { field: 'end_time', headerName: 'End Date' },
+    { field: 'task_completion_time', headerName: 'Duration', maxWidth: 120, valueFormatter: (p) => this.fmtDuration(p.value as number) },
     { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220,
       valueFormatter: (p) => this.activityCommentsLabel(p),
-      cellClassRules: { 'rg-cell--link': (p) => this.isCopyRow(p.data as RegressionActivityRow) } },
+      cellClassRules: { 'rg-cell--link': (p) => this.isDetailRow(p.data as RegressionActivityRow) } },
   ];
   /** True for a file-copy log row whose comments hold a copy-results JSON (→ clickable detail popup). */
   private isCopyRow(r?: RegressionActivityRow): boolean {
     return !!r && r.step_key === 'file_copy' && (r.action === 'copy' || r.action === 'copy_item');
+  }
+  /** True for a per-script sqlplus row (Apply/Reset/Trigger) → clickable detail popup with View/Download log. */
+  private isRunSqlRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.action === 'run_sql';
+  }
+  /** True for the run-summary row → clickable popup with the per-script results table. */
+  private isRunSqlDoneRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.action === 'run_sql_done';
+  }
+  /** True for a per-database Refresh DB result row → clickable popup with that DB's outcome. */
+  private isRefreshRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.step_key === 'refresh_db' && r.action === 'refresh';
+  }
+  /** True for the Refresh DB run-summary row → clickable popup with the per-database results table. */
+  private isRefreshDoneRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.step_key === 'refresh_db' && r.action === 'refresh_done';
+  }
+  /** True for a per-path Server-Space-Cleanup result row → clickable detail popup for that path. */
+  private isCleanRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.step_key === 'space_cleanup' && r.action === 'clean_item';
+  }
+  /** True for the Server-Space-Cleanup run-summary row → clickable popup with the per-path results table. */
+  private isCleanDoneRow(r?: RegressionActivityRow): boolean {
+    return !!r && r.step_key === 'space_cleanup' && r.action === 'clean';
+  }
+  /** A row whose Comments cell opens a detail popup. */
+  private isDetailRow(r?: RegressionActivityRow): boolean {
+    return this.isCopyRow(r) || this.isRunSqlRow(r) || this.isRunSqlDoneRow(r)
+      || this.isRefreshRow(r) || this.isRefreshDoneRow(r)
+      || this.isCleanRow(r) || this.isCleanDoneRow(r);
+  }
+  /** Parse a per-DB refresh comment (JSON {db, message}) → its parts. */
+  parseRefreshComment(comment?: string): { db: string; message: string } {
+    try { const d = JSON.parse(comment || '{}'); return { db: String(d.db ?? ''), message: String(d.message ?? '') }; }
+    catch { return { db: '', message: comment || '' }; }
+  }
+  /** Parse a per-script run_sql comment ("<script>  →  <db>  ·  <status>  ·  log: <path>") → its parts. */
+  parseSqlComment(comment?: string): { script: string; db: string; status: string; log_file: string } {
+    const parts = (comment || '').split('  ·  ');
+    const [scriptDb = '', status = '', logPart = ''] = parts;
+    const [script = '', db = ''] = scriptDb.split('  →  ');
+    const log_file = logPart.startsWith('log: ') ? logPart.slice(5) : '';
+    return { script: script.trim(), db: db.trim(), status: status.trim(), log_file: log_file.trim() };
+  }
+  /** Friendly Step-column label (raw keys like 'reset' → 'Reset batches'). */
+  stepLabel(p: { value?: unknown }): string {
+    const map: Record<string, string> = {
+      refresh_db: 'Refresh DB', space_cleanup: 'Server Space Cleanup', apply_db: 'Apply DB changes',
+      file_copy: 'File copy', reset: 'Reset batches', trigger: 'Trigger batches'
+    };
+    const k = String(p.value ?? '');
+    return map[k] ?? k;
   }
   activityActionLabel(p: { value?: unknown; data?: RegressionActivityRow }): string {
     const r = p.data;
@@ -254,6 +362,31 @@ export class OlsCibRegressionComponent implements OnInit {
           : r.status === 'partial' ? 'Copy Operation — Partially Completed' : 'Copy Operation';
       }
     }
+    // Apply / Reset / Trigger run .sql files via sqlplus → a Started → Completed/Error narrative per script.
+    if (r?.step_key === 'apply_db' || r?.step_key === 'reset' || r?.step_key === 'trigger') {
+      if (r.action === 'start') { return 'SQL Script Execution — Started'; }
+      if (r.action === 'run_sql') {
+        return r.status === 'in_progress' ? 'SQL Script Execution — Started'
+          : r.status === 'error' ? 'SQL Script Execution — Error' : 'SQL Script Execution — Completed';
+      }
+      if (r.action === 'run_sql_done') { return 'SQL Script Execution — Run summary'; }
+    }
+    // Refresh DB — one result row per database, then a run summary.
+    if (r?.step_key === 'refresh_db') {
+      if (r.action === 'refresh') {
+        return r.status === 'error' ? 'Database Refresh — Error'
+          : r.status === 'in_progress' ? 'Database Refresh — Started' : 'Database Refresh — Completed';
+      }
+      if (r.action === 'refresh_done') { return 'Database Refresh — Run summary'; }
+    }
+    // Server Space Cleanup — one result row per path, then a run summary.
+    if (r?.step_key === 'space_cleanup') {
+      if (r.action === 'start') { return 'Server Space Cleanup — Started'; }
+      if (r.action === 'clean_item') {
+        return r.status === 'error' ? 'Server Space Cleanup — Error' : 'Server Space Cleanup — Completed';
+      }
+      if (r.action === 'clean') { return 'Server Space Cleanup — Run summary'; }
+    }
     return String(p.value ?? '');
   }
   activityCommentsLabel(p: { value?: unknown; data?: RegressionActivityRow }): string {
@@ -265,15 +398,113 @@ export class OlsCibRegressionComponent implements OnInit {
         return `${r!.status === 'complete' ? 'Success' : 'Failed'} · ${d.count || 0} file(s)  ⋯`;
       } catch { /* fall through */ }
     }
+    if (this.isRunSqlDoneRow(r) || this.isRefreshDoneRow(r)) {
+      try { return `${JSON.parse(r!.comments || '{}').summary || 'Run summary'}  ⋯`; } catch { return `${r!.comments || ''}  ⋯`; }
+    }
+    if (this.isRunSqlRow(r)) {
+      const d = this.parseSqlComment(r!.comments);
+      const name = d.script.split(/[\\/]/).pop() || d.script;
+      return `${name} → ${this.dbLabel(d.db)} · ${d.status}  ⋯`;   // short + clickable; full detail in the popup
+    }
+    if (this.isRefreshRow(r)) {
+      const d = this.parseRefreshComment(r!.comments);
+      return `${this.dbLabel(d.db)} · ${r!.status}  ⋯`;   // short + clickable; full message in the popup
+    }
+    if (this.isCleanRow(r)) {
+      try {
+        const d = JSON.parse(r!.comments || '{}');
+        const files = `${d.deleted || 0} file(s)`;
+        const freed = d.bytes_freed ? ` · ${this.fmtBytes(d.bytes_freed)} freed` : '';
+        return `${d.path} · ${files}${freed}  ⋯`;
+      } catch { return `${r!.comments || ''}  ⋯`; }
+    }
+    if (this.isCleanDoneRow(r)) {
+      try { return `${JSON.parse(r!.comments || '{}').summary || 'Cleanup summary'}  ⋯`; } catch { return `${r!.comments || ''}  ⋯`; }
+    }
     return String(p.value ?? '');
   }
+  /** Human-readable byte size ('12.0 MB', '0 B') — matches the backend/mock _fmt_bytes. */
+  fmtBytes(n?: number): string {
+    let b = Math.max(0, Number(n) || 0);
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let u = 0;
+    while (b >= 1024 && u < units.length - 1) { b /= 1024; u++; }
+    return u === 0 ? `${b} B` : `${b.toFixed(1)} ${units[u]}`;
+  }
   onActivityCellClicked(e: { colDef?: { field?: string }; data?: RegressionActivityRow }): void {
-    if (e.colDef?.field !== 'comments' || !this.isCopyRow(e.data)) { return; }
+    if (e.colDef?.field !== 'comments' || !this.isDetailRow(e.data)) { return; }
+    if (this.isRunSqlRow(e.data)) { this.openSqlDetail(e.data!); return; }
+    if (this.isRunSqlDoneRow(e.data)) { this.openSqlSummary(e.data!); return; }
+    if (this.isRefreshRow(e.data)) { this.openRefreshDetail(e.data!); return; }
+    if (this.isRefreshDoneRow(e.data)) { this.openRefreshSummary(e.data!); return; }
+    if (this.isCleanRow(e.data)) { try { this.openCleanupDetail([JSON.parse(e.data!.comments || '{}')]); } catch { /* skip */ } return; }
+    if (this.isCleanDoneRow(e.data)) {
+      try { const d = JSON.parse(e.data!.comments || '{}'); if (Array.isArray(d.items)) { this.openCleanupDetail(d.items); } } catch { /* skip */ }
+      return;
+    }
     try {
       const d = JSON.parse(e.data!.comments || '{}');
       const items: FileCopyResult[] = e.data!.action === 'copy' ? (d.items || []) : (d.source ? [d] : []);
       if (items.length) { this.openCopyDetail(items); }
     } catch { /* not parseable */ }
+  }
+  /** Run-summary popup — the per-script results table for a whole Apply/Reset/Trigger run. */
+  readonly sqlSummary = signal<{ summary: string; items: { script: string; db: string; status: string; log_file: string }[] } | null>(null);
+  openSqlSummary(r: RegressionActivityRow): void {
+    try {
+      const d = JSON.parse(r.comments || '{}');
+      this.sqlSummary.set({ summary: d.summary || 'Run summary', items: Array.isArray(d.items) ? d.items : [] });
+    } catch { this.sqlSummary.set({ summary: r.comments || 'Run summary', items: [] }); }
+  }
+  closeSqlSummary(): void { this.sqlSummary.set(null); }
+  /** Per-database Refresh DB detail popup (which DB, status, the refresh API message). */
+  readonly refreshDetail = signal<{ db: string; status: string; message: string; start?: string; end?: string } | null>(null);
+  openRefreshDetail(r: RegressionActivityRow): void {
+    const d = this.parseRefreshComment(r.comments);
+    this.refreshDetail.set({ db: d.db, status: r.status, message: d.message, start: r.start_time, end: r.end_time });
+  }
+  closeRefreshDetail(): void { this.refreshDetail.set(null); }
+  /** Refresh DB run-summary popup — the per-database results table for a whole refresh action. */
+  readonly refreshRunSummary = signal<{ summary: string; items: { db: string; status: string; message: string }[] } | null>(null);
+  openRefreshSummary(r: RegressionActivityRow): void {
+    try {
+      const d = JSON.parse(r.comments || '{}');
+      this.refreshRunSummary.set({ summary: d.summary || 'Refresh summary', items: Array.isArray(d.items) ? d.items : [] });
+    } catch { this.refreshRunSummary.set({ summary: r.comments || 'Refresh summary', items: [] }); }
+  }
+  closeRefreshSummary(): void { this.refreshRunSummary.set(null); }
+  /** View one script's log from the summary popup (reads the server file → works after refresh). */
+  viewSummaryLog(it: { script: string; db: string; log_file: string }): void {
+    if (!it.log_file) { return; }
+    this.closeSqlSummary();
+    this.openLog({ script: it.script, db: it.db, log_file: it.log_file } as RunSqlResult);
+  }
+  /** Per-script sqlplus detail popup (which file, which DB, status, timing, log path + View/Download). */
+  readonly sqlDetail = signal<{ script: string; db: string; status: string; log_file: string; start?: string; end?: string; seconds?: number } | null>(null);
+  openSqlDetail(r: RegressionActivityRow): void {
+    const d = this.parseSqlComment(r.comments);
+    this.sqlDetail.set({ ...d, start: r.start_time, end: r.end_time, seconds: r.task_completion_time });
+  }
+  closeSqlDetail(): void { this.sqlDetail.set(null); }
+  /** View the spooled log — reads the FILE from the server (works after a refresh), shown in the console dock. */
+  viewSqlLog(): void {
+    const d = this.sqlDetail(); if (!d?.log_file) { void this.notifyRequired('No log file recorded for this script.'); return; }
+    this.closeSqlDetail();
+    this.openLog({ script: d.script, db: d.db, log_file: d.log_file } as RunSqlResult);
+  }
+  /** Download the spooled log directly (reads it from the server by path). */
+  downloadSqlLog(): void {
+    const d = this.sqlDetail(); if (!d?.log_file) { return; }
+    this.svc.logRead(d.log_file).subscribe({
+      next: (x) => {
+        const blob = new Blob([x.content], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = ((d.script.split(/[\\/]/).pop() || 'log') + '__' + d.db).replace(/[^\w.-]+/g, '_') + '.log';
+        a.click(); URL.revokeObjectURL(a.href);
+      },
+      error: (e) => this.fail(e, 'Could not read the log')
+    });
   }
 
   // "Last refreshed <ts> · N sec ago" per monitor tab (reuses the Home last-synced pattern).
@@ -289,8 +520,12 @@ export class OlsCibRegressionComponent implements OnInit {
 
   readonly dateFormatOk = computed(() => /^\d{8}$/.test(this.releaseDate()));
   readonly dateKnown = computed(() => this.availableDates().includes(this.releaseDate()));
-  // Start is enabled ONLY when the chosen date is a real release folder in the pulled branch.
-  readonly canStart = computed(() => this.pulled() && this.dateKnown());
+  // A CHG number is MANDATORY and must start with CHG (e.g. CHG0123456) — it gates branch loading + Start.
+  readonly chgOk = computed(() => /^CHG[A-Z0-9]+$/.test(this.chgNumber().trim().toUpperCase()));
+  // True once something's typed but it's not a valid CHG (drives the inline format error).
+  readonly chgInvalid = computed(() => this.chgNumber().trim().length > 0 && !this.chgOk());
+  // Start is enabled ONLY when the chosen date is a real release folder in the pulled branch AND a CHG is set.
+  readonly canStart = computed(() => this.chgOk() && this.pulled() && this.dateKnown());
   // The date picker works in ISO (YYYY-MM-DD); releaseDate stays canonical YYYYMMDD.
   readonly releaseISO = computed(() => this.toIso(this.releaseDate()));
   readonly availableDatesLabel = computed(() => this.availableDates().map((d) => this.toIso(d)).join(', '));
@@ -331,7 +566,7 @@ export class OlsCibRegressionComponent implements OnInit {
       next: (r) => { if (r.scripts?.length) { this.scripts.set(r.scripts); this.pulled.set(true); } }
     });
     this.svc.releaseDates().subscribe({ next: (r) => this.availableDates.set(r.release_dates ?? []) });
-    if (run?.release_date) { this.loadReleaseScripts(); this.loadManifests(); }
+    if (run?.release_date) { this.loadReleaseScripts(); this.loadManifests(); this.loadCleanupManifests(); }
     this.loadResetScripts(); this.loadTriggerScripts();       // RegressionTesting scripts for the default DB
   }
 
@@ -442,19 +677,23 @@ export class OlsCibRegressionComponent implements OnInit {
   startRun(): void {
     const b = this.selectedBranch();
     const d = this.releaseDate();
+    const chg = this.chgNumber().trim().toUpperCase();
+    if (!this.chgOk()) { void this.notifyRequired('Enter a valid Change (CHG) number — it must start with CHG (e.g. CHG0123456).'); return; }
     if (!b || !this.pulled()) { void this.notifyRequired('Select a release branch and Pull it first.'); return; }
     if (!/^\d{8}$/.test(d)) { void this.notifyRequired('Enter the release date as YYYYMMDD (e.g. 20260910).'); return; }
     this.starting.set(true);
-    this.svc.runStart(b, d).subscribe({
+    this.svc.runStart(b, d, chg).subscribe({
       next: (s) => {
         this.starting.set(false);
-        this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for release ${d}.` });
+        this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for ${chg} · release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
         this.applyScriptsByDb.set({}); this.applyResults.set([]);
         this.manifestLocations.set([]); this.selectedManifestPath.set(''); this.manifest.set([]);
+        this.cleanupLocations.set([]); this.selectedCleanupPath.set(''); this.cleanupManifest.set([]);
         this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
         this.loadResetScripts(); this.loadTriggerScripts();   // RegressionTesting scripts for the default DB
         this.loadManifests();          // discover file-copy manifest(s) for this release
+        this.loadCleanupManifests();   // discover cleanup manifest(s) for this release
         this.loadActivity();
       },
       error: (e) => { this.starting.set(false); this.fail(e, 'Could not start the run'); }
@@ -470,6 +709,7 @@ export class OlsCibRegressionComponent implements OnInit {
     this.state.set({ run: null, steps: {} });
     this.resumed.set(false);
     this.pulled.set(false); this.tree.set([]); this.scripts.set([]); this.repoBranch.set(''); this.repoWorkdir.set('');
+    this.chgNumber.set(''); this.branches.set([]);
     this.selectedBranch.set(''); this.releaseDate.set(''); this.availableDates.set([]);
     this.applyScriptsByDb.set({}); this.applyResults.set([]);
   }
@@ -563,17 +803,26 @@ export class OlsCibRegressionComponent implements OnInit {
 
   async refreshDb(): Promise<void> {
     if (!this.refreshDbs().length) { await this.notifyRequired('Select at least one database to refresh.'); return; }
-    const ok = await this.confirmStepRun(this.step('refresh_db'), `Refresh ${this.refreshDbs().length} database(s) via the refresh API?`, 'Refresh');
+    const names = this.refreshDbs().map((k) => this.dbLabel(k)).join(', ');
+    const n = this.refreshDbs().length;
+    const ok = await this.confirmStepRun(this.step('refresh_db'),
+      `Refresh ${n} database${n === 1 ? '' : 's'} via the refresh API?\n\n${names}`, 'Refresh');
     if (!ok) { return; }
     this.busy.set('refresh_db');
     this.svc.refreshDb(this.runId, this.refreshDbs()).subscribe({
-      next: (r) => { this.busy.set(''); this.toast.set({ kind: 'ok', text: r.result?.message ?? 'Refresh triggered.' }); this.reloadState(); },
+      next: (r) => {
+        this.busy.set('');
+        const failed = r.result?.status === 'error';
+        this.toast.set({ kind: failed ? 'err' : 'ok', text: r.result?.message ?? 'Refresh completed.' });
+        this.reloadState(); this.loadActivity();
+      },
       error: (e) => { this.busy.set(''); this.fail(e, 'Refresh failed'); }
     });
   }
 
   // --- step 2: Apply DB (git) ------------------------------------------------
   loadBranches(): void {
+    if (!this.chgOk()) { void this.notifyRequired('Enter a valid Change (CHG) number first — it must start with CHG (e.g. CHG0123456).'); return; }
     this.svc.gitBranches().subscribe({
       next: (r) => this.branches.set(r.branches ?? []),
       error: (e) => this.fail(e, 'Could not list release branches')
@@ -690,6 +939,34 @@ export class OlsCibRegressionComponent implements OnInit {
   /** Tick/untick one chg file (under a specific DB) to run. */
   toggleApplyScript(db: string, path: string): void { this.applySelected.set(this.toggle(this.applySelected(), this.applyKey(db, path))); }
   applyGroupAllOn(db: string, scripts: string[]): boolean { return scripts.length > 0 && scripts.every((s) => this.applyIsSel(db, s)); }
+  /** 1-based execution order of a ticked chg within its DB group — this is `applySelected` order (the
+   *  operator-arranged run order), NOT the folder listing. 0 if unticked. */
+  applyOrder(db: string, s: string): number {
+    const key = this.applyKey(db, s);
+    let n = 0;
+    for (const k of this.applySelected()) {
+      if (k.startsWith(db + '|')) { n++; if (k === key) { return n; } }
+    }
+    return 0;
+  }
+  /** Move a ticked chg up/down within its DB group (changes the run order). */
+  moveApplyScript(db: string, s: string, dir: -1 | 1): void {
+    const key = this.applyKey(db, s);
+    const sel = [...this.applySelected()];
+    const idxs = sel.map((k, i) => (k.startsWith(db + '|') ? i : -1)).filter((i) => i >= 0);
+    const pos = idxs.findIndex((i) => sel[i] === key);
+    const swap = pos + dir;
+    if (pos < 0 || swap < 0 || swap >= idxs.length) { return; }
+    const a = idxs[pos], b = idxs[swap];
+    [sel[a], sel[b]] = [sel[b], sel[a]];
+    this.applySelected.set(sel);
+  }
+  /** First/last ticked chg in a DB group → disable the up/down button at the ends. */
+  applyIsFirst(db: string, s: string): boolean { return this.applyOrder(db, s) <= 1; }
+  applyIsLast(db: string, s: string): boolean {
+    const keys = this.applySelected().filter((k) => k.startsWith(db + '|'));
+    return this.applyOrder(db, s) >= keys.length;
+  }
   /** Select / clear all chg files in one DB's group. */
   toggleApplyGroup(db: string, scripts: string[]): void {
     const allOn = this.applyGroupAllOn(db, scripts);
@@ -703,10 +980,12 @@ export class OlsCibRegressionComponent implements OnInit {
     if (!d) { await this.notifyRequired('This run has no release date.'); return; }
     if (!this.applyDbs().length) { await this.notifyRequired('Select at least one target database.'); return; }
     const map = this.applyScriptsByDb();
-    const sel = new Set(this.applySelected());
-    // Each DB runs ONLY its own folder's SELECTED chg scripts (batch on cib_batch, reporting on cib_reporting) — never cross-product.
+    const sel = this.applySelected();
+    // Each DB runs ONLY its own folder's SELECTED chg scripts, in the operator-arranged order (applySelected
+    // order), against that DB only — never cross-product.
     const queue = this.applyDbs()
-      .map((db) => ({ db, scripts: (map[db] ?? []).filter((s) => sel.has(this.applyKey(db, s))) }))
+      .map((db) => ({ db, scripts: sel.filter((k) => k.startsWith(db + '|')).map((k) => k.slice(db.length + 1))
+        .filter((s) => (map[db] ?? []).includes(s)) }))
       .filter((q) => q.scripts.length);
     if (!queue.length) {
       await this.notifyRequired('Select at least one chg file to run (tick the files under each database).');
@@ -952,36 +1231,210 @@ export class OlsCibRegressionComponent implements OnInit {
     URL.revokeObjectURL(a.href);
   }
 
+  // --- step 2: Server Space Cleanup -----------------------------------------
+  private cleanupLoadSeq = 0;   // guard for fast manifest switches (drop a stale response)
+  /** Discover cleanup manifest(s) in the pulled branch for this release → labelled dropdown(s) per folder. */
+  loadCleanupManifests(): void {
+    const d = this.state().run?.release_date;
+    if (!d) { this.cleanupLocations.set([]); this.allCleanupItems.set([]); this.cleanupManifestsDiscovered.set(false); return; }
+    this.loadingCleanupManifests.set(true);
+    this.cleanupManifestsDiscovered.set(false);
+    this.svc.cleanupManifests(d).subscribe({
+      next: (r) => {
+        this.loadingCleanupManifests.set(false);
+        const locs = r.locations ?? [];
+        this.cleanupLocations.set(locs);
+        const all = locs.flatMap((l) => l.files);
+        this.loadAllCleanupItems(all);
+        if (all.length === 1 && !this.selectedCleanupPath()) { this.selectCleanupManifest(all[0]); }   // single → auto-open
+      },
+      error: (e) => { this.loadingCleanupManifests.set(false); this.fail(e, 'Could not discover cleanup manifests'); }
+    });
+  }
+  /** Union every discovered manifest's entries (dedup by path) → the step is Complete only when ALL paths are cleaned. */
+  private loadAllCleanupItems(paths: string[]): void {
+    if (!paths.length) { this.allCleanupItems.set([]); this.cleanupManifestsDiscovered.set(true); return; }
+    forkJoin(paths.map((p) => this.svc.cleanupManifest(p))).subscribe({
+      next: (resList) => {
+        const seen = new Set<string>(); const union: CleanupItem[] = [];
+        for (const res of resList) {
+          for (const it of (res.items ?? [])) {
+            if (it.path && !seen.has(it.path)) { seen.add(it.path); union.push(it); }
+          }
+        }
+        this.allCleanupItems.set(union);
+        this.cleanupManifestsDiscovered.set(true);
+      },
+      error: () => { this.cleanupManifestsDiscovered.set(true); }
+    });
+  }
+  /** Load the chosen cleanup manifest; pre-tick the not-yet-cleaned paths; drop the other folder's transient view. */
+  selectCleanupManifest(path: string): void {
+    this.selectedCleanupPath.set(path);
+    this.cleanupResults.set([]); this.cleanupDetail.set(null); this.cleanupPreview.set(null);
+    if (!path) { this.cleanupManifest.set([]); this.cleanupSelected.set([]); return; }
+    const seq = ++this.cleanupLoadSeq;
+    this.svc.cleanupManifest(path).subscribe({
+      next: (r) => {
+        if (seq !== this.cleanupLoadSeq) { return; }
+        const items = r.items ?? [];
+        this.cleanupManifest.set(items);
+        this.cleanupSelected.set(items.map((_, i) => i).filter((i) => this.cleanupItemState(items[i]) !== 'cleaned'));
+      },
+      error: (e) => this.fail(e, 'Could not read the cleanup manifest')
+    });
+  }
+  /** Per-path cleanup state for the manifest row: cleaned ✓ / failed ✗ / pending ⏳. */
+  cleanupItemState(it: CleanupItem): 'cleaned' | 'failed' | 'pending' {
+    const s = this.cleanupState()[it.path];
+    return s?.status === 'complete' ? 'cleaned' : s?.status === 'error' ? 'failed' : 'pending';
+  }
+  toggleCleanupItem(i: number): void {
+    const cur = this.cleanupSelected();
+    this.cleanupSelected.set(cur.includes(i) ? cur.filter((x) => x !== i) : [...cur, i]);
+  }
+  toggleAllCleanup(): void {
+    const all = this.cleanupManifest().map((_, i) => i);
+    this.cleanupSelected.set(this.cleanupSelected().length === all.length ? [] : all);
+  }
+  private cleanupSelectedItems(): CleanupItem[] {
+    return this.cleanupSelected().map((i) => this.cleanupManifest()[i]).filter(Boolean);
+  }
+  /** DRY-RUN preview — show exactly what WOULD be deleted for the ticked paths (deletes nothing). */
+  runCleanupPreview(): void {
+    const items = this.cleanupSelectedItems();
+    if (!items.length) { void this.notifyRequired('Tick at least one path to preview.'); return; }
+    this.cleanupPreviewBusy.set(true);
+    this.svc.cleanupPreview(items).subscribe({
+      next: (r) => {
+        this.cleanupPreviewBusy.set(false);
+        const res = r.results ?? [];
+        this.cleanupPreview.set(res);
+        const files = res.reduce((n, x) => n + (x.deleted || 0), 0);
+        const freed = res.reduce((n, x) => n + (x.bytes_freed || 0), 0);
+        const bad = res.filter((x) => !x.ok).length;
+        this.toast.set(bad
+          ? { kind: 'err', text: `Preview: ${bad} path(s) have issues — review before deleting.` }
+          : { kind: 'ok', text: `Preview: ${files} file(s) · ${this.fmtBytes(freed)} would be freed.` });
+      },
+      error: (e) => { this.cleanupPreviewBusy.set(false); this.fail(e, 'Cleanup preview failed'); }
+    });
+  }
+  /** REAL cleanup — permanently delete the matching files for the ticked paths (confirmed first). */
+  async runCleanup(): Promise<void> {
+    const items = this.cleanupSelectedItems();
+    if (!items.length) { await this.notifyRequired('Tick at least one path to clean up.'); return; }
+    const paths = items.map((it) => `• ${it.path}`).join('\n');
+    const ok = await this.confirmStepRun(this.step('space_cleanup'),
+      `Permanently delete the matching files from ${items.length} path(s)? This cannot be undone.\n\n${paths}\n\nTip: run Preview first to see exactly what will be removed.`,
+      'Delete files');
+    if (!ok) { return; }
+    this.busy.set('space_cleanup');
+    this.cleanupResults.set([]);
+    this.cleanupPreview.set(null);   // a real run supersedes the preview
+    const fullManifest = this.allCleanupItems().length ? this.allCleanupItems() : this.cleanupManifest();
+    this.svc.cleanupRun(this.runId, items, fullManifest).subscribe({
+      next: (r) => {
+        this.busy.set('');
+        const results = r.results ?? [];
+        this.cleanupResults.set(results);
+        this.cleanupDetail.set(results);
+        const fails = results.filter((x) => !x.ok).length;
+        this.toast.set(fails ? { kind: 'err', text: `${fails} path(s) failed — see details.` } : { kind: 'ok', text: 'Cleanup completed.' });
+        this.reloadState(); this.loadActivity();
+      },
+      error: (e) => { this.busy.set(''); this.fail(e, 'Cleanup failed'); }
+    });
+  }
+  openCleanupDetail(items: CleanupResult[]): void { this.cleanupDetail.set(items); }
+  closeCleanupDetail(): void { this.cleanupDetail.set(null); }
+  toggleCleanupInfo(): void { this.cleanupInfoOpen.set(!this.cleanupInfoOpen()); }
+  closeCleanupInfo(): void { this.cleanupInfoOpen.set(false); }
+  /** No paths to clean this release (no/empty manifest) → complete the step cleanly (logged, not a force). */
+  async markNothingToClean(): Promise<void> {
+    const note = this.cleanupLocations().length
+      ? 'Cleanup manifest(s) present but empty — nothing to clean for this release.'
+      : 'No cleanup manifest for this release — nothing to clean.';
+    const ok = await this.confirm.ask({
+      title: 'Nothing to clean', message: `${note} Mark the Server Space Cleanup step complete?`,
+      confirmLabel: 'Mark complete', tone: 'primary'
+    });
+    if (!ok) { return; }
+    this.svc.markStep(this.runId, 'space_cleanup', 'complete', false, note).subscribe({
+      next: () => { this.toast.set({ kind: 'ok', text: 'Server Space Cleanup marked complete — nothing to clean.' }); this.reloadState(); this.loadActivity(); },
+      error: (e) => this.fail(e, 'Could not mark the step complete')
+    });
+  }
+  /** One-line totals for the shown cleanup results (popup header). */
+  cleanupSummaryLine(rows: CleanupResult[]): string {
+    const ok = rows.filter((r) => r.ok).length;
+    const fails = rows.length - ok;
+    const files = rows.reduce((n, r) => n + (r.deleted || 0), 0);
+    const dirs = rows.reduce((n, r) => n + (r.dirs_removed || 0), 0);
+    const freed = rows.reduce((n, r) => n + (r.bytes_freed || 0), 0);
+    const parts = [`${ok}/${rows.length} path(s) OK`, `${files} file(s)`];
+    if (dirs) { parts.push(`${dirs} dir(s)`); }
+    parts.push(`${this.fmtBytes(freed)} freed`);
+    if (fails) { parts.push(`${fails} failed`); }
+    return parts.join('  ·  ');
+  }
+
   // --- steps 4 & 5: Reset / Trigger -----------------------------------------
-  /** Load the RegressionTesting scripts for the selected Reset DB. */
+  // Multi-select + ordered (like Apply): the selection array's order IS the run order (▲▼ to change).
+  private toggleInList(sig: WritableSignal<string[]>, s: string): void {
+    const cur = sig(); sig.set(cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]);
+  }
+  private moveInList(sig: WritableSignal<string[]>, s: string, dir: -1 | 1): void {
+    const arr = [...sig()]; const i = arr.indexOf(s); const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) { return; }
+    [arr[i], arr[j]] = [arr[j], arr[i]]; sig.set(arr);
+  }
+  resetIsSel(s: string): boolean { return this.resetSelected().includes(s); }
+  resetOrder(s: string): number { return this.resetSelected().indexOf(s) + 1; }
+  toggleResetScript(s: string): void { this.toggleInList(this.resetSelected, s); }
+  moveResetScript(s: string, dir: -1 | 1): void { this.moveInList(this.resetSelected, s, dir); }
+  resetIsFirst(s: string): boolean { return this.resetOrder(s) <= 1; }
+  resetIsLast(s: string): boolean { return this.resetOrder(s) >= this.resetSelected().length; }
+  toggleAllReset(): void { this.resetSelected.set(this.resetSelected().length === this.resetScripts().length ? [] : [...this.resetScripts()]); }
+  triggerIsSel(s: string): boolean { return this.triggerSelected().includes(s); }
+  triggerOrder(s: string): number { return this.triggerSelected().indexOf(s) + 1; }
+  toggleTriggerScript(s: string): void { this.toggleInList(this.triggerSelected, s); }
+  moveTriggerScript(s: string, dir: -1 | 1): void { this.moveInList(this.triggerSelected, s, dir); }
+  triggerIsFirst(s: string): boolean { return this.triggerOrder(s) <= 1; }
+  triggerIsLast(s: string): boolean { return this.triggerOrder(s) >= this.triggerSelected().length; }
+  toggleAllTrigger(): void { this.triggerSelected.set(this.triggerSelected().length === this.triggerScripts().length ? [] : [...this.triggerScripts()]); }
+
+  /** Load the RegressionTesting scripts for the selected Reset DB (prune any selection no longer present). */
   loadResetScripts(): void {
     this.svc.batchDBScripts(this.resetDb()).subscribe({
-      next: (r) => { this.resetScripts.set(r.scripts ?? []); if (!this.resetScripts().includes(this.resetScript())) { this.resetScript.set(''); } },
+      next: (r) => { const list = r.scripts ?? []; this.resetScripts.set(list); this.resetSelected.set(this.resetSelected().filter((s) => list.includes(s))); },
       error: (e) => this.fail(e, 'Could not load reset scripts')
     });
   }
   loadTriggerScripts(): void {
     this.svc.batchDBScripts(this.triggerDb()).subscribe({
-      next: (r) => { this.triggerScripts.set(r.scripts ?? []); if (!this.triggerScripts().includes(this.triggerScript())) { this.triggerScript.set(''); } },
+      next: (r) => { const list = r.scripts ?? []; this.triggerScripts.set(list); this.triggerSelected.set(this.triggerSelected().filter((s) => list.includes(s))); },
       error: (e) => this.fail(e, 'Could not load trigger scripts')
     });
   }
-  onResetDb(db: string): void { this.resetDb.set(db); this.loadResetScripts(); }
-  onTriggerDb(db: string): void { this.triggerDb.set(db); this.loadTriggerScripts(); }
+  onResetDb(db: string): void { this.resetDb.set(db); this.resetSelected.set([]); this.loadResetScripts(); }
+  onTriggerDb(db: string): void { this.triggerDb.set(db); this.triggerSelected.set([]); this.loadTriggerScripts(); }
 
   async runReset(): Promise<void> {
-    if (!this.resetScript()) { await this.notifyRequired('Pick a reset script to run.'); return; }
+    const scripts = this.resetSelected();
+    if (!scripts.length) { await this.notifyRequired('Tick at least one reset script to run.'); return; }
     const ok = await this.confirmStepRun(this.step('reset'),
-      `Run ${this.resetScript()} on ${this.dbLabel(this.resetDb())}?`, 'Reset');
+      `Run ${scripts.length} reset script(s) on ${this.dbLabel(this.resetDb())}, in the listed order?`, 'Reset');
     if (!ok) { return; }
-    this.runSqlStep('reset', [this.resetScript()], [this.resetDb()], this.resetResults);
+    this.runSqlStep('reset', scripts, [this.resetDb()], this.resetResults);
   }
   async runTrigger(): Promise<void> {
-    if (!this.triggerScript()) { await this.notifyRequired('Pick a trigger script to run.'); return; }
+    const scripts = this.triggerSelected();
+    if (!scripts.length) { await this.notifyRequired('Tick at least one trigger script to run.'); return; }
     const ok = await this.confirmStepRun(this.step('trigger'),
-      `Run ${this.triggerScript()} on ${this.dbLabel(this.triggerDb())}?`, 'Trigger');
+      `Run ${scripts.length} trigger script(s) on ${this.dbLabel(this.triggerDb())}, in the listed order?`, 'Trigger');
     if (!ok) { return; }
-    this.runSqlStep('trigger', [this.triggerScript()], [this.triggerDb()], this.triggerResults);
+    this.runSqlStep('trigger', scripts, [this.triggerDb()], this.triggerResults);
   }
 
   /** Run a step LIVE: open the console immediately and stream sqlplus output into it as it prints. */

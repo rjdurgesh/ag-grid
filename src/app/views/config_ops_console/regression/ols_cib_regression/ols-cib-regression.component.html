@@ -2,11 +2,11 @@
   <header class="rg__head">
     <div>
       <h2 class="rg__title">Regression</h2>
-      <p class="rg__sub">Run the pre-prod regression cycle for OLS CIB — each step is gated, force-markable, and fully logged.</p>
     </div>
     @if (state().run; as run) {
       <div class="rg__runinfo">
         <span class="rg__run">Run #{{ run.run_id }}
+          @if (run.change_number) { <span class="rg__sep">|</span> <strong class="rg__chg">{{ run.change_number }}</strong> }
           @if (run.git_branch) { <span class="rg__sep">|</span> <code class="rg__branch">{{ run.git_branch }}</code> }
           @if (run.release_date) { <span class="rg__sep">|</span> release <strong class="rg__rel">{{ run.release_date }}</strong> }
           <span class="rg__sep">|</span> started by {{ run.started_by }}
@@ -38,10 +38,23 @@
     }
     <div class="rg__start rg__start--wizard">
       <h3 class="rg__start-title">Start a regression run</h3>
-      <p class="rg__start-sub">Pick the release <strong>branch</strong>, pull it, then choose the <strong>release date</strong> — the <code>YYYYMMDD</code> folder this cycle targets.</p>
+      <p class="rg__start-sub">Enter the <strong>Change (CHG) number</strong> this run is for, then pick the release <strong>branch</strong>, pull it, and choose the <strong>release date</strong> — the <code>YYYYMMDD</code> folder this cycle targets.</p>
+
+      <div class="rg-row rg-row--chg">
+        <label class="rg-field">
+          <span class="rg-field__lbl">Change (CHG) number <span class="rg-req">*</span></span>
+          <input type="text" class="rg-field__in" [class.rg-field__in--bad]="chgInvalid()" placeholder="e.g. CHG0123456" autocomplete="off"
+                 [ngModel]="chgNumber()" (ngModelChange)="chgNumber.set(($event || '').toUpperCase())" />
+        </label>
+      </div>
+      @if (chgInvalid()) {
+        <p class="rg-warn">⚠️ Change number must start with <code>CHG</code> (e.g. <code>CHG0123456</code>).</p>
+      } @else if (!chgOk()) {
+        <p class="rg-hint">A valid CHG number (e.g. <code>CHG0123456</code>) is required before you can load release branches.</p>
+      }
 
       <div class="rg-row">
-        <button type="button" class="rg-btn" (click)="loadBranches()">Load release branches</button>
+        <button type="button" class="rg-btn" [disabled]="!chgOk()" (click)="loadBranches()">Load release branches</button>
         <select [ngModel]="selectedBranch()" (ngModelChange)="selectedBranch.set($event)">
           <option value="">Select release/* branch…</option>
           @for (b of branches(); track b) { <option [value]="b">{{ b }}</option> }
@@ -83,7 +96,8 @@
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 8v4l3 2M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <div class="rg-resume__msg">
           <strong>Regression run #{{ state().run?.run_id }} is already in progress.</strong>
-          <span>Started by {{ state().run?.started_by }}@if (state().run?.start_time) { · {{ state().run?.start_time }}}. Resume to open the workflow and continue where it left off, or start a fresh run.</span>
+          <span class="rg-resume__ln">Started by {{ state().run?.started_by }}@if (state().run?.start_time) { · {{ state().run?.start_time }}}.</span>
+          <span class="rg-resume__ln">Resume to open the workflow and continue where it left off, or start a fresh run.</span>
         </div>
         <div class="rg-resume__actions">
           <button type="button" class="rg-btn rg-btn--primary" (click)="resumeRun()">Resume</button>
@@ -176,7 +190,10 @@
                                 @for (d of g.dbs; track d.key) {
                                   <label class="rg-dd__opt" [class.is-on]="refreshDbs().includes(d.key)">
                                     <input type="checkbox" [checked]="refreshDbs().includes(d.key)" (change)="toggleRefreshDb(d.key)" />
-                                    <span>{{ d.label }}</span>
+                                    <span class="rg-dd__opttext">
+                                      <span class="rg-dd__optlabel">{{ d.label }}</span>
+                                      <span class="rg-dd__optmeta" [class.is-never]="!lastRefreshedByDb()[d.key]">{{ lastRefreshedLabel(d.key) }}</span>
+                                    </span>
                                   </label>
                                 }
                               </div>
@@ -190,6 +207,124 @@
                     </button>
                   } @else {
                     <p class="rg-hint">No databases configured for this environment. <button type="button" class="rg-link rg-link--inline" (click)="loadRefreshDatabases()">Retry</button></p>
+                  }
+                }
+
+                @case ('space_cleanup') {
+                  <p class="rg-hint">
+                    Frees server space by deleting old / disposable files listed in the release repo's
+                    <code>Scripts/{{ state().run?.release_date }}/cleanup_manifest_{{ state().run?.release_date }}.json</code>.
+                    <strong>Deletions are permanent</strong> — tick the paths, run <strong>Preview</strong> to see exactly what will be removed, then Clean.
+                    <button type="button" class="rg-infobtn" [class.is-on]="cleanupInfoOpen()" (click)="toggleCleanupInfo()" aria-label="Cleanup manifest rules" title="Cleanup manifest rules">i</button>
+                  </p>
+
+                  @if (cleanupInfoOpen()) {
+                    <div class="rg-inforules">
+                      <div class="rg-inforules__hd">
+                        <strong>Cleanup manifest rules</strong>
+                        <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCleanupInfo()" aria-label="Close" title="Close">×</button>
+                      </div>
+                      <p class="rg-inforules__intro">Each entry is <code>{{ '{' }} "path": "…", … {{ '}' }}</code> in the JSON. Fields (default in brackets):</p>
+                      <dl class="rg-inforules__dl">
+                        <dt>path</dt><dd>Directory to clean. Matching files inside it are <strong>permanently deleted</strong>.</dd>
+                        <dt>include_subdir <span class="rg-inforules__def">[N]</span></dt><dd><strong>Y</strong> = also clean files in every subdirectory. <strong>N</strong> = only files directly in <code>path</code>; subfolders are left untouched.</dd>
+                        <dt>remove_empty_dir <span class="rg-inforules__def">[N]</span></dt><dd><strong>Y</strong> = after deleting files, also remove any subdirectory that is or becomes empty. The configured <code>path</code> itself is never removed (only applies with <code>include_subdir = Y</code>).</dd>
+                        <dt>include_pattern <span class="rg-inforules__def">[*]</span></dt><dd><code>*</code> = all files. Or a comma list of extensions / globs to delete, e.g. <code>.log</code>, <code>.csv,.dat,.txt</code>, <code>*.tmp</code>.</dd>
+                        <dt>exclude_pattern <span class="rg-inforules__def">[empty]</span></dt><dd>Files matching these are <strong>kept</strong>, even if included. Same syntax — e.g. include <code>*</code> and exclude <code>.keep</code> to delete everything except <code>.keep</code> files.</dd>
+                        <dt>older_than_days <span class="rg-inforules__def">[0]</span></dt><dd><code>0</code> = no age filter. Otherwise only files last modified more than N days ago are deleted.</dd>
+                      </dl>
+                      <p class="rg-inforules__warn">⚠ Deletions cannot be undone. Always Preview first, and keep the manifest reviewed in the release branch.</p>
+                    </div>
+                  }
+
+                  <div class="rg-row">
+                    <button type="button" class="rg-btn" [disabled]="loadingCleanupManifests()" (click)="loadCleanupManifests()">{{ loadingCleanupManifests() ? 'Discovering…' : 'Discover manifests' }}</button>
+                  </div>
+                  @if (cleanupLocations().length) {
+                    <div class="rg-manifests">
+                      @for (loc of cleanupLocations(); track loc.root) {
+                        <div class="rg-manifest-loc">
+                          <div class="rg-manifest-loc__hdr">{{ loc.label }}</div>
+                          <select [ngModel]="selectedCleanupPath()" (ngModelChange)="selectCleanupManifest($event)">
+                            <option value="">Select manifest…</option>
+                            @for (f of loc.files; track f) { <option [value]="f">{{ f.split('/').pop() }}</option> }
+                          </select>
+                        </div>
+                      }
+                    </div>
+                  }
+                  @if (nothingToClean() && stepStatus('space_cleanup') !== 'complete' && stepStatus('space_cleanup') !== 'forced') {
+                    <div class="rg-nocopy">
+                      <span class="rg-nocopy__msg">{{ cleanupLocations().length ? 'The cleanup manifest(s) for this release are present but empty — there is nothing to clean.' : 'No cleanup manifest exists for this release — there is nothing to clean.' }}</span>
+                      <button type="button" class="rg-btn rg-btn--primary" (click)="markNothingToClean()">Mark cleanup complete</button>
+                    </div>
+                  }
+
+                  @if (cleanupManifest().length) {
+                    <div class="rg-table-wrap">
+                      <table class="rg-table rg-table--cleanup">
+                        <thead><tr>
+                          <th class="rg-th-chk"><input type="checkbox" [checked]="cleanupSelected().length === cleanupManifest().length" (change)="toggleAllCleanup()" /></th>
+                          <th>Path</th><th class="rg-th-c">Subdirs</th><th class="rg-th-c">Rm empty</th><th>Include</th><th>Exclude</th><th class="rg-th-c">Older than</th><th class="rg-th-st">State</th>
+                        </tr></thead>
+                        <tbody>
+                          @for (it of cleanupManifest(); track $index; let i = $index) {
+                            <tr>
+                              <td class="rg-th-chk"><input type="checkbox" [checked]="cleanupSelected().includes(i)" (change)="toggleCleanupItem(i)" /></td>
+                              <td class="rg-cell-path">{{ it.path }}</td>
+                              <td class="rg-th-c">{{ (it.include_subdir || 'N') === 'Y' ? 'Yes' : 'No' }}</td>
+                              <td class="rg-th-c">{{ (it.remove_empty_dir || 'N') === 'Y' ? 'Yes' : 'No' }}</td>
+                              <td><code class="rg-pat">{{ it.include_pattern || '*' }}</code></td>
+                              <td><code class="rg-pat">{{ it.exclude_pattern || '—' }}</code></td>
+                              <td class="rg-th-c">{{ it.older_than_days ? it.older_than_days + 'd' : '—' }}</td>
+                              <td class="rg-th-st">
+                                <span class="rg-fstate" [class]="'rg-fstate--' + cleanupItemState(it)">
+                                  {{ cleanupItemState(it) === 'cleaned' ? '✓ Cleaned' : cleanupItemState(it) === 'failed' ? '✗ Failed' : '⏳ Pending' }}
+                                </span>
+                              </td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="rg-copyfoot">
+                      <button type="button" class="rg-btn" [disabled]="cleanupPreviewBusy() || busy() === 'space_cleanup' || !cleanupSelected().length" (click)="runCleanupPreview()"
+                        title="Dry-run — list exactly which files/dirs would be removed and how much space would be freed (deletes nothing)">
+                        {{ cleanupPreviewBusy() ? 'Previewing…' : 'Preview' }}
+                      </button>
+                      <button type="button" class="rg-btn rg-btn--danger" [disabled]="busy() === 'space_cleanup' || !cleanupSelected().length" (click)="runCleanup()">
+                        {{ busy() === 'space_cleanup' ? 'Cleaning…' : 'Clean selected (' + cleanupSelected().length + ')' }}
+                      </button>
+                      <span class="rg-copyfoot__pending">{{ cleanupSelected().length }} of {{ cleanupManifest().length }} path(s) selected</span>
+                      @if (cleanupResults().length) {
+                        <button type="button" class="rg-link rg-link--inline" (click)="openCleanupDetail(cleanupResults())">View last result</button>
+                      }
+                    </div>
+                    @if (cleanupPreview(); as pv) {
+                      <div class="rg-preflight" [class.rg-preflight--bad]="cleanupPreviewIssues()">
+                        <div class="rg-preflight__hd">
+                          @if (cleanupPreviewIssues()) { <span class="rg-preflight__warn">⚠ Preview — {{ cleanupPreviewIssues() }} of {{ pv.length }} path(s) have issues. Nothing has been deleted.</span> }
+                          @else { <span class="rg-preflight__ok">✓ Preview — nothing has been deleted yet. Review, then click Clean.</span> }
+                          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="cleanupPreview.set(null)" aria-label="Dismiss" title="Dismiss">×</button>
+                        </div>
+                        <div class="rg-ctable__wrap">
+                          <table class="rg-ctable">
+                            <thead><tr><th class="rg-ctable__path">Path</th><th class="rg-ctable__n">Would delete</th><th class="rg-ctable__n">Space</th><th class="rg-ctable__n">Empty dirs</th><th>Status</th></tr></thead>
+                            <tbody>
+                              @for (r of pv; track $index) {
+                                <tr [class.is-err]="!r.ok">
+                                  <td class="rg-ctable__path">{{ r.path }}</td>
+                                  <td class="rg-ctable__n">{{ r.deleted || 0 }} file(s)</td>
+                                  <td class="rg-ctable__n">{{ fmtBytes(r.bytes_freed) }}</td>
+                                  <td class="rg-ctable__n">{{ r.dirs_removed || 0 }}</td>
+                                  <td>@if (r.ok) { <button type="button" class="rg-link rg-link--inline" (click)="openCleanupDetail([r])">view {{ (r.sample || []).length }} file(s)</button> } @else { <span class="rg-ctable__err">{{ r.error }}</span> }</td>
+                                </tr>
+                              }
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    }
                   }
                 }
 
@@ -252,12 +387,23 @@
                             </div>
                             <div class="rg-relgrp__files">
                               @for (s of applyScriptsByDb()[d]; track s) {
-                                <label class="rg-fileopt" [class.is-on]="applyIsSel(d, s)">
-                                  <input type="checkbox" [checked]="applyIsSel(d, s)" (change)="toggleApplyScript(d, s)" />
-                                  <span>{{ s }}</span>
-                                </label>
+                                <div class="rg-filerow">
+                                  <label class="rg-fileopt" [class.is-on]="applyIsSel(d, s)">
+                                    <input type="checkbox" [checked]="applyIsSel(d, s)" (change)="toggleApplyScript(d, s)" />
+                                    @if (applyOrder(d, s)) { <span class="rg-order" title="Execution order">{{ applyOrder(d, s) }}</span> }
+                                    <span>{{ s }}</span>
+                                  </label>
+                                  @if (applyOrder(d, s)) {
+                                    <span class="rg-ordctl">
+                                      <button type="button" [disabled]="applyIsFirst(d, s)" (click)="moveApplyScript(d, s, -1)" title="Run earlier" aria-label="Move up">▲</button>
+                                      <button type="button" [disabled]="applyIsLast(d, s)" (click)="moveApplyScript(d, s, 1)" title="Run later" aria-label="Move down">▼</button>
+                                    </span>
+                                  }
+                                  <button type="button" class="rg-link rg-link--inline rg-fileview" (click)="viewFile(s)" title="View this script's SQL">view</button>
+                                </div>
                               }
                             </div>
+                            <p class="rg-hint rg-hint--order">Ticked files run in the numbered order — use ▲▼ to change the order.</p>
                           </div>
                         }
                       }
@@ -379,33 +525,77 @@
                 }
 
                 @case ('reset') {
-                  <p class="rg-hint">Pick a database, then a reset script from its <code>RegressionTesting</code> folder.</p>
+                  <p class="rg-hint">Pick a database, then tick the reset script(s) from its <code>RegressionTesting</code> folder — they run in the numbered order.</p>
                   <div class="rg-row">
                     <select [ngModel]="resetDb()" (ngModelChange)="onResetDb($event)">
                       @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
                     </select>
-                    <select [ngModel]="resetScript()" (ngModelChange)="resetScript.set($event)">
-                      <option value="">Select reset script…</option>
-                      @for (s of resetScripts(); track s) { <option [value]="s">{{ s }}</option> }
-                    </select>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetScript()" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset' }}</button>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetSelected().length" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset (' + resetSelected().length + ')' }}</button>
                   </div>
-                  @if (!resetScripts().length) { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(resetDb()) }}.</p> }
+                  @if (resetScripts().length) {
+                    <div class="rg-relgrp">
+                      <div class="rg-relgrp__db">
+                        <span>{{ dbLabel(resetDb()) }} <span class="rg-relgrp__n">{{ resetScripts().length }} script(s)</span></span>
+                        <button type="button" class="rg-link rg-link--inline" (click)="toggleAllReset()">{{ resetSelected().length === resetScripts().length ? 'Clear' : 'All' }}</button>
+                      </div>
+                      <div class="rg-relgrp__files">
+                        @for (s of resetScripts(); track s) {
+                          <div class="rg-filerow">
+                            <label class="rg-fileopt" [class.is-on]="resetIsSel(s)">
+                              <input type="checkbox" [checked]="resetIsSel(s)" (change)="toggleResetScript(s)" />
+                              @if (resetOrder(s)) { <span class="rg-order" title="Execution order">{{ resetOrder(s) }}</span> }
+                              <span>{{ s }}</span>
+                            </label>
+                            @if (resetOrder(s)) {
+                              <span class="rg-ordctl">
+                                <button type="button" [disabled]="resetIsFirst(s)" (click)="moveResetScript(s, -1)" title="Run earlier" aria-label="Move up">▲</button>
+                                <button type="button" [disabled]="resetIsLast(s)" (click)="moveResetScript(s, 1)" title="Run later" aria-label="Move down">▼</button>
+                              </span>
+                            }
+                            <button type="button" class="rg-link rg-link--inline rg-fileview" (click)="viewFile(s)" title="View this script's SQL">view</button>
+                          </div>
+                        }
+                      </div>
+                      <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
+                    </div>
+                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(resetDb()) }}.</p> }
                   @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
                 }
                 @case ('trigger') {
-                  <p class="rg-hint">Pick a database, then the "trigger all" or a per-business-line script from its <code>RegressionTesting</code> folder.</p>
+                  <p class="rg-hint">Pick a database, then tick the "trigger all" and/or per-business-line script(s) from its <code>RegressionTesting</code> folder — they run in the numbered order.</p>
                   <div class="rg-row">
                     <select [ngModel]="triggerDb()" (ngModelChange)="onTriggerDb($event)">
                       @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
                     </select>
-                    <select [ngModel]="triggerScript()" (ngModelChange)="triggerScript.set($event)">
-                      <option value="">Select trigger script…</option>
-                      @for (s of triggerScripts(); track s) { <option [value]="s">{{ s }}</option> }
-                    </select>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerScript()" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger' }}</button>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerSelected().length" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger (' + triggerSelected().length + ')' }}</button>
                   </div>
-                  @if (!triggerScripts().length) { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(triggerDb()) }}.</p> }
+                  @if (triggerScripts().length) {
+                    <div class="rg-relgrp">
+                      <div class="rg-relgrp__db">
+                        <span>{{ dbLabel(triggerDb()) }} <span class="rg-relgrp__n">{{ triggerScripts().length }} script(s)</span></span>
+                        <button type="button" class="rg-link rg-link--inline" (click)="toggleAllTrigger()">{{ triggerSelected().length === triggerScripts().length ? 'Clear' : 'All' }}</button>
+                      </div>
+                      <div class="rg-relgrp__files">
+                        @for (s of triggerScripts(); track s) {
+                          <div class="rg-filerow">
+                            <label class="rg-fileopt" [class.is-on]="triggerIsSel(s)">
+                              <input type="checkbox" [checked]="triggerIsSel(s)" (change)="toggleTriggerScript(s)" />
+                              @if (triggerOrder(s)) { <span class="rg-order" title="Execution order">{{ triggerOrder(s) }}</span> }
+                              <span>{{ s }}</span>
+                            </label>
+                            @if (triggerOrder(s)) {
+                              <span class="rg-ordctl">
+                                <button type="button" [disabled]="triggerIsFirst(s)" (click)="moveTriggerScript(s, -1)" title="Run earlier" aria-label="Move up">▲</button>
+                                <button type="button" [disabled]="triggerIsLast(s)" (click)="moveTriggerScript(s, 1)" title="Run later" aria-label="Move down">▼</button>
+                              </span>
+                            }
+                            <button type="button" class="rg-link rg-link--inline rg-fileview" (click)="viewFile(s)" title="View this script's SQL">view</button>
+                          </div>
+                        }
+                      </div>
+                      <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
+                    </div>
+                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(triggerDb()) }}.</p> }
                   @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
                 }
               }
@@ -546,6 +736,160 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (sqlDetail(); as d) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="SQL script run details">
+      <div class="rg-modal__backdrop" (click)="closeSqlDetail()"></div>
+      <div class="rg-modal__panel rg-modal__panel--sql">
+        <div class="rg-modal__head">
+          <strong>SQL script run — {{ d.status === 'in_progress' ? 'started' : d.status === 'error' ? 'errored' : 'completed' }}</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeSqlDetail()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <dl class="rg-kv">
+            <dt>Script</dt><dd class="rg-kv__mono">{{ d.script }}</dd>
+            <dt>Database</dt><dd>{{ dbLabel(d.db) }} <span class="rg-kv__muted">({{ d.db }})</span></dd>
+            <dt>Status</dt><dd><span class="rg-cstatus" [class.is-ok]="d.status === 'complete'">{{ d.status === 'in_progress' ? 'In Progress' : d.status }}</span></dd>
+            <dt>Duration</dt><dd>{{ d.seconds == null ? '—' : fmtDuration(d.seconds) }}</dd>
+            <dt>Started</dt><dd>{{ d.start || '—' }}</dd>
+            <dt>Finished</dt><dd>{{ d.status === 'in_progress' ? '—' : (d.end || '—') }}</dd>
+            @if (d.log_file) { <dt>Log file</dt><dd class="rg-kv__mono">{{ d.log_file }}</dd> }
+          </dl>
+          @if (d.log_file) {
+            <div class="rg-modal__foot">
+              <button type="button" class="rg-btn rg-btn--primary" (click)="viewSqlLog()">View log</button>
+              <button type="button" class="rg-btn" (click)="downloadSqlLog()">Download log</button>
+            </div>
+            <p class="rg-hint">The log is read from the server file, so it stays viewable after a screen refresh.</p>
+          } @else {
+            <p class="rg-hint">The script has just started — the log becomes available once it finishes.</p>
+          }
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (sqlSummary(); as sm) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="SQL run summary">
+      <div class="rg-modal__backdrop" (click)="closeSqlSummary()"></div>
+      <div class="rg-modal__panel">
+        <div class="rg-modal__head">
+          <strong>SQL run — summary</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeSqlSummary()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <p class="rg-ctable__summary">{{ sm.summary }}</p>
+          @if (sm.items.length) {
+            <div class="rg-ctable__wrap">
+              <table class="rg-ctable">
+                <thead><tr><th class="rg-ctable__n" title="The order in which the scripts were executed">Run order</th><th class="rg-ctable__path">Script</th><th>Database</th><th>Status</th><th>Log</th></tr></thead>
+                <tbody>
+                  @for (it of sm.items; track $index) {
+                    <tr [class.is-err]="it.status !== 'complete'">
+                      <td class="rg-ctable__n">{{ $index + 1 }}</td>
+                      <td class="rg-ctable__path">{{ it.script }}</td>
+                      <td>{{ dbLabel(it.db) }}</td>
+                      <td><span class="rg-cstatus" [class.is-ok]="it.status === 'complete'">{{ it.status }}</span></td>
+                      <td>@if (it.log_file) { <button type="button" class="rg-link rg-link--inline" (click)="viewSummaryLog(it)">View log</button> } @else { — }</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (refreshDetail(); as rd) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="Database refresh details">
+      <div class="rg-modal__backdrop" (click)="closeRefreshDetail()"></div>
+      <div class="rg-modal__panel rg-modal__panel--sql">
+        <div class="rg-modal__head">
+          <strong>Database refresh — {{ rd.status === 'error' ? 'errored' : rd.status === 'in_progress' ? 'started' : 'completed' }}</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeRefreshDetail()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <dl class="rg-kv">
+            <dt>Database</dt><dd>{{ dbLabel(rd.db) }} <span class="rg-kv__muted">({{ rd.db }})</span></dd>
+            <dt>Status</dt><dd><span class="rg-cstatus" [class.is-ok]="rd.status === 'complete'">{{ rd.status === 'in_progress' ? 'In Progress' : rd.status }}</span></dd>
+            <dt>Started</dt><dd>{{ rd.start || '—' }}</dd>
+            <dt>Finished</dt><dd>{{ rd.status === 'in_progress' ? '—' : (rd.end || '—') }}</dd>
+            <dt>Message</dt><dd>{{ rd.message || '—' }}</dd>
+          </dl>
+          <p class="rg-hint">The database refresh is triggered via the refresh API; there is no spooled log file for this step.</p>
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (refreshRunSummary(); as rs) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="Database refresh summary">
+      <div class="rg-modal__backdrop" (click)="closeRefreshSummary()"></div>
+      <div class="rg-modal__panel">
+        <div class="rg-modal__head">
+          <strong>Database refresh — summary</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeRefreshSummary()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <p class="rg-ctable__summary">{{ rs.summary }}</p>
+          @if (rs.items.length) {
+            <div class="rg-ctable__wrap">
+              <table class="rg-ctable">
+                <thead><tr><th class="rg-ctable__n" title="The order in which the databases were refreshed">Run order</th><th>Database</th><th>Status</th><th class="rg-ctable__path">Message</th></tr></thead>
+                <tbody>
+                  @for (it of rs.items; track $index) {
+                    <tr [class.is-err]="it.status !== 'complete'">
+                      <td class="rg-ctable__n">{{ $index + 1 }}</td>
+                      <td>{{ dbLabel(it.db) }}</td>
+                      <td><span class="rg-cstatus" [class.is-ok]="it.status === 'complete'">{{ it.status }}</span></td>
+                      <td class="rg-ctable__path">{{ it.message || '—' }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (cleanupDetail(); as cd) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="Server space cleanup details">
+      <div class="rg-modal__backdrop" (click)="closeCleanupDetail()"></div>
+      <div class="rg-modal__panel rg-modal__panel--sql">
+        <div class="rg-modal__head">
+          <strong>Server Space Cleanup — {{ cd[0]?.dry_run ? 'preview' : 'result' }}</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCleanupDetail()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <p class="rg-ctable__summary">{{ cleanupSummaryLine(cd) }}</p>
+          @if (cd[0]?.dry_run) { <p class="rg-hint">This is a preview — nothing has been deleted.</p> }
+          @for (r of cd; track $index) {
+            <div class="rg-cleandetail" [class.is-err]="!r.ok">
+              <div class="rg-cleandetail__hd">
+                <code>{{ r.path }}</code>
+                <span class="rg-cstatus" [class.is-ok]="r.ok">{{ r.ok ? (r.dry_run ? 'would clean' : 'cleaned') : 'error' }}</span>
+              </div>
+              <div class="rg-cleandetail__stats">
+                {{ r.deleted || 0 }} file(s) · {{ fmtBytes(r.bytes_freed) }} · {{ r.dirs_removed || 0 }} empty dir(s)
+                <span class="rg-kv__muted"> · subdirs {{ (r.include_subdir || 'N') === 'Y' ? 'Y' : 'N' }} · include {{ r.include_pattern || '*' }}@if (r.exclude_pattern) { · exclude {{ r.exclude_pattern }}}@if (r.older_than_days) { · older than {{ r.older_than_days }}d}</span>
+              </div>
+              @if (r.error) { <p class="rg-ctable__err">{{ r.error }}</p> }
+              @if ((r.sample || []).length) {
+                <div class="rg-cleandetail__files">
+                  <div class="rg-cleandetail__fileshd">{{ r.dry_run ? 'Files that would be deleted' : 'Files deleted' }} ({{ (r.sample || []).length }}@if ((r.deleted || 0) > (r.sample || []).length) { of {{ r.deleted }}}):</div>
+                  <ul>@for (f of r.sample; track $index) { <li>{{ f }}</li> }</ul>
+                </div>
+              }
+            </div>
+          }
         </div>
       </div>
     </div>
