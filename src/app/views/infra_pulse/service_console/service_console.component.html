@@ -237,16 +237,26 @@
                                 <span class="isc-row__hb-rel">{{ timeAgo(svc.lastHeartbeat) }}</span>
                               </span>
                               <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
-                                <button type="button" class="isc-btn isc-btn--start"
-                                  [disabled]="isUp(svc) || isPending(svc)" (click)="start(panel.app, server, svc)">
-                                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
-                                  Start
-                                </button>
-                                <button type="button" class="isc-btn isc-btn--stop"
-                                  [disabled]="!isUp(svc) || isPending(svc)" (click)="stop(panel.app, server, svc)">
-                                  <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
-                                  Stop
-                                </button>
+                                @if (svc.self) {
+                                  <button type="button" class="isc-btn isc-btn--restart"
+                                    [disabled]="isPending(svc) || server.unreachable" (click)="restart(panel.app, server, svc)"
+                                    title="This is the OLS Dashboard service — Start/Stop are disabled. Restart only (the page will briefly go offline).">
+                                    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    Restart
+                                  </button>
+                                  <span class="isc-selfnote" title="This service hosts the dashboard — managing it from here would take this screen offline.">dashboard service</span>
+                                } @else {
+                                  <button type="button" class="isc-btn isc-btn--start"
+                                    [disabled]="isUp(svc) || isPending(svc)" (click)="start(panel.app, server, svc)">
+                                    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
+                                    Start
+                                  </button>
+                                  <button type="button" class="isc-btn isc-btn--stop"
+                                    [disabled]="!isUp(svc) || isPending(svc)" (click)="stop(panel.app, server, svc)">
+                                    <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
+                                    Stop
+                                  </button>
+                                }
                               </span>
                             </div>
                           }
@@ -308,16 +318,26 @@
                       <span class="isc-row__hb-rel">{{ timeAgo(item.service.lastHeartbeat) }}</span>
                     </span>
                     <span class="isc-row__actions" role="cell" *olsCanWrite="'service_console'">
-                      <button type="button" class="isc-btn isc-btn--start"
-                        [disabled]="isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="start(item.app, item.server, item.service)">
-                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
-                        Start
-                      </button>
-                      <button type="button" class="isc-btn isc-btn--stop"
-                        [disabled]="!isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="stop(item.app, item.server, item.service)">
-                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
-                        Stop
-                      </button>
+                      @if (item.service.self) {
+                        <button type="button" class="isc-btn isc-btn--restart"
+                          [disabled]="isPending(item.service) || item.server.unreachable" (click)="restart(item.app, item.server, item.service)"
+                          title="This is the OLS Dashboard service — Start/Stop are disabled. Restart only (the page will briefly go offline).">
+                          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M20 11a8 8 0 1 0-.5 4M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                          Restart
+                        </button>
+                        <span class="isc-selfnote" title="This service hosts the dashboard — managing it from here would take this screen offline.">dashboard service</span>
+                      } @else {
+                        <button type="button" class="isc-btn isc-btn--start"
+                          [disabled]="isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="start(item.app, item.server, item.service)">
+                          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 5l12 7-12 7V5Z" fill="currentColor" /></svg>
+                          Start
+                        </button>
+                        <button type="button" class="isc-btn isc-btn--stop"
+                          [disabled]="!isUp(item.service) || isPending(item.service) || item.server.unreachable" (click)="stop(item.app, item.server, item.service)">
+                          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" /></svg>
+                          Stop
+                        </button>
+                      }
                     </span>
                   </div>
                 }

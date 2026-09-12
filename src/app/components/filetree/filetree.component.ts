@@ -16,6 +16,8 @@ export interface TreeNode {
   loading?: boolean;
   /** Lazy mode: real child count when the folder was capped (0 = not capped). */
   truncatedTotal?: number;
+  /** Lazy mode: set when the folder failed to load (e.g. path not available) → shown inline, retryable. */
+  error?: string;
 }
 
 /**
@@ -146,10 +148,18 @@ export class FiletreeComponent {
       this.fileSelect.emit(node.path);
       return;
     }
-    // Lazy folder not yet loaded → request its children, show it expanding.
+    // An errored folder is shown expanded (with the reason) — clicking it just COLLAPSES it (hides the
+    // error); the error state is kept so re-expanding it retries. Use the Retry button to re-fetch in place.
+    if (this.isLazy() && node.error && node.expanded) {
+      node.expanded = false;
+      this.commit();
+      return;
+    }
+    // Lazy folder not yet loaded (or a collapsed errored folder being re-opened) → request its children.
     if (this.isLazy() && !node.loaded && !node.loading) {
       node.loading = true;
       node.expanded = true;
+      node.error = undefined;   // clear a prior error while we retry
       this.commit();
       this.folderLoad.emit({ path: node.path });
       return;
@@ -193,6 +203,7 @@ export class FiletreeComponent {
     node.loaded = true;
     node.loading = false;
     node.expanded = true;
+    node.error = undefined;   // a successful (re)load clears any prior error
     node.truncatedTotal = truncatedTotal;
     this.commit();
   }
@@ -215,13 +226,27 @@ export class FiletreeComponent {
     return out;
   }
 
-  /** Mark a lazy folder's load as failed so it can be retried. */
-  markFolderError(path: string): void {
+  /** Explicit retry (the error row's "Retry" button) — re-fetch this folder's children in place, regardless
+   *  of expand state, so it doesn't get confused with the row-click "collapse the error" gesture. */
+  retryFolder(node: TreeNode): void {
+    node.loading = true;
+    node.expanded = true;
+    node.loaded = false;
+    node.error = undefined;
+    this.commit();
+    this.folderLoad.emit({ path: node.path });
+  }
+
+  /** Mark a lazy folder's load as failed so it shows an inline reason and can be retried. Kept EXPANDED
+   *  (loaded=false) so the error note renders beneath it — clicking the row collapses it (hides the error),
+   *  re-expanding retries, and the Retry button re-fetches in place. One bad folder never affects siblings. */
+  markFolderError(path: string, reason?: string): void {
     const node = findNode(this.treeState(), stripTrailingSep(path));
     if (node) {
       node.loading = false;
       node.loaded = false;
-      node.expanded = false;
+      node.expanded = true;
+      node.error = reason || 'Path not available';
       this.commit();
     }
   }

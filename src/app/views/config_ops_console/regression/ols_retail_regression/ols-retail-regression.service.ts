@@ -76,13 +76,13 @@ export class OlsRetailRegressionService {
   releaseDates(): Observable<{ release_dates: string[] }> {
     return this.api.post(API.regression.releaseDates, { caller: this.caller(), scope: this.scope });
   }
-  /** chg*.sql for a release, PER DB ({ db: paths[] }) — each DB runs only its own folder's scripts. */
-  releaseScripts(release_date: string, dbs: string[]): Observable<{ scripts: Record<string, string[]> }> {
-    return this.api.post(API.regression.releaseScripts, { caller: this.caller(), scope: this.scope, release_date, dbs });
+  /** chg*.sql for a release from the scope's SINGLE Scripts folder — a flat list; the operator picks per file which DB(s) to run it on. */
+  releaseScripts(release_date: string): Observable<{ scripts: string[] }> {
+    return this.api.post(API.regression.releaseScripts, { caller: this.caller(), scope: this.scope, release_date });
   }
-  /** .sql from the DB's RegressionTesting folder — the Reset / Trigger script pickers. */
-  batchDBScripts(db: string): Observable<{ scripts: string[] }> {
-    return this.api.post(API.regression.batchDBScripts, { caller: this.caller(), scope: this.scope, db });
+  /** .sql from the scope's single RegressionTesting folder — the Reset / Trigger script pickers. */
+  batchScripts(): Observable<{ scripts: string[] }> {
+    return this.api.post(API.regression.batchDBScripts, { caller: this.caller(), scope: this.scope });
   }
   gitTree(): Observable<{ workdir: string; branch: string; files: string[] }> {
     return this.api.post(API.regression.gitTree, { caller: this.caller(), scope: this.scope });
@@ -90,9 +90,10 @@ export class OlsRetailRegressionService {
   gitFile(path: string): Observable<{ path: string; content: string }> {
     return this.api.post(API.regression.gitFile, { caller: this.caller(), scope: this.scope, path });
   }
-  runSql(run_id: number, step_key: string, scripts: string[], dbs: string[], business_line?: string):
+  runSql(run_id: number, step_key: string, scripts: string[], dbs: string[], business_line?: string,
+         executions: { script: string; db: string }[] = []):
     Observable<{ results: RunSqlResult[]; step_status: string }> {
-    return this.api.post(API.regression.runSql, { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, business_line });
+    return this.api.post(API.regression.runSql, { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, executions, business_line });
   }
 
   /**
@@ -101,12 +102,13 @@ export class OlsRetailRegressionService {
    * result and animates it into the console so the experience is the same locally.
    */
   runSqlStream(run_id: number, step_key: string, scripts: string[], dbs: string[],
-               handlers: RunSqlStreamHandlers, business_line?: string): void {
+               handlers: RunSqlStreamHandlers, business_line?: string,
+               executions: { script: string; db: string }[] = []): void {
     if (this.isMocked(API.regression.runSqlStream)) {
-      this.simulateStream(run_id, step_key, scripts, dbs, handlers);
+      this.simulateStream(run_id, step_key, scripts, dbs, handlers, executions);
     } else {
       void this.fetchStream(API.regression.runSqlStream,
-        { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, business_line }, handlers);
+        { caller: this.caller(), scope: this.scope, run_id, step_key, scripts, dbs, executions, business_line }, handlers);
     }
   }
 
@@ -158,8 +160,9 @@ export class OlsRetailRegressionService {
     else if (event === 'step') { h.step(parsed.step_status ?? 'complete'); }
   }
 
-  private simulateStream(run_id: number, step_key: string, scripts: string[], dbs: string[], h: RunSqlStreamHandlers): void {
-    this.runSql(run_id, step_key, scripts, dbs).subscribe({
+  private simulateStream(run_id: number, step_key: string, scripts: string[], dbs: string[], h: RunSqlStreamHandlers,
+                         executions: { script: string; db: string }[] = []): void {
+    this.runSql(run_id, step_key, scripts, dbs, undefined, executions).subscribe({
       next: (resp) => {
         const results = resp.results ?? [];
         let i = 0;

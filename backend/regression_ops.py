@@ -119,8 +119,8 @@ def list_branch_scripts(cfg: dict) -> list[str]:
 
 
 # --- release-date scripts ---------------------------------------------------
-# A release lives in a YYYYMMDD folder under a scope's Scripts root(s); older releases accumulate.
-# CIB splits Batch/Reporting (→ cib_batch / cib_reporting DBs); retail/group use one root (key "*").
+# A release lives in a YYYYMMDD folder under a scope's SINGLE Scripts root (key "*"); older releases
+# accumulate. All scopes use one Scripts folder — the operator picks which DB(s) each chg file runs on.
 
 def _script_roots(cfg: dict) -> dict:
     """DB-key → repo-relative Scripts folder. Falls back to a single catch-all ('*' = sql_subdir) when
@@ -151,13 +151,14 @@ def list_release_dates(cfg: dict) -> list[str]:
     return sorted(dates, reverse=True)
 
 
-def list_release_scripts(cfg: dict, release_date: str, db: str) -> list[str]:
-    """chg*.sql (case-insensitive) under <script_root(db)>/<release_date>/ for one DB — repo-relative
-    posix paths. Empty list when that DB has no folder for the release."""
+def list_release_scripts(cfg: dict, release_date: str) -> list[str]:
+    """chg*.sql (case-insensitive) under the scope's single Scripts folder <script_root>/<release_date>/ —
+    repo-relative posix paths. The operator picks, per file, which DB(s) to run it on (no auto per-DB
+    mapping). Empty list when there is no folder for the release."""
     if not (release_date.isdigit() and len(release_date) == 8):
         raise RuntimeError("release_date must be an 8-digit YYYYMMDD folder name.")
     wd = Path(cfg.get("git_workdir", ""))
-    root = _root_for_db(cfg, db)
+    root = _root_for_db(cfg, "*")
     base = (wd / root / release_date) if root else (wd / release_date)
     if not base.is_dir():
         return []
@@ -166,17 +167,18 @@ def list_release_scripts(cfg: dict, release_date: str, db: str) -> list[str]:
     return sorted(out)
 
 
-def _batch_db_root_for_db(cfg: dict, db: str) -> str:
-    """The RegressionTesting root for one DB: its own entry, else the '*' catch-all, else ''."""
+def _batch_script_root(cfg: dict) -> str:
+    """The scope's single RegressionTesting root: the '*' catch-all, else the first configured entry, else ''."""
     roots = cfg.get("batch_db_script_roots") or {}
-    return roots.get(db) or roots.get("*") or ""
+    return roots.get("*") or (next(iter(roots.values()), "") if roots else "")
 
 
-def list_batch_db_scripts(cfg: dict, db: str) -> list[str]:
-    """.sql files under this DB's RegressionTesting folder (repo-relative posix paths) — the Reset /
-    Trigger batches steps pick from here. Recursive, so sub-folders are fine; empty when the folder is absent."""
+def list_batch_scripts(cfg: dict) -> list[str]:
+    """.sql files under the scope's single RegressionTesting folder (repo-relative posix paths) — the Reset /
+    Trigger steps pick from here (checkbox + sequence), then choose which DB(s) to run them on. Recursive, so
+    sub-folders are fine; empty when the folder is absent."""
     wd = Path(cfg.get("git_workdir", ""))
-    root = _batch_db_root_for_db(cfg, db)
+    root = _batch_script_root(cfg)
     base = (wd / root) if root else wd
     if not base.is_dir():
         return []
@@ -605,8 +607,6 @@ def read_manifest_file(cfg: dict, rel: str) -> list[dict]:
 # ---- server space cleanup (Step 2) -----------------------------------------
 # Deletes old/disposable files from configured paths to free server space. DESTRUCTIVE + irreversible, so
 # every run is preceded by a confirmed dialog and can be dry-run previewed first (see the API layer).
-_CLEANUP_SAMPLE = 200          # cap the sample file list returned per path (preview / result popup)
-_CLEANUP_ERRORS = 50           # cap the per-path error list
 
 
 def _cleanup_tokens(spec: str) -> list[str]:
@@ -695,7 +695,7 @@ def _clean_one(entry: dict, dry_run: bool) -> dict:
     """Delete (or, when ``dry_run``, only count) the files matching one manifest entry, honouring
     include_subdir, the include/exclude patterns, the age filter, and remove_empty_dir. remove_empty_dir
     NEVER removes the configured root path itself, and with include_subdir=N no subdirectory is touched at
-    all. Returns a per-path result: deleted count, bytes freed, dirs removed, a capped sample of affected
+    all. Returns a per-path result: deleted count, bytes freed, dirs removed, the FULL list of affected
     files, and any per-file errors — never raises for a single bad path."""
     e = _norm_cleanup_entry(entry)
     path = e["path"]
@@ -734,13 +734,11 @@ def _clean_one(entry: dict, dry_run: bool) -> dict:
             try:
                 os.remove(fp)
             except OSError as exc:
-                if len(res["errors"]) < _CLEANUP_ERRORS:
-                    res["errors"].append(f"{fp}: {exc}")
+                res["errors"].append(f"{fp}: {exc}")
                 return
         res["deleted"] += 1
         res["bytes_freed"] += sz
-        if len(res["sample"]) < _CLEANUP_SAMPLE:
-            res["sample"].append(fp)
+        res["sample"].append(fp)
 
     root_abs = os.path.abspath(path)
     if recurse:

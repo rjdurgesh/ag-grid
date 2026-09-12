@@ -18,12 +18,10 @@
       "git_workdir": "D:/ols/regression/cib/work",
       "log_dir": "D:/ols/regression/cib/logs",
       "script_roots": {
-        "cib_batch": "CIB/Batch/Scripts",
-        "cib_reporting": "CIB/Reporting/Scripts"
+        "*": "sql/Scripts"
       },
       "batch_db_script_roots": {
-        "cib_batch": "CIB/Batch/RegressionTesting",
-        "cib_reporting": "CIB/Reporting/RegressionTesting"
+        "*": "sql/RegressionTesting"
       },
       "refresh_databases": { "BATCH": ["OLS_CIB_BATCH_DEV", "OLS_CIB_BATCH_DEV_02"], "REPORTING": ["OLS_CIB_REPORTING_DEV"] },
       "refresh_url": ""

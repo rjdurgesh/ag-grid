@@ -53,7 +53,7 @@ Command Center are already `false` (live) against the FastAPI backend in `backen
    Angular*. `true` → answered in-browser by `mock-data.ts`, backend never called.
 2. **Backend per-screen `*_USE_DUMMY`** decides, *once a request reaches FastAPI*, whether that
    screen returns canned data or runs its real functions: `ACCESS_USE_DUMMY` (access/config/regression),
-   `INFRA_HEALTH_USE_DUMMY` in `.env`; OCC's is `use_dummy` in `config/occ.json`. The backend has **no**
+   `INFRA_HEALTH_USE_DUMMY`, `LOG_ANALYTICS_USE_DUMMY` in `.env`; OCC's is `use_dummy` in `config/occ.json`. The backend has **no**
    `apiMocks` — these flags are its equivalent, screen by screen.
 
    So three dev stages per screen: `apiMocks:true` (pure UI, no backend) → `apiMocks:false` +
@@ -369,22 +369,29 @@ step spells out every rule so operators edit the JSON carefully. Because deletes
 (dry-run, `/api/regression/cleanup/preview`) that lists exactly which files/dirs would be removed + the space that would be freed
 **without deleting anything**, and the real **Clean** (`/api/regression/cleanup/run`) is confirmed with the path list first. It logs
 **one `clean_item` row per path** (files deleted · space freed · empty dirs · timing — clickable to a per-path detail popup with the
-deleted-file list) + a **`clean` run-summary** row (`Run: N path(s) cleaned · F file(s) · D dir(s) · S freed. Manifest: n/N cleaned.`);
-step status is **Complete** only when every manifest path is cleaned, else **Partial**, and **Error** if any path fails (a failed path
-logs its reason and turns the toast into an error). Engine: `regression_ops.cleanup_items(items, dry_run)`; dev mock simulates a
+**full deleted-file list**, no cap) + a **`clean` run-summary** row (`Run: N path(s) cleaned · F file(s) · D dir(s) · S freed. Manifest:
+n/N cleaned.`); step status is **Complete** only when every manifest path is cleaned, else **Partial**, and **Error** if any path fails
+(a failed path logs its reason and turns the toast into an error). **These audit rows are the record — stored in the Oracle
+`ols_regression_log` table (JSON in the `comments` column), NOT a file** (dev mock: the per-scope in-memory store + localStorage);
+the detail popup rebuilds from them and has a **Download (CSV)** button (one row per deleted file with its path's rules + totals,
+`cleanup-<result|preview>-<ts>.csv`) for the release ticket. The popup itself keeps its header fixed and scrolls its body, so a long
+file list never pushes the close button off-screen. Engine: `regression_ops.cleanup_items(items, dry_run)`; dev mock simulates a
 failure for any path containing "fail"/"missing")
-→ Apply DB changes (chg files load **per DB** from that DB's `<script_roots[db]>/<release_date>/chg*.sql` —
-cib_batch←`CIB/Batch/Scripts`, cib_reporting←`CIB/Reporting/Scripts`, retail←`RET/Scripts`, group←`Scripts` — shown as
-**per-file checkboxes** (all ticked by default; untick to run a subset now and the rest later, per-group All/Clear).
-Selection is keyed **per DB+file**, so the same chg filename appearing under two DBs is ticked independently, and
-adding/removing a target DB **preserves your existing ticks** (a newly-appearing file defaults on; one you unticked
-stays unticked) — plus a **refresh** icon re-scans the branch for new chg files mid-cycle. Each selected file runs on
-its own DB in listed order, streaming to the console) → File copy (the **manifest lives in
+→ Apply DB changes (all `chg*.sql` load from the scope's **single Scripts folder** — `<script_roots["*"]>/<release_date>/`,
+i.e. cib←`sql/Scripts`, retail←`RET/Scripts`, group←`Scripts` — as a **flat list**, `/api/regression/release/scripts`
+returning `{scripts:[…]}`. There is **no auto per-DB mapping**: the operator decides, **per file**, which of the **5
+databases** (Group / CIB Batch / CIB Reporting / Retail Batch / Retail Reporting) it runs on — each file row has a
+**DB-checkbox strip** (+ per-file All/Clear) — and the **run sequence** across the participating files (▲▼; a file joins
+the sequence when it gets its first DB, leaves when its last DB is cleared). So `chg1.sql` can target Group+CIB Batch,
+`chg2.sql` only CIB Reporting, `chg3.sql` nothing — fully operator-controlled. Running builds an **ordered
+`executions:[{script,db}]`** list (each file × its ticked DBs, in sequence) sent to `run-sql-stream`; a **refresh** icon
+re-scans the folder (preserving your per-file picks). Each execution streams to the console; the run-summary popup lists
+every script→DB execution in **Run order**) → File copy (the **manifest lives in
 the release repo** — `filecopy_manifest_<release_date>.json` under each Scripts folder for the release, discovered via
-`/api/regression/file-copy/manifests` and shown as a **labelled dropdown per folder** that has one, batch left /
-reporting right. Discovery is **config-driven**: it scans every `script_roots` folder for the scope (so a scope with a
-single Scripts folder shows one dropdown, and adding batch/reporting-style roots to that scope's `script_roots` makes
-both auto-appear — a folder with no manifest for the release simply isn't listed). If **no folder has a manifest, or the
+`/api/regression/file-copy/manifests` and shown as a **labelled dropdown per folder** that has one. Discovery is
+**config-driven**: it scans every `script_roots` folder for the scope — now that each scope uses a **single Scripts
+folder** it shows **one dropdown** (adding more roots to a scope's `script_roots` would auto-add a dropdown each; a
+folder with no manifest for the release simply isn't listed). If **no folder has a manifest, or the
 manifest(s) are empty** (a kept-but-empty file), the step shows **"nothing to copy"** with a one-click **Mark file copy
 complete** (logged, not a force). `*` = recurse. Switching dropdowns reloads that folder's items and clears the other folder's transient
 view (last result / pre-flight); a load-guard drops a stale response from a fast switch. Tick which files to copy — the
@@ -409,8 +416,11 @@ button re-copies only the items not yet copied so a Partial/Error step can be dr
 already succeeded. A **Check readiness** button runs a read-only **pre-flight** (`file-copy/preflight`) over the ticked
 items — per item it verifies the **source exists**, the **destination is reachable + writable**, and there's **enough
 free space** — and shows a green/amber panel (Source · Dest · Space ✓/✗ + the issue) so a missing source, dead share,
-read-only path or full disk is caught **before** the copy runs, not mid-way) → Reset → Trigger (pick a **DB** — the scope's batch+reporting only, e.g. cib_batch/cib_reporting — then
-a `.sql` from that DB's **RegressionTesting** folder = `batch_db_script_roots[db]`, listed via `/api/regression/batch-db-scripts`).
+read-only path or full disk is caught **before** the copy runs, not mid-way) → Reset → Trigger (tick `.sql` from the
+scope's **single RegressionTesting folder** = `batch_db_script_roots["*"]` (cib←`sql/RegressionTesting`), listed via
+`/api/regression/batch-db-scripts`, with a **checkbox + sequence** picker like Apply, **AND** tick the target
+**database(s)** — the scope's batch+reporting only (cib_batch / cib_reporting) — as a shared multi-select: **every ticked
+script runs on every ticked database, in the chosen sequence** (built as a scripts×DBs `executions` list for run-sql).
 **Every workflow step is collapsible** (chevron in its header). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
 `run/complete` audit row, run status → Completed on screen, then Start new run). Apply DB also has
 a collapsible **release-branch browser** (`git/tree` + `git/file`) to walk the pulled branch tree and read any
@@ -586,6 +596,30 @@ collapsing. It also **resets the right preview to default**. It never re-hits `/
 (only page open/refresh does that). Selecting a different server re-seeds that server's roots.
 The tree panel scrolls **horizontally** so long/deep names are read in full (no ellipsis) —
 important for same-name files that differ only by a date suffix.
+
+**A configured path that isn't available never hangs or breaks the tree.** Roots are seeded from the base paths
+**without** touching disk (no stat on load), and each folder loads **only when expanded**, isolated per node. If a
+folder can't be read — a base path like `d:/apps/Logs/ols` that doesn't exist (`/dir` → 404), isn't a directory
+(400), or a dead/slow share — the tree shows an inline **"⚠ Path not available · Retry"** under **that folder only**;
+its siblings and every other configured path keep working, and a client-side **20 s timeout** on `/dir` turns a
+blocking path into that same retryable error instead of an endless spinner. Clicking **Retry** (or re-expanding)
+re-requests just that folder. An errored folder is still **collapsible** — clicking its row while it's expanded
+folds the error away (the filetree's `onRowClick` collapses a lazy node that has `.error` set), so a bad path never
+gets stuck open.
+
+**A file deleted on the server after the tree loaded** (you expanded a folder, someone removed a file, then you
+click it): `/file` (and `/file-properties`) return **404**, which the UI catches and shows in the preview pane as
+**"This file no longer exists on the server. Use the refresh button to update the tree."** — no crash, no stale
+content. Hit the left **refresh** button to re-list the expanded folders and drop the vanished entry.
+
+**Two ways to demo dummy data (both include a deliberately-missing path so you can validate "Path not available"):**
+- **Frontend mock** (local dev default now — `apiMocks['/api/log/'] = true`): the `/api/log/*` handlers in
+  `mock-api.interceptor` + `mock-data.MOCK_LOG_SERVERS` serve a canned tree in `ng serve` with **no backend**; the
+  missing root is `D:/apps/Logs/ols_missing` and `/dir` 404s any base/path containing "missing". This is the quickest
+  way to see the screen + the error handling.
+- **Backend dummy** (`apiMocks['/api/log/'] = false` + `LOG_ANALYTICS_USE_DUMMY=1`, `.env` default `1`): the backend
+  serves a canned catalogue + in-memory tree (`backend/log_analytics/dummy.py`) with the same missing path. Set
+  `LOG_ANALYTICS_USE_DUMMY=0` for the real DB proc + live disk reads. (Deployed builds always hit the real backend.)
 
 | Method & path | Request | Response |
 |---|---|---|
@@ -1370,10 +1404,22 @@ that are `IS_ACTIVE = 'Y'` **and** have services. Then per server:
 1. **Bulk status** → `POST /api/service_console/service-manage` `{host_name, agent_listen_port,
    host_platform, services:[names]}` → status per service. Resilient like Infra Health: a
    dead/slow agent (or timeout) → that server renders red **"Unreachable"**, others are fine.
-2. **Start/Stop** (behind a confirm dialog) → same endpoint with `{service, action}` → the
-   agent runs it and returns `{success, message}`; the UI shows a toast, then **re-fetches**
-   the server's status so the badges settle. `service` is the script path, or the service
-   **name** when there's no script (e.g. Windows services the agent manages by name).
+2. **Start/Stop/Restart** (behind a confirm dialog) → same endpoint with `{service, action}`
+   (`action ∈ start | stop | restart | status`) → the agent runs it and returns
+   `{success, message}`; the UI shows a toast, then **re-fetches** the server's status so the
+   badges settle. `service` is the script path, or the service **name** when there's no script
+   (e.g. Windows services the agent manages by name).
+
+**Self-service (the dashboard's OWN service) — Restart-only.** The OLS Dashboard tool self-hosts
+this UI, so stopping its own service would kill the very screen you're on. Mark that service in
+the server's `MONITORING_CONFIG` with `"self_service": "<service name>"` (matched by name against
+the row's `services`). The UI then, for that one service: **hides Start/Stop**, renders a single
+**Restart** button plus a small **"dashboard service"** pill, and its confirm dialog carries a
+distinct warning (*"this screen will briefly go OFFLINE while it restarts — wait, then RELOAD;
+if it fails, restart it directly on the server"*). `stop()` also hard-guards `service.self` as a
+belt-and-braces early return. Frontend: `self_service` → `MonitoredService.self` in
+`infra-data.service.ts`; `restart()` + `runAction('restart')` in `service_console.component.ts`.
+All other services on the same server keep normal Start/Stop.
 
 The backend forms the dynamic `…/service-manage` agent URL server-side; the browser only sees
 `/api/service_console/service-manage`. Single endpoint, two payloads (branches on `action`);
@@ -1409,6 +1455,8 @@ comments           string           (shown in the health card's ⓘ info dialog)
 - `disk`: disk/mount names to monitor (`c`,`d` on Windows → `C:\`,`D:\`; `apps`,`data`,`/`,`var` on Linux → `/apps`, `/data`, `/`, `/var`).
 - `infra`: subset of `["ram","cpu"]`.
 - `services`: array of single-key objects `{ "<service name>": "<action script or null>" }`.
+- `self_service` (optional): the name of the service that IS this dashboard tool — it becomes
+  **Restart-only** in the Service Console (see the self-service note above). Match by name.
 - Parsed by `parseMonitorConfig()` in `infra-models.ts` (fails safe to empty on bad JSON).
 
 ### `AgentCollectResponse` (what each agent returns)

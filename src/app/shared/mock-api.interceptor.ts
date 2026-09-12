@@ -256,6 +256,11 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
     }
+    // Dev marker: a base/path containing "missing" simulates a configured path that doesn't exist on disk
+    // → 404, so the tree renders one "Path not available" node while the other roots keep working.
+    if (/missing/i.test(p) || /missing/i.test(body.base ?? '')) {
+      return respondError(404, 'Path not found');
+    }
     return respond({ entries: mockDirEntries(body.base ?? '', p) });
   }
   if (path === '/api/log/file' && req.method === 'POST') {
@@ -263,6 +268,11 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     const p = body.path ?? '';
     if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
+    }
+    // Dev marker: a file named "…deleted…" simulates one removed AFTER the tree listed it → 404, so you can
+    // validate the preview's "This file no longer exists" handling (the real backend 404s via resolve_jailed).
+    if (/deleted/i.test(p)) {
+      return respondError(404, 'Path not found');
     }
     // Mock files are small → always the 'full' shape. The real backend switches to
     // 'window' for large files (see log_analytics_api.get_file).
@@ -274,6 +284,9 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     const p = body.path ?? '';
     if (!isLogPathAllowed(body.base ?? null, p)) {
       return respondError(400, 'Path is outside the server base log directory');
+    }
+    if (/deleted/i.test(p)) {
+      return respondError(404, 'Path not found');
     }
     return respond(mockFileProperties(p));
   }
@@ -999,7 +1012,7 @@ function mockCleanupResults(items: Record<string, unknown>[], dryRun: boolean): 
     if (e['include_subdir'] === 'Y') { n *= 4; }
     const dirs = (e['include_subdir'] === 'Y' && e['remove_empty_dir'] === 'Y') ? 2 : 0;
     const ext = all ? '' : String(e['include_pattern']).split(',')[0];
-    const sample = Array.from({ length: Math.min(n, 8) }, (_, i) => `${e['path']}\\file_${String(i + 1).padStart(2, '0')}${ext}`);
+    const sample = Array.from({ length: n }, (_, i) => `${e['path']}\\file_${String(i + 1).padStart(2, '0')}${ext}`);
     return { ...e, ok: true, deleted: n, bytes_freed: n * 1_048_576, dirs_removed: dirs, sample, errors: [], dry_run: dryRun };
   });
 }
@@ -1117,29 +1130,21 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       return { status: 'success', release_dates: REG_DATES,
                scripts: ['reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
     case '/api/regression/batch-db-scripts': {
-      // .sql from the DB's RegressionTesting folder (Reset / Trigger pickers), scope + db specific.
-      const db = String(body['db'] || '');
-      const batch = db.includes('batch');
+      // .sql from the scope's SINGLE RegressionTesting folder (Reset / Trigger pickers). The operator picks
+      // the DB(s) separately, so this is DB-independent now.
       const base = curScope === 'retail' ? 'RET/RegressionTesting'
                  : curScope === 'group' ? 'RegressionTesting'
-                 : (batch ? 'CIB/Batch/RegressionTesting' : 'CIB/Reporting/RegressionTesting');
+                 : 'sql/RegressionTesting';
       return { status: 'success', scripts: [`${base}/reset_batches.sql`, `${base}/trigger_all.sql`, `${base}/trigger_CB.sql`, `${base}/trigger_ALMT.sql`] };
     }
     case '/api/regression/release/dates':
       return { status: 'success', release_dates: REG_DATES };
     case '/api/regression/release/scripts': {
+      // Flat chg*.sql list from the scope's SINGLE Scripts folder for this release. The operator picks,
+      // per file, which DB(s) to run it on.
       const rd = String(body['release_date'] ?? '');
-      const wanted = (body['dbs'] as string[]) ?? [];
-      const canned: Record<string, string[]> = {
-        cib_batch: [`CIB/Batch/Scripts/${rd}/chg_batch_001.sql`, `CIB/Batch/Scripts/${rd}/chg_batch_002.sql`],
-        cib_reporting: [`CIB/Reporting/Scripts/${rd}/chg_rpt_001.sql`],
-        retail_batch: [`RET/Scripts/${rd}/chg_ret_001.sql`],
-        retail_reporting: [`RET/Scripts/${rd}/chg_ret_001.sql`],
-        group: [`Scripts/${rd}/chg_grp_001.sql`],
-      };
-      const out: Record<string, string[]> = {};
-      for (const d of wanted) { out[d] = canned[d] ?? []; }
-      return { status: 'success', scripts: out };
+      const base = curScope === 'retail' ? 'RET/Scripts' : curScope === 'group' ? 'Scripts' : 'sql/Scripts';
+      return { status: 'success', scripts: [`${base}/${rd}/chg_001.sql`, `${base}/${rd}/chg_002.sql`, `${base}/${rd}/chg_003.sql`] };
     }
     case '/api/regression/git/scripts':
       return { status: 'success', scripts: ['apply/CHG_20260828.sql', 'apply/CHG_20260828_MISC1.sql', 'apply/CHG_20260828_MISC2.sql', 'reset/reset_batches.sql', 'trigger/trigger_all.sql', 'trigger/trigger_CB.sql'] };
@@ -1161,19 +1166,24 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
     case '/api/regression/run-sql': {
       const stepKey = String(body['step_key'] ?? 'apply_db');
       const dbList = (body['dbs'] as string[]) ?? [];
-      const results = scripts.flatMap((s) => dbList.map((d) => {
+      const execs = (body['executions'] as { script: string; db: string }[]) ?? [];
+      // Apply sends an explicit ORDERED (script, db) list (per-file DB targets); Reset/Trigger send scripts × dbs.
+      const combos = execs.length ? execs.map((e) => ({ script: e.script, db: e.db }))
+                                  : scripts.flatMap((s) => dbList.map((d) => ({ script: s, db: d })));
+      const results = combos.map(({ script: s, db: d }) => {
         const status = s.toUpperCase().includes('ERR') ? 'error' : 'complete';
         return { script: s, db: d, status, log_file: `D:/ols/regression/logs/dummy/${s.split('/').pop()}__${d}.log`,
                  tail: `Connected to ${d}.\n@${s}\n${status === 'error' ? 'ORA-00942: table or view does not exist' : 'PL/SQL procedure successfully completed.'}\nSpool off.` };
-      }));
+      });
       const stepStatus = results.some((r) => r.status !== 'complete') ? 'error' : 'complete';
-      // Per script: a "Started" row (in_progress, no log yet) then a "Completed/Error" row (with the log path).
+      // Per execution: a "Started" row (in_progress, no log yet) then a "Completed/Error" row (with the log path).
       for (const r of results) {
         regLog(stepKey, 'run_sql', 'in_progress', { comments: `${r.script}  →  ${r.db}  ·  in_progress` });
         regLog(stepKey, 'run_sql', r.status, { comments: `${r.script}  →  ${r.db}  ·  ${r.status}  ·  log: ${r.log_file}` });
       }
       const okc = results.filter((r) => r.status === 'complete').length;
-      const summary = `Ran ${results.length} script(s) on ${dbList.join(', ')} — ${okc} completed` + (results.length - okc ? `, ${results.length - okc} failed` : '') + '.';
+      const ddbs = [...new Set(results.map((r) => r.db))];
+      const summary = `Ran ${results.length} execution(s) on ${ddbs.join(', ')} — ${okc} completed` + (results.length - okc ? `, ${results.length - okc} failed` : '') + '.';
       regLog(stepKey, 'run_sql_done', stepStatus, { comments: JSON.stringify({ summary, items: results.map((r) => ({ script: r.script, db: r.db, status: r.status, log_file: r.log_file })) }) });
       regSetStep(stepKey, stepStatus, undefined, summary, false);   // update badge only — no duplicate activity row
       void dbs;
@@ -1186,7 +1196,7 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       const rd = String(body['release_date'] || '20260921');
       const roots = curScope === 'retail' ? ['RET/Scripts']
                   : curScope === 'group' ? ['Scripts']
-                  : ['CIB/Batch/Scripts', 'CIB/Reporting/Scripts'];
+                  : ['sql/Scripts'];
       return { status: 'success', locations: roots.map((root) => ({ root, label: root, files: [`${root}/${rd}/filecopy_manifest_${rd}.json`] })) };
     }
     case '/api/regression/file-copy/manifest': {
@@ -1282,7 +1292,7 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       const rd = String(body['release_date'] || '20260921');
       const roots = curScope === 'retail' ? ['RET/Scripts']
                   : curScope === 'group' ? ['Scripts']
-                  : ['CIB/Batch/Scripts'];
+                  : ['sql/Scripts'];
       return { status: 'success', locations: roots.map((root) => ({ root, label: root, files: [`${root}/${rd}/cleanup_manifest_${rd}.json`] })) };
     }
     case '/api/regression/cleanup/manifest': {

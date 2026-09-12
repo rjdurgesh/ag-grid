@@ -16,6 +16,8 @@ export interface MonitoredService {
   name: string;
   /** Action script the agent runs to start/stop it (null → agent manages by name, e.g. Windows). */
   script: string | null;
+  /** True for THIS tool's own service (it hosts the dashboard) — Start/Stop are blocked; only Restart is allowed. */
+  self?: boolean;
 }
 
 /** Free space of a share drive (computed directly, no agent). */
@@ -46,7 +48,7 @@ export interface ServerHealthRow {
   HOST_ADDRESS: string;
   AGENT_LISTEN_PORT: number;
   APP_NAME: InfraApp;
-  MONITORING_CONFIG: { infra?: string[]; disk?: string[]; services?: Record<string, string | null>[] } | null;
+  MONITORING_CONFIG: { infra?: string[]; disk?: string[]; services?: Record<string, string | null>[]; self_service?: string } | null;
   IS_ACTIVE: 'Y' | 'N';
   COMMENTS: string;
   LAST_UPDATED_BY?: string;
@@ -275,6 +277,8 @@ export interface ServiceInfo {
   state: ServiceState;
   /** ISO timestamp of the last heartbeat check. */
   lastHeartbeat: string;
+  /** True for the OLS Dashboard's OWN service — Start/Stop are disabled, only Restart is offered. */
+  self?: boolean;
 }
 
 /** The services configured on one server. */

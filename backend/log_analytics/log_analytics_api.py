@@ -31,14 +31,21 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
+from env_loader import env_bool  # importing also loads backend/.env into os.environ
 from utils import fs_browser
 from utils.logging import get_logger
 
+from . import dummy
 from .dependencies import fetch_log_path, group_db_config, resolve_jailed
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/log", tags=["log_analytics"])
+
+# Per-screen backend DUMMY switch (the backend analog of the UI's apiMocks) — set in .env.
+# 1/true = canned catalogue + in-memory folder tree (no real log servers needed); 0/false = real DB proc +
+# real disk reads. Lets you demo/develop Log Analytics without touching the other screens (and vice-versa).
+LOG_ANALYTICS_USE_DUMMY = env_bool("LOG_ANALYTICS_USE_DUMMY", True)
 
 
 class BrowseRequest(BaseModel):
@@ -78,7 +85,9 @@ def get_servers(
     `group_db_config` dependency (which reads it off the request's app.state).
     `app_env` (DEV/STG/PROD, sent by the UI) scopes the query by environment.
     """
-    logger.info("servers (app_env=%s)", app_env)
+    logger.info("servers (app_env=%s, dummy=%s)", app_env, LOG_ANALYTICS_USE_DUMMY)
+    if LOG_ANALYTICS_USE_DUMMY:
+        return dummy.servers_dummy(app_env)
     return fetch_log_path(group_cfg, app_env)
 
 
@@ -86,6 +95,8 @@ def get_servers(
 def get_dir(req: BrowseRequest) -> dict:
     """Immediate children of one folder (one level — the load-on-expand call).
     Capped at `settings.dir_limit` per folder → `{ entries, total, truncated }`."""
+    if LOG_ANALYTICS_USE_DUMMY:
+        return dummy.dir_dummy(req.base, req.path)   # 404 for the intentionally-missing base path
     resolved = resolve_jailed(req.base, req.path)
     if not resolved.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
@@ -101,6 +112,8 @@ def get_file(req: FileReadRequest) -> dict:
     (``mode:'full'``). Large file → a line-aligned byte WINDOW the UI pages
     through (``mode:'window'``), so a multi-GB file never loads whole anywhere.
     """
+    if LOG_ANALYTICS_USE_DUMMY:
+        return dummy.file_dummy(req.path)
     resolved = resolve_jailed(req.base, req.path)
     if not resolved.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
@@ -131,6 +144,12 @@ def get_file(req: FileReadRequest) -> dict:
 def download_file(base: str = Query(...), path: str = Query(...)) -> StreamingResponse:
     """Stream a file to the browser as a download — chunked, so even a multi-GB
     file is never buffered in server memory. Jailed to ``base`` like every read."""
+    if LOG_ANALYTICS_USE_DUMMY:
+        body = dummy.file_dummy(path)["content"].encode("utf-8")
+        name = (path or "download.log").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "download.log"
+        return StreamingResponse(iter([body]), media_type="application/octet-stream",
+                                 headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                          "Content-Length": str(len(body))})
     resolved = resolve_jailed(base, path)
     if not resolved.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
@@ -157,6 +176,8 @@ def download_file(base: str = Query(...), path: str = Query(...)) -> StreamingRe
 @router.post("/file-properties")
 def get_file_properties(req: BrowseRequest) -> dict:
     """Metadata for the Properties dialog."""
+    if LOG_ANALYTICS_USE_DUMMY:
+        return dummy.file_properties_dummy(req.path)
     resolved = resolve_jailed(req.base, req.path)
     logger.info("stat server=%s %s", req.server_id, resolved)
     return fs_browser.file_properties(resolved)

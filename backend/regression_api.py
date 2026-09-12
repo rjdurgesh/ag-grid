@@ -84,19 +84,19 @@ class StartBody(Caller):
 
 
 class ReleaseScriptsBody(Caller):
-    release_date: str
-    dbs: list[str] = []            # chg*.sql are resolved PER DB (each DB has its own Scripts folder)
+    release_date: str              # chg*.sql from the scope's SINGLE Scripts folder for this release (flat list)
 
 
 class BatchDBScriptsBody(Caller):
-    db: str = ""                   # RegressionTesting scripts for this DB (Reset / Trigger batches steps)
+    db: str = ""                   # (legacy, ignored) — RegressionTesting scripts now come from ONE folder per scope
 
 
 class RunSqlBody(Caller):
     run_id: int
     step_key: str                  # apply_db | reset | trigger
-    scripts: list[str]
-    dbs: list[str]
+    scripts: list[str] = []        # Reset/Trigger: run each of these on each of `dbs` (cross-product)
+    dbs: list[str] = []
+    executions: list[dict] = []    # Apply: an explicit ORDERED [{script, db}] list (per-file DB targets); wins over scripts×dbs
     business_line: str | None = None
 
 
@@ -373,23 +373,16 @@ def release_dates(request: Request, body: Caller) -> dict:
 
 @router.post("/release/scripts")
 def release_scripts(request: Request, body: ReleaseScriptsBody) -> dict:
-    """chg*.sql for a release, resolved PER DB (cib_batch ← CIB/Batch/Scripts/<date>, cib_reporting ←
-    CIB/Reporting/Scripts/<date>, retail/group ← their single root). Returns {db: [scripts]} so the
-    Apply step runs each DB's scripts against that DB only (never cross-product)."""
+    """chg*.sql for a release from the scope's SINGLE Scripts folder (<root>/<date>/) — a flat list. The
+    operator then picks, per file, which DB(s) to run it on. `{scripts: string[]}`."""
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
-        canned = {
-            "cib_batch": [f"CIB/Batch/Scripts/{body.release_date}/chg_batch_001.sql",
-                          f"CIB/Batch/Scripts/{body.release_date}/chg_batch_002.sql"],
-            "cib_reporting": [f"CIB/Reporting/Scripts/{body.release_date}/chg_rpt_001.sql"],
-            "retail_batch": [f"RET/Scripts/{body.release_date}/chg_ret_001.sql"],
-            "retail_reporting": [f"RET/Scripts/{body.release_date}/chg_ret_001.sql"],
-            "group": [f"Scripts/{body.release_date}/chg_grp_001.sql"],
-        }
-        return {"status": "success", "scripts": {d: canned.get(d, []) for d in (body.dbs or ["cib_batch"])}}
+        rd = body.release_date
+        return {"status": "success", "scripts": [
+            f"sql/Scripts/{rd}/chg_001.sql", f"sql/Scripts/{rd}/chg_002.sql", f"sql/Scripts/{rd}/chg_003.sql"]}
     cfg = config_loader.regression_scope_config(body.scope)
     try:
-        return {"status": "success", "scripts": {d: ops.list_release_scripts(cfg, body.release_date, d) for d in body.dbs}}
+        return {"status": "success", "scripts": ops.list_release_scripts(cfg, body.release_date)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -404,15 +397,14 @@ def git_scripts(request: Request, body: Caller) -> dict:
 
 @router.post("/batch-db-scripts")
 def batch_db_scripts(request: Request, body: BatchDBScriptsBody) -> dict:
-    """.sql scripts from the selected DB's **RegressionTesting** folder — the Reset / Trigger batches steps
-    pick from here (separate from Apply's Scripts/<release_date>/chg*.sql). `{scripts: string[]}`."""
+    """.sql scripts from the scope's SINGLE **RegressionTesting** folder — the Reset / Trigger steps pick
+    from here (checkbox + sequence), then choose which DB(s) to run them on. `{scripts: string[]}`."""
     _require_regression(request, body.caller)
     if REGRESSION_USE_DUMMY:
-        db = body.db or "cib_batch"
-        base = "CIB/Batch/RegressionTesting" if "batch" in db else "CIB/Reporting/RegressionTesting"
+        base = "sql/RegressionTesting"
         return {"status": "success", "scripts": [f"{base}/reset_batches.sql", f"{base}/trigger_all.sql",
                                                  f"{base}/trigger_CB.sql", f"{base}/trigger_ALMT.sql"]}
-    return {"status": "success", "scripts": ops.list_batch_db_scripts(config_loader.regression_scope_config(body.scope), body.db)}
+    return {"status": "success", "scripts": ops.list_batch_scripts(config_loader.regression_scope_config(body.scope))}
 
 
 @router.post("/git/tree")
@@ -445,44 +437,52 @@ def git_file(request: Request, body: FileBody) -> dict:
 
 
 # ---- run-sql (Apply / Reset / Trigger share this) --------------------------
+def _run_sql_combos(body: RunSqlBody) -> list[tuple[str, str]]:
+    """The ordered (script, db) executions to run: Apply sends an explicit `executions` list (per-file DB
+    targets, in the operator's sequence); Reset/Trigger send scripts × dbs (each script on each DB)."""
+    if body.executions:
+        return [(str(e.get("script", "")), str(e.get("db", ""))) for e in body.executions if e.get("script") and e.get("db")]
+    return [(s, d) for s in body.scripts for d in body.dbs]
+
+
 @router.post("/run-sql")
 def run_sql(request: Request, body: RunSqlBody) -> dict:
     cfg = _require_regression(request, body.caller)
-    if not body.scripts or not body.dbs:
+    combos = _run_sql_combos(body)
+    if not combos:
         raise HTTPException(status_code=400, detail="Pick at least one script and one database.")
     _require_step_free(cfg, body.run_id, body.step_key)
     _mark_in_progress(cfg, body.run_id, body.step_key, body.caller)
     if REGRESSION_USE_DUMMY:
         results = [{"script": s, "db": d, "status": "complete", "log_file": f"D:/ols/regression/logs/dummy/{s.split('/')[-1]}__{d}.log",
                     "tail": f"Connected to {d}.\n@{s}\nPL/SQL procedure successfully completed.\nSpool off."}
-                   for s in body.scripts for d in body.dbs]
+                   for s, d in combos]
         return {"status": "success", "results": results, "step_status": "complete"}
     rcfg = config_loader.regression_scope_config(body.scope)
     results, any_error = [], False
-    for s in body.scripts:
-        for d in body.dbs:
-            started = datetime.now()
-            # "Started" row — logged BEFORE the script runs (status in_progress, no log file yet).
-            database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", "in_progress", body.caller,
-                                          business_line=body.business_line, comments=f"{s}  →  {d}  ·  in_progress",
-                                          start_time=started)
-            try:
-                r = ops.run_sqlplus(rcfg, _db_config(request, d), d, s)
-            except Exception as exc:  # noqa: BLE001
-                r = {"status": "error", "script": s, "db": d, "log_file": "", "tail": str(exc)}
-            r.setdefault("script", s); r.setdefault("db", d)
-            any_error = any_error or r["status"] != "complete"
-            log_file = r.get("log_file", "")
-            # "Completed/Error" row — with the spooled log path.
-            database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", r["status"],
-                                          body.caller, business_line=body.business_line,
-                                          comments=f"{s}  →  {d}  ·  {r['status']}" + (f"  ·  log: {log_file}" if log_file else ""),
-                                          start_time=started, end_time=datetime.now())
-            results.append(r)
+    for s, d in combos:
+        started = datetime.now()
+        # "Started" row — logged BEFORE the script runs (status in_progress, no log file yet).
+        database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", "in_progress", body.caller,
+                                      business_line=body.business_line, comments=f"{s}  →  {d}  ·  in_progress",
+                                      start_time=started)
+        try:
+            r = ops.run_sqlplus(rcfg, _db_config(request, d), d, s)
+        except Exception as exc:  # noqa: BLE001
+            r = {"status": "error", "script": s, "db": d, "log_file": "", "tail": str(exc)}
+        r.setdefault("script", s); r.setdefault("db", d)
+        any_error = any_error or r["status"] != "complete"
+        log_file = r.get("log_file", "")
+        # "Completed/Error" row — with the spooled log path.
+        database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql", r["status"],
+                                      body.caller, business_line=body.business_line,
+                                      comments=f"{s}  →  {d}  ·  {r['status']}" + (f"  ·  log: {log_file}" if log_file else ""),
+                                      start_time=started, end_time=datetime.now())
+        results.append(r)
     step_status = "error" if any_error else "complete"
     database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                   body.caller, business_line=body.business_line,
-                                  comments=_run_sql_done_comment(results, body.dbs))
+                                  comments=_run_sql_done_comment(results))
     return {"status": "success", "results": results, "step_status": step_status}
 
 
@@ -499,12 +499,13 @@ def _refresh_done_comment(results: list[dict]) -> str:
     return json.dumps({"summary": summary, "items": results})
 
 
-def _run_sql_done_comment(results: list[dict], dbs: list[str]) -> str:
+def _run_sql_done_comment(results: list[dict]) -> str:
     """JSON summary for the run_sql_done row → the UI shows a proper 'run summary' popup (script/db/status/
-    log per script) plus a one-line human summary."""
+    log per execution) plus a one-line human summary. Each result is one script-on-one-DB execution."""
     okc = sum(1 for r in results if r.get("status") == "complete")
     fails = len(results) - okc
-    summary = f"Ran {len(results)} script(s) on {', '.join(dbs)} — {okc} completed" + (f", {fails} failed" if fails else "") + "."
+    dbs = sorted({str(r.get("db")) for r in results if r.get("db")})
+    summary = f"Ran {len(results)} execution(s) on {', '.join(dbs)} — {okc} completed" + (f", {fails} failed" if fails else "") + "."
     items = [{"script": r.get("script"), "db": r.get("db"), "status": r.get("status"), "log_file": r.get("log_file", "")} for r in results]
     return json.dumps({"summary": summary, "items": items})
 
@@ -514,11 +515,11 @@ def run_sql_stream(request: Request, body: RunSqlBody):
     """LIVE sqlplus: stream each script×db run's output line-by-line (SSE) so the console fills in
     real time. Same per-script + summary audit logging as /run-sql. Used by Apply/Reset/Trigger."""
     cfg = _require_regression(request, body.caller)
-    if not body.scripts or not body.dbs:
+    combos = _run_sql_combos(body)
+    if not combos:
         raise HTTPException(status_code=400, detail="Pick at least one script and one database.")
     _require_step_free(cfg, body.run_id, body.step_key)
     _mark_in_progress(cfg, body.run_id, body.step_key, body.caller)
-    combos = [(s, d) for s in body.scripts for d in body.dbs]
     rcfg = config_loader.regression_scope_config(body.scope)
 
     def gen():
@@ -563,7 +564,7 @@ def run_sql_stream(request: Request, body: RunSqlBody):
         if not REGRESSION_USE_DUMMY:
             database.regression_log_write(cfg, body.run_id, body.step_key, "run_sql_done", step_status,
                                           body.caller, business_line=body.business_line,
-                                          comments=_run_sql_done_comment(results, body.dbs))
+                                          comments=_run_sql_done_comment(results))
         yield _sse("step", {"step_status": step_status})
 
     return StreamingResponse(gen(), media_type="text/event-stream",
@@ -707,8 +708,7 @@ def file_copy_manifests(request: Request, body: ManifestsBody) -> dict:
     if REGRESSION_USE_DUMMY:
         d = body.release_date or "20260921"
         return {"status": "success", "locations": [
-            {"root": "CIB/Batch/Scripts", "label": "CIB/Batch/Scripts", "files": [f"CIB/Batch/Scripts/{d}/filecopy_manifest_{d}.json"]},
-            {"root": "CIB/Reporting/Scripts", "label": "CIB/Reporting/Scripts", "files": [f"CIB/Reporting/Scripts/{d}/filecopy_manifest_{d}.json"]},
+            {"root": "sql/Scripts", "label": "sql/Scripts", "files": [f"sql/Scripts/{d}/filecopy_manifest_{d}.json"]},
         ]}
     return {"status": "success", "locations": ops.list_filecopy_manifests(config_loader.regression_scope_config(body.scope), body.release_date)}
 
@@ -890,7 +890,7 @@ def cleanup_manifests(request: Request, body: ManifestsBody) -> dict:
     if REGRESSION_USE_DUMMY:
         d = body.release_date or "20260921"
         return {"status": "success", "locations": [
-            {"root": "CIB/Batch/Scripts", "label": "CIB/Batch/Scripts", "files": [f"CIB/Batch/Scripts/{d}/cleanup_manifest_{d}.json"]},
+            {"root": "sql/Scripts", "label": "sql/Scripts", "files": [f"sql/Scripts/{d}/cleanup_manifest_{d}.json"]},
         ]}
     return {"status": "success", "locations": ops.list_cleanup_manifests(config_loader.regression_scope_config(body.scope), body.release_date)}
 

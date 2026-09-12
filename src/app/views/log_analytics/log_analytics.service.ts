@@ -1,5 +1,5 @@
 import { inject, Injectable } from '@angular/core';
-import { map, Observable } from 'rxjs';
+import { map, Observable, timeout } from 'rxjs';
 
 import { LazyChild } from '../../components/filetree/filetree.component';
 import { ApiDataService } from '../../shared/api-data.service';
@@ -39,6 +39,11 @@ export interface DirChildren {
  * the filesystem live (no further DB calls): {@link getDirChildren} for a folder's
  * subdirs/files, {@link getFileContent} / {@link getFileProperties} for a file.
  */
+/** Client-side ceiling for a single folder-listing call. A configured path that's gone/unreachable (a dead
+ *  UNC share can block server-side) becomes a TimeoutError → the tree shows one "path not available" folder
+ *  and stays responsive, instead of an endless spinner. */
+const DIR_CALL_TIMEOUT_MS = 20_000;
+
 @Injectable({ providedIn: 'root' })
 export class LogAnalyticsService {
   private readonly api = inject(ApiDataService);
@@ -65,6 +70,7 @@ export class LogAnalyticsService {
     return this.api
       .post<LogDirResponse>(API.log.dir, { server_id: serverId, base, path: folderPath })
       .pipe(
+        timeout(DIR_CALL_TIMEOUT_MS),
         map((res) => {
           const entries = (res?.entries ?? []).filter((e) => {
             const p = norm(e.path).toLowerCase();

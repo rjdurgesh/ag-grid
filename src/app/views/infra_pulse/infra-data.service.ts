@@ -195,7 +195,7 @@ export class InfraDataService {
     app: InfraApp,
     serverId: string,
     serviceId: string,
-    action: 'start' | 'stop' | 'status'
+    action: 'start' | 'stop' | 'restart' | 'status'
   ): Observable<ServiceActionResult> {
     return this.serviceRowsForApp(app).pipe(
       switchMap((rows) => {
@@ -349,11 +349,15 @@ function monitoringConfigOf(row: ServerHealthRow): ServerHealthRow['MONITORING_C
 }
 
 function servicesOf(row: ServerHealthRow): MonitoredService[] {
-  const list = monitoringConfigOf(row)?.services ?? [];
+  const cfg = monitoringConfigOf(row);
+  // `self_service` (per-server config) names THIS tool's own service on this host → guarded in the UI.
+  const selfName = (cfg?.self_service ?? '').toString().trim();
+  const list = cfg?.services ?? [];
   return list.flatMap((obj) =>
     Object.entries(obj).map(([name, script]) => ({
       name,
-      script: script && script !== 'null' ? script : null
+      script: script && script !== 'null' ? script : null,
+      self: !!selfName && name === selfName
     }))
   );
 }
@@ -380,7 +384,7 @@ function serverServicesFrom(row: ServerHealthRow, cfg: MonitoredService[], res: 
       // affected, never the whole server (which only goes red when the agent is down).
       const entry = res?.[s.name];
       const status = entry && typeof entry === 'object' ? (entry as ServiceStatusEntry).status : undefined;
-      return { id: s.name, name: s.name, state: serviceStateFrom(status), lastHeartbeat: now };
+      return { id: s.name, name: s.name, state: serviceStateFrom(status), lastHeartbeat: now, self: s.self };
     })
   };
 }
@@ -392,7 +396,7 @@ function unreachableServer(row: ServerHealthRow, cfg: MonitoredService[], reason
     ...serverInfoOf(row),
     unreachable: true,
     unreachableReason: friendlyReason(reason),
-    services: cfg.map((s) => ({ id: s.name, name: s.name, state: serviceStateFrom(undefined), lastHeartbeat: now }))
+    services: cfg.map((s) => ({ id: s.name, name: s.name, state: serviceStateFrom(undefined), lastHeartbeat: now, self: s.self }))
   };
 }
 

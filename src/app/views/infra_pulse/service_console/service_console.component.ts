@@ -294,7 +294,7 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   }
 
   async stop(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
-    if (!this.rbac.canWrite('service_console')) {
+    if (!this.rbac.canWrite('service_console') || service.self) {
       return;
     }
     const ok = await this.confirm.ask({
@@ -308,15 +308,36 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
     }
   }
 
+  /** Restart — the ONLY action offered for this tool's OWN service (Start/Stop are blocked). The restart is
+   *  run by the server's agent (a separate process), so it survives the tool going down; but this screen will
+   *  drop for a few seconds, so warn clearly. */
+  async restart(app: InfraApp, server: ServerServices, service: ServiceInfo): Promise<void> {
+    if (!this.rbac.canWrite('service_console')) {
+      return;
+    }
+    const selfNote = service.self
+      ? '\n\nThis is the OLS Dashboard service — this screen will briefly go OFFLINE while it restarts. Wait a few seconds, then RELOAD the page. If the restart fails, restart it directly on the server.'
+      : '';
+    const ok = await this.confirm.ask({
+      title: 'Restart service',
+      message: `Restart "${service.name}" on ${server.serverName}?${selfNote}`,
+      confirmLabel: 'Restart',
+      tone: 'danger'
+    });
+    if (ok) {
+      this.runAction(app, server, service, 'restart');
+    }
+  }
+
   private runAction(
     app: InfraApp,
     server: ServerServices,
     service: ServiceInfo,
-    action: 'start' | 'stop'
+    action: 'start' | 'stop' | 'restart'
   ): void {
-    // Optimistic transitional state while the agent works.
+    // Optimistic transitional state while the agent works (restart ends up Running → show 'Starting').
     this.patchService(app, server.serverId, service.id, {
-      state: action === 'start' ? 'Starting' : 'Stopping'
+      state: action === 'stop' ? 'Stopping' : 'Starting'
     });
     this.markService(service.id, true);
 
@@ -324,7 +345,8 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
       next: (res) => {
         if (res.success) {
           // Success is fine as a transient toast; show the SERVICE NAME, never the script path.
-          this.notify(true, `${action === 'start' ? 'Starting' : 'Stopping'} ${service.name} service…`);
+          const verb = action === 'start' ? 'Starting' : action === 'stop' ? 'Stopping' : 'Restarting';
+          this.notify(true, `${verb} ${service.name} service…`);
         } else {
           // Failure → a persistent popup (with Copy / Email) so the user can read & report it.
           this.showActionError(action, server, service, res.message || `Could not ${action} the service.`);
@@ -350,10 +372,11 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Persistent error popup for a failed start/stop (Copy / Email / OK). */
-  private showActionError(action: 'start' | 'stop', server: ServerServices, service: ServiceInfo, detail: string): void {
+  /** Persistent error popup for a failed start/stop/restart (Copy / Email / OK). */
+  private showActionError(action: 'start' | 'stop' | 'restart', server: ServerServices, service: ServiceInfo, detail: string): void {
+    const verb = action === 'start' ? 'Start' : action === 'stop' ? 'Stop' : 'Restart';
     this.errorReport.show({
-      title: `${action === 'start' ? 'Start' : 'Stop'} service failed`,
+      title: `${verb} service failed`,
       message: `${service.name} on ${server.serverName}: ${detail}\n\nPlease reach out to OLS Team on ${this.supportEmail}.`,
       userId: environment.username
     });

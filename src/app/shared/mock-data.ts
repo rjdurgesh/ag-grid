@@ -34,7 +34,10 @@ export const MOCK_LOG_SERVERS: LogServersResponse = {
     { server_name: 'eur17', base_log_path: 'C:/my/cib', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
     { server_name: 'eur17', base_log_path: 'D:/game', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
     { server_name: 'eur17', base_log_path: 'E:/my', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
-    { server_name: 'eur17', base_log_path: 'F:/cib', server_type: 'WEB_A_1', db_source: 'OLSCIB' }
+    { server_name: 'eur17', base_log_path: 'F:/cib', server_type: 'WEB_A_1', db_source: 'OLSCIB' },
+    // A deliberately MISSING path — expanding it returns 404 so you can validate the tree's
+    // "Path not available" handling (the other roots stay browsable).
+    { server_name: 'eur17', base_log_path: 'D:/apps/Logs/ols_missing', server_type: 'WEB_A_1', db_source: 'OLSCIB' }
   ],
   OLSRETAIL_APP_2_eur21: [{ server_name: 'eur21', base_log_path: 'D:/ols/retail', server_type: 'APP_2', db_source: 'OLSRETAIL' }],
   OLSGROUP_WEB_B_1_eur34: [
@@ -64,8 +67,9 @@ export function mockDirEntries(base: string, folderPath: string): LogDirEntry[] 
   if (depth < 4) {
     ['batch', 'app', 'archive'].forEach((name) => entries.push({ name, type: 'folder', path: `${p}/${name}` }));
   }
-  // A few files at every level (varied extensions to exercise the icons).
-  ['run.log', 'error.log', 'summary.log', 'settings.json'].forEach((name) =>
+  // A few files at every level (varied extensions to exercise the icons). `deleted-after-load.log` is a
+  // dev fixture: it lists fine but the file/properties calls 404 it, to demo the "file no longer exists" path.
+  ['run.log', 'error.log', 'summary.log', 'settings.json', 'deleted-after-load.log'].forEach((name) =>
     entries.push({ name, type: 'file', path: `${p}/${name}` })
   );
   return entries;

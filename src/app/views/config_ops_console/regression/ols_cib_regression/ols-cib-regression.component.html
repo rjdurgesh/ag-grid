@@ -213,7 +213,7 @@
                 @case ('space_cleanup') {
                   <p class="rg-hint">
                     Frees server space by deleting old / disposable files listed in the release repo's
-                    <code>Scripts/{{ state().run?.release_date }}/cleanup_manifest_{{ state().run?.release_date }}.json</code>.
+                    <code>sql/Scripts/{{ state().run?.release_date }}/cleanup_manifest_{{ state().run?.release_date }}.json</code>.
                     <strong>Deletions are permanent</strong> — tick the paths, run <strong>Preview</strong> to see exactly what will be removed, then Clean.
                     <button type="button" class="rg-infobtn" [class.is-on]="cleanupInfoOpen()" (click)="toggleCleanupInfo()" aria-label="Cleanup manifest rules" title="Cleanup manifest rules">i</button>
                   </p>
@@ -329,7 +329,7 @@
                 }
 
                 @case ('apply_db') {
-                  <p class="rg-hint">Applying release <strong>{{ state().run?.release_date }}</strong> — <code>chg*.sql</code> load from each selected database's <code>Scripts/{{ state().run?.release_date }}</code> folder and run on that database only.</p>
+                  <p class="rg-hint">Applying release <strong>{{ state().run?.release_date }}</strong> — every <code>chg*.sql</code> in <code>sql/Scripts/{{ state().run?.release_date }}</code> is listed below. For each file, pick which database(s) to run it on and set the run order.</p>
 
                   <!-- Release-branch browser (collapsible) -->
                   <div class="rg-browser">
@@ -356,19 +356,11 @@
                     }
                   </div>
 
-                  <div class="rg-pick">
-                    <div class="rg-pick__label">Databases</div>
-                    <div class="rg-chips">
-                      @for (d of databases; track d.key) {
-                        <label class="rg-chip" [class.is-on]="applyDbs().includes(d.key)"><input type="checkbox" [checked]="applyDbs().includes(d.key)" (change)="toggleApplyDb(d.key)" />{{ d.label }}</label>
-                      }
-                    </div>
-                  </div>
                   @if (loadingApply()) {
                     <p class="rg-hint">Loading chg scripts for release {{ state().run?.release_date }}…</p>
                   } @else if (applyTotal()) {
                     <div class="rg-row rg-row--tools">
-                      <p class="rg-hint">Tick the chg files to run — run a subset now and the rest later if you need to. Each runs on its own database, in listed order.</p>
+                      <span class="rg-hint">{{ applyOrder().length }} of {{ applyScripts().length }} file(s) selected · {{ applyExecCount() }} execution(s) queued</span>
                       <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="loadingApply()"
                               [disabled]="loadingApply()" (click)="loadReleaseScripts()" title="Re-scan the branch for chg files" aria-label="Reload chg scripts">
                         <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
@@ -377,50 +369,44 @@
                         </svg>
                       </button>
                     </div>
-                    <div class="rg-relscripts">
-                      @for (d of applyDbs(); track d) {
-                        @if (applyScriptsByDb()[d]?.length) {
-                          <div class="rg-relgrp">
-                            <div class="rg-relgrp__db">
-                              <span>{{ dbLabel(d) }} <span class="rg-relgrp__n">{{ applyScriptsByDb()[d].length }} chg</span></span>
-                              <button type="button" class="rg-link rg-link--inline" (click)="toggleApplyGroup(d, applyScriptsByDb()[d])">{{ applyGroupAllOn(d, applyScriptsByDb()[d]) ? 'Clear' : 'All' }}</button>
-                            </div>
-                            <div class="rg-relgrp__files">
-                              @for (s of applyScriptsByDb()[d]; track s) {
-                                <div class="rg-filerow">
-                                  <label class="rg-fileopt" [class.is-on]="applyIsSel(d, s)">
-                                    <input type="checkbox" [checked]="applyIsSel(d, s)" (change)="toggleApplyScript(d, s)" />
-                                    @if (applyOrder(d, s)) { <span class="rg-order" title="Execution order">{{ applyOrder(d, s) }}</span> }
-                                    <span>{{ s }}</span>
-                                  </label>
-                                  @if (applyOrder(d, s)) {
-                                    <span class="rg-ordctl">
-                                      <button type="button" [disabled]="applyIsFirst(d, s)" (click)="moveApplyScript(d, s, -1)" title="Run earlier" aria-label="Move up">▲</button>
-                                      <button type="button" [disabled]="applyIsLast(d, s)" (click)="moveApplyScript(d, s, 1)" title="Run later" aria-label="Move down">▼</button>
-                                    </span>
-                                  }
-                                  <button type="button" class="rg-link rg-link--inline rg-fileview" (click)="viewFile(s)" title="View this script's SQL">view</button>
-                                </div>
-                              }
-                            </div>
-                            <p class="rg-hint rg-hint--order">Ticked files run in the numbered order — use ▲▼ to change the order.</p>
+                    <div class="rg-applylist">
+                      @for (s of applyScripts(); track s) {
+                        <div class="rg-applyfile" [class.is-on]="applyFileRuns(s)">
+                          <div class="rg-applyfile__hd">
+                            @if (applyFileOrder(s)) { <span class="rg-order" title="Run order">{{ applyFileOrder(s) }}</span> }
+                            <span class="rg-applyfile__name" [title]="s">{{ applyFileName(s) }}</span>
+                            @if (applyFileOrder(s)) {
+                              <span class="rg-ordctl">
+                                <button type="button" [disabled]="applyFileIsFirst(s)" (click)="moveApplyFile(s, -1)" title="Run earlier" aria-label="Move up">▲</button>
+                                <button type="button" [disabled]="applyFileIsLast(s)" (click)="moveApplyFile(s, 1)" title="Run later" aria-label="Move down">▼</button>
+                              </span>
+                            }
+                            <button type="button" class="rg-link rg-link--inline rg-fileview" (click)="viewFile(s)" title="View this script's SQL">view</button>
                           </div>
-                        }
+                          <div class="rg-applyfile__dbs">
+                            <span class="rg-applyfile__dblabel">Run on:</span>
+                            @for (db of databases; track db.key) {
+                              <label class="rg-dbchip" [class.is-on]="applyFileHas(s, db.key)">
+                                <input type="checkbox" [checked]="applyFileHas(s, db.key)" (change)="toggleApplyFileDb(s, db.key)" />{{ db.name }} ({{ db.label }})
+                              </label>
+                            }
+                            <button type="button" class="rg-link rg-link--inline" (click)="toggleApplyFileAllDbs(s)">{{ applyFileAllDbsOn(s) ? 'Clear' : 'All' }}</button>
+                          </div>
+                        </div>
                       }
                     </div>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db' || !applySelectedCount()" (click)="runApply()">
-                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applySelectedCount() + ')' }}
+                    <p class="rg-hint rg-hint--order">Files with a database ticked run in the numbered order — use ▲▼ to change it. Each file runs on every database you tick for it.</p>
+                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db' || !applyExecCount()" (click)="runApply()">
+                      {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applyExecCount() + ')' }}
                     </button>
                     @if (applyResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: applyResults() }" /> }
-                  } @else if (applyDbs().length) {
-                    <p class="rg-warn">No <code>chg*.sql</code> found for release {{ state().run?.release_date }} in the selected database folder(s).</p>
                   } @else {
-                    <p class="rg-hint">Select the target database(s) to load this release's <code>chg*.sql</code>.</p>
+                    <p class="rg-warn">No <code>chg*.sql</code> found for release {{ state().run?.release_date }} in the Scripts folder. <button type="button" class="rg-link rg-link--inline" (click)="loadReleaseScripts()">Reload</button></p>
                   }
                 }
 
                 @case ('file_copy') {
-                  <p class="rg-hint">The manifest lives in the release repo (<code>Scripts/{{ state().run?.release_date }}/filecopy_manifest_{{ state().run?.release_date }}.json</code>). Tick the files to copy — copy some now and the rest later; the step completes only when all are done.</p>
+                  <p class="rg-hint">The manifest lives in the release repo (<code>sql/Scripts/{{ state().run?.release_date }}/filecopy_manifest_{{ state().run?.release_date }}.json</code>). Tick the files to copy — copy some now and the rest later; the step completes only when all are done.</p>
                   <div class="rg-row">
                     <button type="button" class="rg-btn" [disabled]="loadingManifests()" (click)="loadManifests()">{{ loadingManifests() ? 'Discovering…' : 'Discover manifests' }}</button>
                   </div>
@@ -525,17 +511,19 @@
                 }
 
                 @case ('reset') {
-                  <p class="rg-hint">Pick a database, then tick the reset script(s) from its <code>RegressionTesting</code> folder — they run in the numbered order.</p>
-                  <div class="rg-row">
-                    <select [ngModel]="resetDb()" (ngModelChange)="onResetDb($event)">
-                      @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
-                    </select>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetSelected().length" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset (' + resetSelected().length + ')' }}</button>
+                  <p class="rg-hint">Tick the reset script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on — every ticked script runs on every ticked database, in the same sequence.</p>
+                  <div class="rg-pick">
+                    <div class="rg-pick__label">Databases</div>
+                    <div class="rg-chips">
+                      @for (d of resetTriggerDbs; track d.key) {
+                        <label class="rg-chip" [class.is-on]="resetDbOn(d.key)"><input type="checkbox" [checked]="resetDbOn(d.key)" (change)="toggleResetDb(d.key)" />{{ dbDisplay(d.key) }}</label>
+                      }
+                    </div>
                   </div>
                   @if (resetScripts().length) {
                     <div class="rg-relgrp">
                       <div class="rg-relgrp__db">
-                        <span>{{ dbLabel(resetDb()) }} <span class="rg-relgrp__n">{{ resetScripts().length }} script(s)</span></span>
+                        <span>RegressionTesting <span class="rg-relgrp__n">{{ resetScripts().length }} script(s)</span></span>
                         <button type="button" class="rg-link rg-link--inline" (click)="toggleAllReset()">{{ resetSelected().length === resetScripts().length ? 'Clear' : 'All' }}</button>
                       </div>
                       <div class="rg-relgrp__files">
@@ -543,7 +531,7 @@
                           <div class="rg-filerow">
                             <label class="rg-fileopt" [class.is-on]="resetIsSel(s)">
                               <input type="checkbox" [checked]="resetIsSel(s)" (change)="toggleResetScript(s)" />
-                              @if (resetOrder(s)) { <span class="rg-order" title="Execution order">{{ resetOrder(s) }}</span> }
+                              @if (resetOrder(s)) { <span class="rg-order" title="Run order">{{ resetOrder(s) }}</span> }
                               <span>{{ s }}</span>
                             </label>
                             @if (resetOrder(s)) {
@@ -558,21 +546,24 @@
                       </div>
                       <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
                     </div>
-                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(resetDb()) }}.</p> }
+                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder.</p> }
+                  <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetSelected().length || !resetDbs().length" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset (' + resetSelected().length + ')' }}</button>
                   @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
                 }
                 @case ('trigger') {
-                  <p class="rg-hint">Pick a database, then tick the "trigger all" and/or per-business-line script(s) from its <code>RegressionTesting</code> folder — they run in the numbered order.</p>
-                  <div class="rg-row">
-                    <select [ngModel]="triggerDb()" (ngModelChange)="onTriggerDb($event)">
-                      @for (d of resetTriggerDbs; track d.key) { <option [value]="d.key">{{ d.label }}</option> }
-                    </select>
-                    <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerSelected().length" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger (' + triggerSelected().length + ')' }}</button>
+                  <p class="rg-hint">Tick the "trigger all" and/or per-business-line script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on — every ticked script runs on every ticked database, in the same sequence.</p>
+                  <div class="rg-pick">
+                    <div class="rg-pick__label">Databases</div>
+                    <div class="rg-chips">
+                      @for (d of resetTriggerDbs; track d.key) {
+                        <label class="rg-chip" [class.is-on]="triggerDbOn(d.key)"><input type="checkbox" [checked]="triggerDbOn(d.key)" (change)="toggleTriggerDb(d.key)" />{{ dbDisplay(d.key) }}</label>
+                      }
+                    </div>
                   </div>
                   @if (triggerScripts().length) {
                     <div class="rg-relgrp">
                       <div class="rg-relgrp__db">
-                        <span>{{ dbLabel(triggerDb()) }} <span class="rg-relgrp__n">{{ triggerScripts().length }} script(s)</span></span>
+                        <span>RegressionTesting <span class="rg-relgrp__n">{{ triggerScripts().length }} script(s)</span></span>
                         <button type="button" class="rg-link rg-link--inline" (click)="toggleAllTrigger()">{{ triggerSelected().length === triggerScripts().length ? 'Clear' : 'All' }}</button>
                       </div>
                       <div class="rg-relgrp__files">
@@ -580,7 +571,7 @@
                           <div class="rg-filerow">
                             <label class="rg-fileopt" [class.is-on]="triggerIsSel(s)">
                               <input type="checkbox" [checked]="triggerIsSel(s)" (change)="toggleTriggerScript(s)" />
-                              @if (triggerOrder(s)) { <span class="rg-order" title="Execution order">{{ triggerOrder(s) }}</span> }
+                              @if (triggerOrder(s)) { <span class="rg-order" title="Run order">{{ triggerOrder(s) }}</span> }
                               <span>{{ s }}</span>
                             </label>
                             @if (triggerOrder(s)) {
@@ -595,7 +586,8 @@
                       </div>
                       <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
                     </div>
-                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder for {{ dbLabel(triggerDb()) }}.</p> }
+                  } @else { <p class="rg-hint">No scripts in the RegressionTesting folder.</p> }
+                  <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerSelected().length || !triggerDbs().length" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger (' + triggerSelected().length + ')' }}</button>
                   @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
                 }
               }
@@ -752,7 +744,7 @@
         <div class="rg-modal__body">
           <dl class="rg-kv">
             <dt>Script</dt><dd class="rg-kv__mono">{{ d.script }}</dd>
-            <dt>Database</dt><dd>{{ dbLabel(d.db) }} <span class="rg-kv__muted">({{ d.db }})</span></dd>
+            <dt>Database</dt><dd>{{ dbDisplay(d.db) }}</dd>
             <dt>Status</dt><dd><span class="rg-cstatus" [class.is-ok]="d.status === 'complete'">{{ d.status === 'in_progress' ? 'In Progress' : d.status }}</span></dd>
             <dt>Duration</dt><dd>{{ d.seconds == null ? '—' : fmtDuration(d.seconds) }}</dd>
             <dt>Started</dt><dd>{{ d.start || '—' }}</dd>
@@ -792,7 +784,7 @@
                     <tr [class.is-err]="it.status !== 'complete'">
                       <td class="rg-ctable__n">{{ $index + 1 }}</td>
                       <td class="rg-ctable__path">{{ it.script }}</td>
-                      <td>{{ dbLabel(it.db) }}</td>
+                      <td>{{ dbDisplay(it.db) }}</td>
                       <td><span class="rg-cstatus" [class.is-ok]="it.status === 'complete'">{{ it.status }}</span></td>
                       <td>@if (it.log_file) { <button type="button" class="rg-link rg-link--inline" (click)="viewSummaryLog(it)">View log</button> } @else { — }</td>
                     </tr>
@@ -866,7 +858,10 @@
       <div class="rg-modal__panel rg-modal__panel--sql">
         <div class="rg-modal__head">
           <strong>Server Space Cleanup — {{ cd[0]?.dry_run ? 'preview' : 'result' }}</strong>
-          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCleanupDetail()" aria-label="Close" title="Close">×</button>
+          <div class="rg-modal__head-actions">
+            <button type="button" class="rg-btn rg-btn--sm" (click)="downloadCleanupReport(cd)" title="Download this report (CSV)">Download</button>
+            <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCleanupDetail()" aria-label="Close" title="Close">×</button>
+          </div>
         </div>
         <div class="rg-modal__body">
           <p class="rg-ctable__summary">{{ cleanupSummaryLine(cd) }}</p>
@@ -901,7 +896,7 @@
   <ul class="rg-results">
     @for (r of results; track $index) {
       <li [class.is-err]="r.status !== 'complete'">
-        {{ r.script }} · {{ dbLabel(r.db) }} — <strong>{{ r.status }}</strong>
+        {{ r.script }} · {{ dbDisplay(r.db) }} — <strong>{{ r.status }}</strong>
         <button type="button" class="rg-link" (click)="openLog(r)">View log</button>
       </li>
     }

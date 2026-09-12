@@ -143,7 +143,7 @@ export const environment: AppEnvironment = {
   // Override the global `useMock` for that screen's API prefix: false = hit the real FastAPI
   // backend on :8000; true = in-app mock. Flip a single screen to develop/test it in isolation.
   apiMocks: IS_LOCAL ? {
-    '/api/log/':            false, // Log Analytics Hub       → live backend
+    '/api/log/':            true,  // Log Analytics Hub       → in-app mock (canned tree incl. one missing path). Set false to hit the live backend (LOG_ANALYTICS_USE_DUMMY there).
     '/api/infra_health':    false, // Infrastructure Health   → live backend
     '/api/service_console': false, // Service Console         → live backend
     '/api/oracle_cc':       false, // Oracle Command Center   → live backend

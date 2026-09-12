@@ -180,6 +180,19 @@
   cursor: default;
 }
 
+/* One folder failed to load (e.g. path not available) — inline, retryable; siblings are unaffected. */
+.filetree__error {
+  display: flex; align-items: center; gap: 0.5rem; padding-block: 4px; font-size: 11.5px;
+  color: var(--cui-danger, #e55353);
+}
+.filetree__error-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.filetree__retry {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; cursor: pointer;
+  color: var(--cui-danger, #e55353); background: color-mix(in srgb, var(--cui-danger, #e55353) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cui-danger, #e55353) 40%, transparent);
+  &:hover { background: color-mix(in srgb, var(--cui-danger, #e55353) 20%, transparent); }
+}
+
 .filetree__icon--folder {
   color: var(--cui-warning, #f0a020);
 }

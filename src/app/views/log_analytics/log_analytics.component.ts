@@ -243,7 +243,8 @@ export class LogAnalyticsComponent implements OnInit {
         .subscribe({
           next: (res) =>
             this.filetree()?.applyChildren(path, res.entries, res.truncated ? res.total : 0),
-          error: () => done(),
+          // A folder that vanished/became unreachable since the tree loaded → inline error on it, others refresh fine.
+          error: (err) => { this.filetree()?.markFolderError(path, dirErrorReason(err)); done(); },
           complete: () => done()
         });
     }
@@ -293,7 +294,9 @@ export class LogAnalyticsComponent implements OnInit {
       .subscribe({
         next: (res) =>
           this.filetree()?.applyChildren(event.path, res.entries, res.truncated ? res.total : 0),
-        error: () => this.filetree()?.markFolderError(event.path)
+        // One unavailable path shows an inline "path not available" (retryable) on THAT folder only — its
+        // siblings and the rest of the tree are unaffected, and the client timeout keeps the screen responsive.
+        error: (err) => this.filetree()?.markFolderError(event.path, dirErrorReason(err))
       });
   }
 
@@ -538,4 +541,18 @@ export class LogAnalyticsComponent implements OnInit {
       requestAnimationFrame(() => this.pageLoading.set(false));
     });
   }
+}
+
+/** Short, friendly reason for a folder that failed to load — shown inline on that folder in the tree. */
+function dirErrorReason(err: unknown): string {
+  const e = err as { name?: string; status?: number; error?: { detail?: string } | string };
+  if (e?.name === 'TimeoutError') { return 'Timed out — the path did not respond.'; }
+  if (e?.status === 404) { return 'Path not available'; }
+  if (e?.status === 0) { return 'No connection to the server.'; }
+  if (e?.status === 400) {
+    const d = typeof e.error === 'object' ? e.error?.detail : (typeof e.error === 'string' ? e.error : undefined);
+    return d || 'Path is not a directory.';
+  }
+  if (typeof e?.status === 'number' && e.status > 0) { return `Could not load this folder (HTTP ${e.status}).`; }
+  return 'Path not available';
 }

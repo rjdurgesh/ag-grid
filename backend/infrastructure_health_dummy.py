@@ -25,7 +25,9 @@ def config_dummy(app_env: str | None = None) -> dict:
                 "HOST_NAME": "eurv12", "HOST_ADDRESS": "eurv12.xmp.net.intra", "AGENT_LISTEN_PORT": 7002,
                 "APP_NAME": "OLS_GROUP",
                 "MONITORING_CONFIG": {"infra": ["ram", "cpu"], "disk": ["c", "d"],
-                                       "services": [{"OLSFILELoader": None, "OLSUI-API-3": None}]},
+                                       "services": [{"OLSFILELoader": None, "OLSUI-API-3": None}],
+                                       # This server hosts the dashboard; its OWN service is Restart-only in the UI.
+                                       "self_service": "OLSUI-API-3"},
                 "IS_ACTIVE": "Y", "COMMENTS": "This is an OLS Dev 1 Server.",
                 "LAST_UPDATED_BY": "OPS-10432", "LAST_UPDATED_ON": "2026-02-10 14:59:16",
             },

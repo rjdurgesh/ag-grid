@@ -13,7 +13,7 @@ and calls it — so the agent URL never reaches the browser's network tab. The s
 handles both shapes the agent supports, chosen by whether ``action`` is present:
 
   * STATUS (no ``action``)            body { services: [names] }   → { HOST_NAME, <name>: { service, status }, ... }
-  * ACTION (start / stop / status)    body { service, action }     → { action, message, service, success }
+  * ACTION (start / stop / restart / status) body { service, action } → { action, message, service, success }
 
 Always returns HTTP 200 with a ``reachable`` flag; a dead/slow agent becomes
 ``reachable: false`` so one bad server renders as a single "Unreachable" server, never a
@@ -40,7 +40,7 @@ class ServiceManageRequest(BaseModel):
     host_platform: str | None = None
     # ACTION mode:
     service: str | None = None          # script path (Linux) or service name (Windows)
-    action: str | None = None           # start | stop | status
+    action: str | None = None           # start | stop | restart | status
     # STATUS mode:
     services: list[str] | None = None   # service names to report status for
 
@@ -81,7 +81,7 @@ def _synthetic_service_agent(req: ServiceManageRequest) -> dict:
     if req.action:
         # ACTION acknowledgement. The real agent actually runs the start/stop; the UI then
         # re-fetches status to show the settled state.
-        verb = {"start": "Starting", "stop": "Stopping", "status": "Checking"}.get(req.action, req.action.title())
+        verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting", "status": "Checking"}.get(req.action, req.action.title())
         return {
             "action": req.action,
             "service": req.service,

@@ -122,6 +122,11 @@
           showing {{ node.children.length }} of {{ node.truncatedTotal }} — filter to narrow
         </div>
       }
+    } @else if (node.type === 'folder' && node.expanded && node.error) {
+      <div class="filetree__error" [style.padding-inline-start.px]="26 + depth * 16" [title]="node.error">
+        <span class="filetree__error-msg">⚠ {{ node.error }}</span>
+        <button type="button" class="filetree__retry" (click)="retryFolder(node); $event.stopPropagation()">Retry</button>
+      </div>
     } @else if (node.type === 'folder' && node.expanded && node.loaded && !node.children.length) {
       <div class="filetree__empty" [style.padding-inline-start.px]="26 + depth * 16">empty</div>
     }

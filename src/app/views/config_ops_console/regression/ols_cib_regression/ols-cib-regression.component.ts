@@ -46,12 +46,13 @@ export class OlsCibRegressionComponent implements OnInit {
     { key: 'reset', title: 'Reset batches' },
     { key: 'trigger', title: 'Trigger batches' }
   ];
+  // `name` = the actual database name/SID shown to the operator (placeholders — set to your real DB names).
   readonly databases = [
-    { key: 'group', label: 'OLS GROUP' },
-    { key: 'cib_batch', label: 'OLS CIB Batch' },
-    { key: 'cib_reporting', label: 'OLS CIB Reporting' },
-    { key: 'retail_batch', label: 'OLS RETAIL Batch' },
-    { key: 'retail_reporting', label: 'OLS RETAIL Reporting' }
+    { key: 'group', label: 'OLS GROUP', name: 'OLSGD1' },
+    { key: 'cib_batch', label: 'OLS CIB Batch', name: 'OLSCD1' },
+    { key: 'cib_reporting', label: 'OLS CIB Reporting', name: 'OLSCR1' },
+    { key: 'retail_batch', label: 'OLS RETAIL Batch', name: 'OLSRD1' },
+    { key: 'retail_reporting', label: 'OLS RETAIL Reporting', name: 'OLSRR1' }
   ];
   /** The three batch schedulers — used by Reset, Trigger and Monitoring Batches. */
   readonly batchDatabases = [
@@ -120,13 +121,15 @@ export class OlsCibRegressionComponent implements OnInit {
   readonly releaseDate = signal('');                 // YYYYMMDD entered at run start (manual + validated)
   readonly availableDates = signal<string[]>([]);    // release folders found in the pulled branch (type-ahead hint)
   readonly starting = signal(false);
-  // Apply DB — chg*.sql resolved PER DB from <script-root(db)>/<release_date>/ (never cross-product)
-  readonly applyDbs = signal<string[]>(['cib_batch']);
-  readonly applyScriptsByDb = signal<Record<string, string[]>>({});
-  readonly applySelected = signal<string[]>([]);   // chg files ticked to run (default: all loaded — run some now, rest later)
+  // Apply DB — ALL chg*.sql from the scope's single Scripts/<release_date>/ folder are listed; the operator
+  // decides, PER FILE, which DB(s) it runs on, and the run sequence. (No auto per-DB mapping.)
+  readonly applyScripts = signal<string[]>([]);                 // flat chg list from the single folder
+  readonly applyFileDbs = signal<Record<string, string[]>>({}); // file → target DB keys (empty = not run)
+  readonly applyOrder = signal<string[]>([]);                   // run sequence of the files that have ≥1 DB ticked
   readonly loadingApply = signal(false);
   readonly applyResults = signal<RunSqlResult[]>([]);
-  readonly applySelectedCount = computed(() => this.applySelected().length);
+  /** Total (script × DB) executions queued across all files. */
+  readonly applyExecCount = computed(() => this.applyOrder().reduce((n, f) => n + (this.applyFileDbs()[f]?.length || 0), 0));
   // Collapsible workflow steps (key → collapsed?).
   readonly stepCollapsed = signal<Record<string, boolean>>({});
 
@@ -203,17 +206,18 @@ export class OlsCibRegressionComponent implements OnInit {
   /** True once discovery settled and there is genuinely nothing to clean this release (no/empty manifest). */
   readonly nothingToClean = computed(() => this.cleanupManifestsDiscovered() && !this.loadingCleanupManifests() && this.allCleanupItems().length === 0);
 
-  // Reset / Trigger — scripts come from the RegressionTesting folder for the selected DB (batch/reporting only).
+  // Reset / Trigger — scripts come from ONE RegressionTesting folder; the operator ticks scripts (+ sequence)
+  // AND ticks which DB(s) to run them on (batch/reporting only). Every selected script runs on every selected DB.
   readonly resetTriggerDbs = [
     { key: 'cib_batch', label: 'OLS CIB Batch' },
     { key: 'cib_reporting', label: 'OLS CIB Reporting' }
   ];
   readonly resetSelected = signal<string[]>([]);     // ordered — run order = array order
-  readonly resetDb = signal('cib_batch');
+  readonly resetDbs = signal<string[]>(['cib_batch']);   // target DB(s) — every reset script runs on each
   readonly resetScripts = signal<string[]>([]);
   readonly resetResults = signal<RunSqlResult[]>([]);
   readonly triggerSelected = signal<string[]>([]);   // ordered — run order = array order
-  readonly triggerDb = signal('cib_batch');
+  readonly triggerDbs = signal<string[]>(['cib_batch']); // target DB(s) — every trigger script runs on each
   readonly triggerScripts = signal<string[]>([]);
   readonly triggerResults = signal<RunSqlResult[]>([]);
 
@@ -404,7 +408,7 @@ export class OlsCibRegressionComponent implements OnInit {
     if (this.isRunSqlRow(r)) {
       const d = this.parseSqlComment(r!.comments);
       const name = d.script.split(/[\\/]/).pop() || d.script;
-      return `${name} → ${this.dbLabel(d.db)} · ${d.status}  ⋯`;   // short + clickable; full detail in the popup
+      return `${name} → ${this.dbDisplay(d.db)} · ${d.status}  ⋯`;   // short + clickable; full detail in the popup
     }
     if (this.isRefreshRow(r)) {
       const d = this.parseRefreshComment(r!.comments);
@@ -529,7 +533,7 @@ export class OlsCibRegressionComponent implements OnInit {
   // The date picker works in ISO (YYYY-MM-DD); releaseDate stays canonical YYYYMMDD.
   readonly releaseISO = computed(() => this.toIso(this.releaseDate()));
   readonly availableDatesLabel = computed(() => this.availableDates().map((d) => this.toIso(d)).join(', '));
-  readonly applyTotal = computed(() => Object.values(this.applyScriptsByDb()).reduce((n, a) => n + a.length, 0));
+  readonly applyTotal = computed(() => this.applyScripts().length);   // chg files available for this release
   private toIso(d: string): string { return /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : ''; }
   setReleaseFromISO(iso: string): void { this.releaseDate.set((iso || '').replaceAll('-', '')); }
   /** Every step complete or forced → the run can be closed out. */
@@ -687,7 +691,7 @@ export class OlsCibRegressionComponent implements OnInit {
         this.starting.set(false);
         this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for ${chg} · release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
-        this.applyScriptsByDb.set({}); this.applyResults.set([]);
+        this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyResults.set([]);
         this.manifestLocations.set([]); this.selectedManifestPath.set(''); this.manifest.set([]);
         this.cleanupLocations.set([]); this.selectedCleanupPath.set(''); this.cleanupManifest.set([]);
         this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
@@ -711,7 +715,7 @@ export class OlsCibRegressionComponent implements OnInit {
     this.pulled.set(false); this.tree.set([]); this.scripts.set([]); this.repoBranch.set(''); this.repoWorkdir.set('');
     this.chgNumber.set(''); this.branches.set([]);
     this.selectedBranch.set(''); this.releaseDate.set(''); this.availableDates.set([]);
-    this.applyScriptsByDb.set({}); this.applyResults.set([]);
+    this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyResults.set([]);
   }
 
   /** Close out the run once every step is complete/forced — logs completion + marks it finished. */
@@ -902,131 +906,95 @@ export class OlsCibRegressionComponent implements OnInit {
       error: (e) => this.fail(e, 'Could not read the file')
     });
   }
-  toggleApplyDb(d: string): void { this.applyDbs.set(this.toggle(this.applyDbs(), d)); this.loadReleaseScripts(); }
-
-  /** Selection key — chg files are keyed by DB **and** path, so the SAME filename under two DBs (e.g. a
-   *  chg present in both batch & reporting folders) is selected independently, not collapsed into one. */
-  applyKey(db: string, path: string): string { return `${db}|${path}`; }
-  applyIsSel(db: string, path: string): boolean { return this.applySelected().includes(this.applyKey(db, path)); }
-
-  /** Load this run's chg*.sql for the selected DB(s) from their <release_date> folders (per DB). A newly
-   *  appearing file is ticked by default (run all in one click); a file you had UNticked stays unticked and
-   *  a file you had ticked stays ticked when you add/remove another DB — your selection is preserved. */
+  /** Load ALL chg*.sql for this release from the scope's SINGLE Scripts folder. The operator then decides,
+   *  per file, which DB(s) to run it on (+ the sequence). A re-scan preserves your existing per-file picks. */
   loadReleaseScripts(): void {
     const d = this.state().run?.release_date;
-    if (!d || !this.applyDbs().length) { this.applyScriptsByDb.set({}); this.applySelected.set([]); return; }
-    const seq = ++this.applyLoadSeq;   // guard: only the newest load may apply its result (rapid DB toggles race)
+    if (!d) { this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); return; }
+    const seq = ++this.applyLoadSeq;   // guard: only the newest load may apply its result
     this.loadingApply.set(true);
-    this.svc.releaseScripts(d, this.applyDbs()).subscribe({
+    this.svc.releaseScripts(d).subscribe({
       next: (r) => {
-        if (seq !== this.applyLoadSeq) { return; }   // a later toggle superseded this response
+        if (seq !== this.applyLoadSeq) { return; }
         this.loadingApply.set(false);
-        const map = r.scripts ?? {};
-        const prevKeys = new Set(this.applyKeysOf(this.applyScriptsByDb()));   // what was loaded before
-        const prevSel = new Set(this.applySelected());
-        const nextKeys = this.applyKeysOf(map);
-        this.applyScriptsByDb.set(map);
-        // keep prior intent: previously-known files keep their tick; brand-new files default to ticked
-        this.applySelected.set(nextKeys.filter((k) => prevSel.has(k) || !prevKeys.has(k)));
+        const list = r.scripts ?? [];
+        this.applyScripts.set(list);
+        // Keep prior per-file DB picks + order for files that still exist in the branch.
+        const keep: Record<string, string[]> = {};
+        for (const [f, dbs] of Object.entries(this.applyFileDbs())) { if (list.includes(f) && dbs.length) { keep[f] = dbs; } }
+        this.applyFileDbs.set(keep);
+        this.applyOrder.set(this.applyOrder().filter((f) => keep[f]?.length));
       },
       error: (e) => { if (seq === this.applyLoadSeq) { this.loadingApply.set(false); } this.fail(e, 'Could not load release scripts'); }
     });
   }
-  /** All `${db}|${path}` keys present in a per-DB script map. */
-  private applyKeysOf(map: Record<string, string[]>): string[] {
-    return Object.entries(map).flatMap(([db, arr]) => arr.map((s) => this.applyKey(db, s)));
+  applyDbsOf(file: string): string[] { return this.applyFileDbs()[file] ?? []; }
+  applyFileHas(file: string, db: string): boolean { return this.applyDbsOf(file).includes(db); }
+  applyFileRuns(file: string): boolean { return this.applyDbsOf(file).length > 0; }
+  applyFileName(file: string): string { return file.split('/').pop() || file; }
+  /** Keep a file's DB list in the fixed `databases` order (so per-file DB order is stable). */
+  private applyOrderDbs(keys: Set<string>): string[] { return this.databases.map((x) => x.key).filter((k) => keys.has(k)); }
+  /** Tick/untick one DB for one file. A file joins the run sequence when it gets its first DB and leaves it
+   *  when the last DB is removed (a file with no DB ticked is simply not run). */
+  toggleApplyFileDb(file: string, db: string): void {
+    const map = { ...this.applyFileDbs() };
+    const cur = new Set(map[file] ?? []);
+    cur.has(db) ? cur.delete(db) : cur.add(db);
+    const had = (map[file]?.length || 0) > 0;
+    map[file] = this.applyOrderDbs(cur);
+    this.applyFileDbs.set(map);
+    this.syncApplyOrder(file, map[file].length > 0, had);
   }
-  /** Tick/untick one chg file (under a specific DB) to run. */
-  toggleApplyScript(db: string, path: string): void { this.applySelected.set(this.toggle(this.applySelected(), this.applyKey(db, path))); }
-  applyGroupAllOn(db: string, scripts: string[]): boolean { return scripts.length > 0 && scripts.every((s) => this.applyIsSel(db, s)); }
-  /** 1-based execution order of a ticked chg within its DB group — this is `applySelected` order (the
-   *  operator-arranged run order), NOT the folder listing. 0 if unticked. */
-  applyOrder(db: string, s: string): number {
-    const key = this.applyKey(db, s);
-    let n = 0;
-    for (const k of this.applySelected()) {
-      if (k.startsWith(db + '|')) { n++; if (k === key) { return n; } }
-    }
-    return 0;
+  /** Select all / clear the 5 DBs for one file. */
+  toggleApplyFileAllDbs(file: string): void {
+    const all = this.databases.map((x) => x.key);
+    const map = { ...this.applyFileDbs() };
+    const had = (map[file]?.length || 0) > 0;
+    map[file] = (map[file]?.length || 0) === all.length ? [] : [...all];
+    this.applyFileDbs.set(map);
+    this.syncApplyOrder(file, map[file].length > 0, had);
   }
-  /** Move a ticked chg up/down within its DB group (changes the run order). */
-  moveApplyScript(db: string, s: string, dir: -1 | 1): void {
-    const key = this.applyKey(db, s);
-    const sel = [...this.applySelected()];
-    const idxs = sel.map((k, i) => (k.startsWith(db + '|') ? i : -1)).filter((i) => i >= 0);
-    const pos = idxs.findIndex((i) => sel[i] === key);
-    const swap = pos + dir;
-    if (pos < 0 || swap < 0 || swap >= idxs.length) { return; }
-    const a = idxs[pos], b = idxs[swap];
-    [sel[a], sel[b]] = [sel[b], sel[a]];
-    this.applySelected.set(sel);
+  applyFileAllDbsOn(file: string): boolean { return this.applyDbsOf(file).length === this.databases.length; }
+  private syncApplyOrder(file: string, hasDbs: boolean, hadDbs: boolean): void {
+    if (hasDbs && !hadDbs) { this.applyOrder.set([...this.applyOrder(), file]); }
+    else if (!hasDbs && hadDbs) { this.applyOrder.set(this.applyOrder().filter((f) => f !== file)); }
   }
-  /** First/last ticked chg in a DB group → disable the up/down button at the ends. */
-  applyIsFirst(db: string, s: string): boolean { return this.applyOrder(db, s) <= 1; }
-  applyIsLast(db: string, s: string): boolean {
-    const keys = this.applySelected().filter((k) => k.startsWith(db + '|'));
-    return this.applyOrder(db, s) >= keys.length;
-  }
-  /** Select / clear all chg files in one DB's group. */
-  toggleApplyGroup(db: string, scripts: string[]): void {
-    const allOn = this.applyGroupAllOn(db, scripts);
-    const cur = new Set(this.applySelected());
-    scripts.forEach((s) => (allOn ? cur.delete(this.applyKey(db, s)) : cur.add(this.applyKey(db, s))));
-    this.applySelected.set([...cur]);
-  }
+  applyFileOrder(file: string): number { return this.applyOrder().indexOf(file) + 1; }   // 0 = not running
+  moveApplyFile(file: string, dir: -1 | 1): void { this.moveInList(this.applyOrder, file, dir); }
+  applyFileIsFirst(file: string): boolean { return this.applyFileOrder(file) <= 1; }
+  applyFileIsLast(file: string): boolean { return this.applyFileOrder(file) >= this.applyOrder().length; }
 
   async runApply(): Promise<void> {
     const d = this.state().run?.release_date;
     if (!d) { await this.notifyRequired('This run has no release date.'); return; }
-    if (!this.applyDbs().length) { await this.notifyRequired('Select at least one target database.'); return; }
-    const map = this.applyScriptsByDb();
-    const sel = this.applySelected();
-    // Each DB runs ONLY its own folder's SELECTED chg scripts, in the operator-arranged order (applySelected
-    // order), against that DB only — never cross-product.
-    const queue = this.applyDbs()
-      .map((db) => ({ db, scripts: sel.filter((k) => k.startsWith(db + '|')).map((k) => k.slice(db.length + 1))
-        .filter((s) => (map[db] ?? []).includes(s)) }))
-      .filter((q) => q.scripts.length);
-    if (!queue.length) {
-      await this.notifyRequired('Select at least one chg file to run (tick the files under each database).');
-      return;
-    }
-    const total = queue.reduce((n, q) => n + q.scripts.length, 0);
+    // Ordered (script → DB) executions: each file in sequence, on each of its ticked DBs.
+    const executions = this.applyOrder().flatMap((f) => this.applyDbsOf(f).map((db) => ({ script: f, db })));
+    if (!executions.length) { await this.notifyRequired('Tick at least one database for at least one chg file.'); return; }
+    const dbCount = new Set(executions.map((e) => e.db)).size;
     const ok = await this.confirmStepRun(this.step('apply_db'),
-      `Run ${total} chg script(s) for release ${d} across ${queue.length} database(s) via sqlplus?`, 'Apply');
+      `Run ${this.applyOrder().length} chg file(s) — ${executions.length} execution(s) across ${dbCount} database(s) — for release ${d}, in the listed order?`, 'Apply');
     if (!ok) { return; }
     this.applyResults.set([]);
     this.busy.set('apply_db');
     this.viewerKind.set('console'); this.consoleCollapsed.set(false); this.consoleMax.set(false); this.consoleRunning.set(true);
     this.logTitle.set('Execution log — running…'); this.logContent.set('');
-    this.applyQueue = [...queue];
-    this.runApplyQueue();
-  }
-
-  // Apply runs the DBs sequentially (each with its own scripts), streaming into the one console.
-  private applyQueue: { db: string; scripts: string[] }[] = [];
-  private applyLoadSeq = 0;   // increments per loadReleaseScripts call; only the latest response is applied
-  private manifestLoadSeq = 0; // same guard for selectManifest (fast Batch↔Reporting switches)
-  private runApplyQueue(): void {
-    const next = this.applyQueue.shift();
-    if (!next) {
-      this.busy.set(''); this.consoleRunning.set(false);
-      const anyErr = this.applyResults().some((r) => r.status !== 'complete');
-      this.logTitle.set(anyErr ? 'Execution log — completed with errors' : 'Execution log');
-      this.toast.set(anyErr ? { kind: 'err', text: 'Apply completed with errors — check the console.' }
-                            : { kind: 'ok', text: 'Apply completed successfully.' });
-      this.reloadState();
-      return;
-    }
-    this.logContent.update((c) => (c ? `${c}\n` : '') + `########## ${this.dbLabel(next.db)} ##########`);
-    this.svc.runSqlStream(this.runId, 'apply_db', next.scripts, [next.db], {
+    this.svc.runSqlStream(this.runId, 'apply_db', [], [], {
       line: (t) => { if (this.consoleRunning()) { this.logContent.update((c) => (c ? `${c}\n${t}` : t)); } },
       result: (r) => this.applyResults.update((a) => [...a, r]),
-      step: () => { /* per-DB status folded into the final summary */ },
-      done: () => this.runApplyQueue(),
+      step: () => { /* status folded into the final summary */ },
+      done: () => {
+        this.busy.set(''); this.consoleRunning.set(false);
+        const anyErr = this.applyResults().some((r) => r.status !== 'complete');
+        this.logTitle.set(anyErr ? 'Execution log — completed with errors' : 'Execution log');
+        this.toast.set(anyErr ? { kind: 'err', text: 'Apply completed with errors — check the console.' }
+                              : { kind: 'ok', text: 'Apply completed successfully.' });
+        this.reloadState();
+      },
       error: (e) => { this.busy.set(''); this.consoleRunning.set(false); this.fail(e, 'Apply failed'); }
-    });
+    }, undefined, executions);
   }
+  private applyLoadSeq = 0;   // increments per loadReleaseScripts call; only the latest response is applied
+  private manifestLoadSeq = 0; // same guard for selectManifest (fast Batch↔Reporting switches)
 
   // --- step 3: File copy -----------------------------------------------------
   /** Discover filecopy_manifest*.json in the pulled branch for this run's release → dropdown(s). */
@@ -1378,6 +1346,30 @@ export class OlsCibRegressionComponent implements OnInit {
     if (fails) { parts.push(`${fails} failed`); }
     return parts.join('  ·  ');
   }
+  /** Export the shown cleanup results as a CSV audit artifact — one row per affected file (with its path's
+   *  rules + totals), so the full deleted-file list can be attached to the release ticket. */
+  downloadCleanupReport(rows: CleanupResult[]): void {
+    if (!rows?.length) { return; }
+    const head = ['Path', 'Status', 'Include subdir', 'Remove empty dir', 'Include pattern', 'Exclude pattern',
+      'Older than (days)', 'Files deleted', 'Bytes freed', 'Empty dirs removed', 'File', 'Error'];
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [head.map(esc).join(',')];
+    for (const r of rows) {
+      const status = r.ok ? (r.dry_run ? 'would clean' : 'cleaned') : 'error';
+      const base = [r.path, status, r.include_subdir || 'N', r.remove_empty_dir || 'N', r.include_pattern || '*',
+        r.exclude_pattern || '', r.older_than_days || 0, r.deleted || 0, r.bytes_freed || 0, r.dirs_removed || 0];
+      const files = r.sample || [];
+      if (files.length) { for (const f of files) { lines.push([...base, f, r.error || ''].map(esc).join(',')); } }
+      else { lines.push([...base, '', r.error || ''].map(esc).join(',')); }
+    }
+    const kind = rows[0]?.dry_run ? 'preview' : 'result';
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `cleanup-${kind}-${new Date().toISOString().slice(0, 19).replace(/[:T-]/g, '')}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
   // --- steps 4 & 5: Reset / Trigger -----------------------------------------
   // Multi-select + ordered (like Apply): the selection array's order IS the run order (▲▼ to change).
@@ -1406,35 +1398,42 @@ export class OlsCibRegressionComponent implements OnInit {
 
   /** Load the RegressionTesting scripts for the selected Reset DB (prune any selection no longer present). */
   loadResetScripts(): void {
-    this.svc.batchDBScripts(this.resetDb()).subscribe({
+    this.svc.batchScripts().subscribe({
       next: (r) => { const list = r.scripts ?? []; this.resetScripts.set(list); this.resetSelected.set(this.resetSelected().filter((s) => list.includes(s))); },
       error: (e) => this.fail(e, 'Could not load reset scripts')
     });
   }
   loadTriggerScripts(): void {
-    this.svc.batchDBScripts(this.triggerDb()).subscribe({
+    this.svc.batchScripts().subscribe({
       next: (r) => { const list = r.scripts ?? []; this.triggerScripts.set(list); this.triggerSelected.set(this.triggerSelected().filter((s) => list.includes(s))); },
       error: (e) => this.fail(e, 'Could not load trigger scripts')
     });
   }
-  onResetDb(db: string): void { this.resetDb.set(db); this.resetSelected.set([]); this.loadResetScripts(); }
-  onTriggerDb(db: string): void { this.triggerDb.set(db); this.triggerSelected.set([]); this.loadTriggerScripts(); }
+  // Target-DB multi-select (shared: every selected script runs on every selected DB, in sequence).
+  toggleResetDb(db: string): void { this.resetDbs.set(this.toggle(this.resetDbs(), db)); }
+  toggleTriggerDb(db: string): void { this.triggerDbs.set(this.toggle(this.triggerDbs(), db)); }
+  resetDbOn(db: string): boolean { return this.resetDbs().includes(db); }
+  triggerDbOn(db: string): boolean { return this.triggerDbs().includes(db); }
 
   async runReset(): Promise<void> {
-    const scripts = this.resetSelected();
+    const scripts = this.resetSelected(); const dbs = this.resetDbs();
     if (!scripts.length) { await this.notifyRequired('Tick at least one reset script to run.'); return; }
+    if (!dbs.length) { await this.notifyRequired('Tick at least one target database.'); return; }
+    const names = dbs.map((d) => this.dbDisplay(d)).join(', ');
     const ok = await this.confirmStepRun(this.step('reset'),
-      `Run ${scripts.length} reset script(s) on ${this.dbLabel(this.resetDb())}, in the listed order?`, 'Reset');
+      `Run ${scripts.length} reset script(s) on ${dbs.length} database(s) — ${names} — in the listed order?`, 'Reset');
     if (!ok) { return; }
-    this.runSqlStep('reset', scripts, [this.resetDb()], this.resetResults);
+    this.runSqlStep('reset', scripts, dbs, this.resetResults);
   }
   async runTrigger(): Promise<void> {
-    const scripts = this.triggerSelected();
+    const scripts = this.triggerSelected(); const dbs = this.triggerDbs();
     if (!scripts.length) { await this.notifyRequired('Tick at least one trigger script to run.'); return; }
+    if (!dbs.length) { await this.notifyRequired('Tick at least one target database.'); return; }
+    const names = dbs.map((d) => this.dbDisplay(d)).join(', ');
     const ok = await this.confirmStepRun(this.step('trigger'),
-      `Run ${scripts.length} trigger script(s) on ${this.dbLabel(this.triggerDb())}, in the listed order?`, 'Trigger');
+      `Run ${scripts.length} trigger script(s) on ${dbs.length} database(s) — ${names} — in the listed order?`, 'Trigger');
     if (!ok) { return; }
-    this.runSqlStep('trigger', scripts, [this.triggerDb()], this.triggerResults);
+    this.runSqlStep('trigger', scripts, dbs, this.triggerResults);
   }
 
   /** Run a step LIVE: open the console immediately and stream sqlplus output into it as it prints. */
@@ -1467,10 +1466,10 @@ export class OlsCibRegressionComponent implements OnInit {
   toggleConsoleMax(): void { this.consoleMax.set(!this.consoleMax()); if (this.consoleMax()) { this.consoleCollapsed.set(false); } }
   openLog(r: RunSqlResult): void {
     this.viewerKind.set('console'); this.consoleCollapsed.set(false); this.consoleMax.set(false);
-    if (r.tail) { this.logTitle.set(`${r.script} · ${this.dbLabel(r.db)}`); this.logContent.set(r.tail); return; }
+    if (r.tail) { this.logTitle.set(`${r.script} · ${this.dbDisplay(r.db)}`); this.logContent.set(r.tail); return; }
     if (!r.log_file) { return; }
     this.svc.logRead(r.log_file).subscribe({
-      next: (x) => { this.logTitle.set(`${r.script} · ${this.dbLabel(r.db)}`); this.logContent.set(x.content); },
+      next: (x) => { this.logTitle.set(`${r.script} · ${this.dbDisplay(r.db)}`); this.logContent.set(x.content); },
       error: (e) => this.fail(e, 'Could not read the log')
     });
   }
@@ -1507,6 +1506,11 @@ export class OlsCibRegressionComponent implements OnInit {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
   }
   dbLabel(key: string): string { return this.databases.find((d) => d.key === key)?.label ?? key; }
+  /** Operator-facing DB name: the actual DB name/SID + friendly label, e.g. "OLSCD1 (OLS CIB Batch)". */
+  dbDisplay(key: string): string {
+    const d = this.databases.find((x) => x.key === key);
+    return d ? (d.name ? `${d.name} (${d.label})` : d.label) : key;
+  }
   private fail(e: unknown, fallback: string): void {
     const err = e as { error?: { detail?: string; message?: string }; message?: string };
     this.toast.set({ kind: 'err', text: err?.error?.detail || err?.error?.message || err?.message || fallback });
