@@ -33,10 +33,12 @@ from typing import Any
 
 from env_loader import env_bool  # importing also loads backend/.env into os.environ
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import database  # data layer — ALL SQL lives here
+import db_errors  # DB busy/timeout → friendly 503/504 (see DEPLOYMENT.md "Concurrency, workers & timeouts")
+from auth_token import caller_or_body, current_username  # OIDC token → validated caller (AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -565,36 +567,42 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
 # ---------------------------------------------------------------------------
 
 @router.post("/me")
-def access_me(request: Request, body: AccessQuery) -> dict:
+def access_me(request: Request, body: AccessQuery, token_user: str = Depends(current_username)) -> dict:
     """The access snapshot for the signed-in user. Gate 1 (active in ols_users) is enforced here:
-    an inactive/unknown user gets ``active:false`` and the UI signs them out / shows No-Access."""
+    an inactive/unknown user gets ``active:false`` and the UI signs them out / shows No-Access.
+
+    When ``AUTH_VALIDATE_TOKEN=1`` the username comes from the VALIDATED bearer token, not the body
+    (the body username is only trusted in dev / dummy mode). See auth_token.py / AUTH_SETUP.md."""
+    username = caller_or_body(token_user, body.username)
     if ACCESS_USE_DUMMY:
-        return _access_dummy(body.username, body.app_env)
+        return _access_dummy(username, body.app_env)
     cfg = getattr(request.app.state, "app_db_config", None)
     try:
-        identity = database.fetch_user_identity(cfg, body.username)
+        identity = database.fetch_user_identity(cfg, username)
         active = _is_active(identity)
-        grants = database.fetch_user_grants(cfg, body.username) if active else []
-        is_ops = database.fetch_is_ops_admin(cfg, body.username) if active else False
+        grants = database.fetch_user_grants(cfg, username) if active else []
+        is_ops = database.fetch_is_ops_admin(cfg, username) if active else False
         # can_sql (S-Studio) is independent of is_ops_admin (User Management) — fetch it on its own.
-        can_sql = database.fetch_can_sql(cfg, body.username) if active else False
+        can_sql = database.fetch_can_sql(cfg, username) if active else False
         return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, can_sql=can_sql)
     except Exception:
-        logger.exception("access/me failed for %s", body.username)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("access/me failed for %s", username)
+        raise db_errors.http_error()
 
 
 @router.post("/effective")
-def access_effective(request: Request, body: EffectiveQuery) -> dict:
+def access_effective(request: Request, body: EffectiveQuery, token_user: str = Depends(current_username)) -> dict:
     """Admin-only diagnostic: the resolved snapshot for ``username`` PLUS the raw grant rows, so a
-    DBA can answer "why can't user X see table Y?". The caller must be an active ADMIN."""
+    DBA can answer "why can't user X see table Y?". The caller must be an active ADMIN (derived from
+    the validated token when AUTH_VALIDATE_TOKEN=1, else the body)."""
+    caller_uid = caller_or_body(token_user, body.caller)
     if ACCESS_USE_DUMMY:
         snap = _access_dummy(body.username, body.app_env)
         return {"status": "success", "snapshot": snap, "raw_grants": snap.get("_raw_grants", []),
                 "identity": {"username": body.username, "note": "dummy mode"}}
     cfg = getattr(request.app.state, "app_db_config", None)
     try:
-        caller = database.fetch_user_identity(cfg, body.caller)
+        caller = database.fetch_user_identity(cfg, caller_uid)
         if _role_of(caller) != "ADMIN" or not _is_active(caller):
             raise HTTPException(status_code=403, detail="Admin access required")
         identity = database.fetch_user_identity(cfg, body.username)
@@ -609,7 +617,7 @@ def access_effective(request: Request, body: EffectiveQuery) -> dict:
         raise
     except Exception:
         logger.exception("access/effective failed for %s (caller %s)", body.username, body.caller)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # ---------------------------------------------------------------------------
@@ -675,9 +683,9 @@ def _lookup_target(cfg, uid: str) -> tuple[bool, dict]:
 
 
 @router.post("/admin/catalogue")
-def admin_catalogue(request: Request, body: AdminQuery) -> dict:
+def admin_catalogue(request: Request, body: AdminQuery, token_user: str = Depends(current_username)) -> dict:
     """The grantable-resource tree the User Management pickers render (User-access surface)."""
-    cfg = _require_user_admin(request, body.caller)
+    cfg = _require_user_admin(request, caller_or_body(token_user, body.caller))
     if ACCESS_USE_DUMMY:
         return {"status": "success", "catalogue": build_catalogue([], list(OCC_DB_LABELS.keys()))}
     try:
@@ -691,14 +699,14 @@ def admin_catalogue(request: Request, body: AdminQuery) -> dict:
         raise
     except Exception:
         logger.exception("admin/catalogue failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/admin/user")
-def admin_user(request: Request, body: AdminUserQuery) -> dict:
+def admin_user(request: Request, body: AdminUserQuery, token_user: str = Depends(current_username)) -> dict:
     """Look a user up (validated against ols_users) + return their current grants and resolved
     snapshot. `lookup.active=false` → the UI shows the 'raise a request' message, no grants."""
-    cfg = _require_user_admin(request, body.caller)
+    cfg = _require_user_admin(request, caller_or_body(token_user, body.caller))
     if ACCESS_USE_DUMMY:
         ident = _dummy_identity(body.uid)
         grants = _dummy_grants(body.uid)
@@ -719,15 +727,15 @@ def admin_user(request: Request, body: AdminUserQuery) -> dict:
         raise
     except Exception:
         logger.exception("admin/user failed for %s", body.uid)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/admin/users")
-def admin_users(request: Request, body: AdminQuery) -> dict:
+def admin_users(request: Request, body: AdminQuery, token_user: str = Depends(current_username)) -> dict:
     """The "who has access" roster: every user with ≥1 active `ols_app_access` grant, joined to
     `ols_users`, with a per-user grant count + summarised feature areas. Sorting/filtering is done
     client-side. Gated by the User-access surface (ops-admin / ADMIN / SCREEN/user_management)."""
-    cfg = _require_user_admin(request, body.caller)
+    cfg = _require_user_admin(request, caller_or_body(token_user, body.caller))
     if ACCESS_USE_DUMMY:
         return {"status": "success", "users": _dummy_access_users()}
     try:
@@ -737,13 +745,14 @@ def admin_users(request: Request, body: AdminQuery) -> dict:
         raise
     except Exception:
         logger.exception("admin/users failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/admin/grant")
-def admin_grant(request: Request, body: GrantBody) -> dict:
+def admin_grant(request: Request, body: GrantBody, token_user: str = Depends(current_username)) -> dict:
     """Grant (insert/update) ONE `ols_app_access` row for a user. Target must be an active OLS user."""
-    cfg = _require_user_admin(request, body.caller)
+    caller = caller_or_body(token_user, body.caller)
+    cfg = _require_user_admin(request, caller)
     rt = (body.resource_type or "").strip().upper()
     rs = (body.resource_scope or "").strip()
     rk = (body.resource_key or "*").strip() or "*"
@@ -758,19 +767,19 @@ def admin_grant(request: Request, body: GrantBody) -> dict:
         ok, _ = _lookup_target(cfg, body.username)
         if not ok:
             raise HTTPException(status_code=422, detail=no_ols_user_msg(body.username))
-        database.grant_upsert(cfg, body.username, rt, rs, rk, lvl, body.caller)
+        database.grant_upsert(cfg, body.username, rt, rs, rk, lvl, caller)
         return {"status": "success", "grants": database.fetch_all_grants(cfg, body.username)}
     except HTTPException:
         raise
     except Exception:
         logger.exception("admin/grant failed for %s", body.username)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/admin/grant/delete")
-def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
+def admin_grant_delete(request: Request, body: GrantDeleteBody, token_user: str = Depends(current_username)) -> dict:
     """Revoke (hard-DELETE) ONE `ols_app_access` row by its natural key — no audit kept."""
-    cfg = _require_user_admin(request, body.caller)
+    cfg = _require_user_admin(request, caller_or_body(token_user, body.caller))
     if ACCESS_USE_DUMMY:
         return {"status": "success", "dummy": True, "deleted": 1}
     try:
@@ -781,19 +790,20 @@ def admin_grant_delete(request: Request, body: GrantDeleteBody) -> dict:
         raise
     except Exception:
         logger.exception("admin/grant/delete failed for %s", body.username)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/admin/ops")
-def admin_ops(request: Request, body: OpsAdminBody) -> dict:
+def admin_ops(request: Request, body: OpsAdminBody, token_user: str = Depends(current_username)) -> dict:
     """Manage the privileged-operators table (`ols_ops_access`): action = list | add | disable |
     enable | users_on | users_off | sql_on | sql_off | remove. `add` requires an active OLS user;
     `disable`/`enable` flip is_active; `users_on`/`users_off` grant/revoke User Management (`can_users`);
     `sql_on`/`sql_off` grant/revoke S-Studio (`can_sql`); `remove` hard-deletes. No self-lockout guard."""
-    cfg = _require_ops_admin(request, body.caller)
+    caller = caller_or_body(token_user, body.caller)
+    cfg = _require_ops_admin(request, caller)
     action = (body.action or "").strip().lower()
     if ACCESS_USE_DUMMY:
-        row = {"username": body.caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y"}
+        row = {"username": caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y"}
         return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
     try:
         if action == "list":
@@ -826,7 +836,7 @@ def admin_ops(request: Request, body: OpsAdminBody) -> dict:
         raise
     except Exception:
         logger.exception("admin/ops %s failed", action)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # ---------------------------------------------------------------------------

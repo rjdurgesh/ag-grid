@@ -7,3 +7,8 @@ httpx>=0.27,<1.0
 # not installed, system_api falls back to stdlib (Windows GlobalMemoryStatusEx /
 # Linux /proc/meminfo), so this is not required.
 psutil>=5.9
+# OIDC access-token validation (AUTH_VALIDATE_TOKEN=1). Verifies the bearer token's signature
+# against the provider's JWKS + its iss/aud/exp claims; ships PyJWKClient for key fetch/caching,
+# and `cryptography` backs RS256/ES256. Imported LAZILY in auth_token.py, so the backend still
+# runs without this package while AUTH_VALIDATE_TOKEN is off (dev / dummy auth). See AUTH_SETUP.md.
+PyJWT[crypto]>=2.8,<3.0

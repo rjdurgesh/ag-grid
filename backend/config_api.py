@@ -28,6 +28,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 import database
+import db_errors  # DB busy/timeout → friendly 503/504 (see DEPLOYMENT.md "Concurrency, workers & timeouts")
+from auth_token import resolve_caller  # OIDC: caller from validated token / AUTH_DEV_USER (see AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -242,6 +244,7 @@ def _archive(content: str, original_filename: str, caller: str, token: str) -> s
 def config_roll(scope: str, request: Request, body: RollBody) -> dict:
     """Roll a COB table's data from one source date to one or more target dates. Copies (replace) the
     source rows into each target date. Returns per-date counts."""
+    body.rolled_by = resolve_caller(request, body.rolled_by)  # OIDC: real actor from token (401 if OIDC on + no token)
     _require_config_write(request, body.rolled_by, scope)
     try:
         src = _parse_dt(body.source_date, False)
@@ -263,13 +266,14 @@ def config_roll(scope: str, request: Request, body: RollBody) -> dict:
                                             target_dates=targets, uid=body.rolled_by,
                                             tablespace=body.tablespace)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"status": "success", **result}
 
 
 # ---- upload & load ---------------------------------------------------------
 @router.post("/{scope}/table/{table}/upload")
 def config_upload(scope: str, table: str, request: Request, body: UploadBody) -> dict:
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real actor from token (401 if OIDC on + no token)
     _require_config_write(request, body.caller, scope)
     if body.mode not in ("append", "replace"):
         raise HTTPException(status_code=400, detail="mode must be 'append' or 'replace'.")
@@ -379,6 +383,7 @@ def config_upload(scope: str, table: str, request: Request, body: UploadBody) ->
 @router.post("/{scope}/columnretrieve")
 def config_columnretrieve(scope: str, request: Request, body: ColumnDetailBody) -> dict:
     """Down-arrow expand → the table's column definitions as `{cols, rows}` (rendered as-is)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real caller from token (401 if OIDC on + no token)
     _require_config_read(request, body.caller, scope)
     if CONFIG_USE_DUMMY:
         return {"cols": ["COLUMN_NAME", "DATA_TYPE", "NULLABLE", "DATA_LENGTH", "DATA_PRECISION", "DATA_SCALE"], "rows": []}
@@ -388,7 +393,7 @@ def config_columnretrieve(scope: str, request: Request, body: ColumnDetailBody) 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
 
 
 @router.post("/{scope}/retrieve")
@@ -396,6 +401,7 @@ def config_retrieve(scope: str, request: Request, body: ContentBody) -> dict:
     """Eye-click → self-describing content `{cols, cols_data_types, Table_data}` (each row carries a
     hidden rowid for update/delete). For a COB table the resolved date column is filtered by the chosen
     date(s)/range; a non-COB table returns the whole table (capped at CONTENT_MAX_ROWS)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real caller from token (401 if OIDC on + no token)
     _require_config_read(request, body.caller, scope)
     if CONFIG_USE_DUMMY:
         return {"cols": [], "cols_data_types": [], "Table_data": []}
@@ -418,7 +424,7 @@ def config_retrieve(scope: str, request: Request, body: ContentBody) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
 
 
 # ---- write: insert / update / delete (rowid-based CRUD) --------------------
@@ -463,6 +469,7 @@ def _valid_rowid(rid: Any) -> bool:
 def config_insert(scope: str, table: str, request: Request, body: InsertBody) -> dict:
     """INSERT rows — cells type-cast per the table schema, INSERTED_* audit stamped server-side. Reuses
     the atomic append path of ``config_load_table``."""
+    body.inserted_by = resolve_caller(request, body.inserted_by)  # OIDC: real actor from token (401 if OIDC on + no token)
     _require_config_write(request, body.inserted_by, scope)
     if not body.columns or not body.rows:
         raise HTTPException(status_code=400, detail="Nothing to insert — provide at least one row of column values.")
@@ -486,7 +493,7 @@ def config_insert(scope: str, table: str, request: Request, body: InsertBody) ->
             dbcfg, table=table, columns=list(body.columns), rows=cast_rows, mode="append",
             system_defaults=_audit_defaults(coldefs, body.inserted_by, "INSERTED"), batch_size=BATCH_SIZE)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"inserted": result["rows_loaded"]}
 
 
@@ -495,6 +502,7 @@ def config_update(scope: str, table: str, request: Request, body: UpdateBody) ->
     """UPDATE rows by rowid. The whole `updates` payload is handed to the PL/SQL procedure as a JSON
     CLOB (see `database.config_update_rows` / `CONFIG_UPDATE_PROC`); the proc applies the changes by
     ROWID and stamps UPDATED_BY/UPDATED_DATE itself — so no per-cell casting or audit stamping here."""
+    body.updated_by = resolve_caller(request, body.updated_by)  # OIDC: real actor from token (401 if OIDC on + no token)
     _require_config_write(request, body.updated_by, scope)
     if not body.updates:
         raise HTTPException(status_code=400, detail="Nothing to update — no rows were changed.")
@@ -515,13 +523,14 @@ def config_update(scope: str, table: str, request: Request, body: UpdateBody) ->
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"updated": updated}
 
 
 @router.post("/{scope}/table/{table}/delete")
 def config_delete(scope: str, table: str, request: Request, body: DeleteBody) -> dict:
     """DELETE rows by rowid (atomic; DELETE not TRUNCATE)."""
+    body.deleted_by = resolve_caller(request, body.deleted_by)  # OIDC: real actor from token (401 if OIDC on + no token)
     _require_config_write(request, body.deleted_by, scope)
     if not body.rowids:
         raise HTTPException(status_code=400, detail="No rows selected to delete.")
@@ -533,5 +542,5 @@ def config_delete(scope: str, table: str, request: Request, body: DeleteBody) ->
     try:
         deleted = database.config_delete_rows(dbcfg, table=table, rowids=body.rowids)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"deleted": deleted}

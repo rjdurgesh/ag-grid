@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import random
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from auth_token import current_username  # OIDC: enforce a valid token when AUTH_VALIDATE_TOKEN=1 (see AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -46,9 +47,18 @@ class ServiceManageRequest(BaseModel):
 
 
 @router.post("/service-manage")
-def service_manage(req: ServiceManageRequest) -> dict:
-    """One endpoint, two payloads: an ACTION (start/stop/status on one service) or a bulk
-    STATUS check for a list of services. Both proxy to the server's agent."""
+def service_manage(req: ServiceManageRequest, caller: str = Depends(current_username)) -> dict:
+    """One endpoint, two payloads: an ACTION (start/stop/restart on one service) or a bulk STATUS check
+    for a list of services. Both proxy to the server's agent.
+
+    `caller` comes from the validated OIDC token when AUTH_VALIDATE_TOKEN=1 (else AUTH_DEV_USER / anon in
+    debug): the dependency AUTHENTICATES the request — a missing/invalid token is 401 before anything runs.
+    A start/stop/restart is a WRITE, so who did it is logged. NOTE: this enforces authentication, not
+    per-app authorization — a server-side RBAC re-check (service_console WRITE) is a recommended follow-up;
+    today write access is gated in the UI (`*olsCanWrite`)."""
+    if req.action:
+        logger.info("service_console action=%s service=%s host=%s by=%s",
+                    req.action, req.service, req.host_name, caller or "(anon)")
     return call_service_agent(req)
 
 

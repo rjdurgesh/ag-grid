@@ -157,6 +157,7 @@
 :host ::ng-deep .rg-cell--link { color: var(--rg-accent); cursor: pointer; font-weight: 600; }
 :host ::ng-deep .rg-cell--link:hover { text-decoration: underline; }
 .rg-hint { margin: 0; font-size: 0.82rem; color: var(--cui-secondary-color, #6b7280); code { background: var(--cui-tertiary-bg, #eef0f2); padding: 0.05rem 0.35rem; border-radius: 5px; font-size: 0.9em; } }
+.rg-hint--err { color: var(--cui-danger, #dc3545); }
 
 .rg select {
   height: 36px; padding: 0 0.65rem; font-size: 0.86rem; min-width: 175px; max-width: 320px;

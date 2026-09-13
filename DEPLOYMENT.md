@@ -332,3 +332,99 @@ boxes need extra prerequisites + `.env` keys (PROD needs none of this):
   sqlplus against them. Create the tables once with `backend/sql/regression_setup.sql`, and replace
   `database.BATCH_MONITOR_SQL` with your real batch-status query.
 - The service account must be able to reach the file-copy source/destination UNC paths.
+
+---
+
+## Concurrency, workers & timeouts (avoiding the "everything gets stuck" cascade)
+
+**Why it can wedge:** every API endpoint is synchronous (`def`), so FastAPI runs each request in a
+**bounded thread pool inside one process** (Starlette/AnyIO default ≈ **40 threads**). A blocking call
+with no timeout — a hung Oracle query (lock wait), a dead UNC share, a slow agent — **holds its thread
+until it returns**. Enough of those drain the pool and every new request queues behind them (they show
+"pending"). The browser makes it worse: over HTTP/1.1 it opens only **~6 connections per origin**, so a
+few stuck calls block *all* further calls to that origin — they never even reach the backend. There is
+no internal queue to "flush"; the threads are genuinely blocked, which is why only a restart clears it.
+The fixes below make a slow/hung call fail *fast on that one call* instead of taking down the service.
+
+### 1. Timeouts on every blocking call (the real fix — do this first)
+- **Oracle per-call timeout** in `database.connect()` — set `conn.call_timeout = <ms>` so any single
+  round-trip that overruns raises instead of hanging forever, freeing the thread. Also give the connect
+  itself a deadline: `oracledb.connect(..., tcp_connect_timeout=5)` so a dead listener fails fast.
+  **Set `call_timeout` ABOVE your longest *legitimate* query** — it is a safety net against *hangs*, not
+  an SLA. If some reports genuinely take 5 min, use e.g. `600000` (10 min), not 60 s (see the note below
+  on genuinely long queries).
+- **httpx agent calls** already pass `timeout=8.0` (Infra Health / Service Console) — keep it.
+- **git / sqlplus** subprocesses already pass `git_timeout` / `sqlplus_timeout`.
+
+> **Genuinely long queries (minutes):** don't hold them on an HTTP request at all — an open request for
+> minutes ties up a thread (and proxies/load balancers often kill idle connections at 30–120 s anyway).
+> Use the **submit → poll** pattern already in the app (OCC gather-stats / MV-refresh return an
+> `action_id`; the UI polls `action-status`). A tight `call_timeout` then stays safe *and* long work runs
+> in the background.
+
+### 2. Connection pool with an acquire timeout
+Replace connect-per-request with `oracledb.create_pool(min=…, max=…)` and `pool.acquire(timeout=5)`.
+**Note the distinction:** the *acquire* timeout only bounds how long a request waits to *check out* a
+connection — it does **not** cap how long a query runs once it has one. So a legitimate 5-min query keeps
+its connection for 5 min (fine); the acquire timeout just makes *other* requests fail fast (503) when the
+pool is momentarily full, instead of hanging. `call_timeout` (§1) and acquire timeout are independent knobs.
+
+### 3. Multiple workers — the resilience knob (this section's main change)
+
+**Workers are separate OS *processes*, not threads.** Two independent levels of concurrency:
+
+| | What it is | Concurrency it gives | RAM cost |
+|---|---|---|---|
+| **Workers** (`--workers N`) | N separate Python processes sharing the listening socket | CPU parallelism + **crash isolation** (one wedged worker can't freeze the others) | **High** — each worker is a full copy of the app (≈ 150–300 MB with FastAPI + oracledb) + its own thread pool + its own DB connections |
+| **Threads** (per worker) | the AnyIO thread pool (≈ 40 by default) that runs the `def` endpoints | concurrent blocking I/O *within* a worker | **Low** — threads are cheap next to a process |
+
+Because this app is **I/O-bound** (mostly waiting on Oracle), the per-worker **thread pool already
+supplies most of the concurrency** — you do **not** need many workers. Workers buy you *isolation and CPU
+parallelism*, so a small number is the sweet spot.
+
+**How many workers — size against the tightest of these three limits, not just CPU:**
+1. **CPU:** `min(physical_cores, …)`. A common starting point is 2–4.
+2. **RAM (protect the other Python apps on the box):** `workers × per-worker RSS` must leave headroom for
+   the OS **and** your other apps. Measure one worker's RSS in Task Manager, then:
+   `max_workers ≈ (RAM you're allowed to use) ÷ (per-worker RSS)`, rounded **down**, keeping ~25 % free.
+3. **Oracle sessions:** `workers × pool_max` must stay under the DBA-granted session limit
+   (e.g. 4 workers × pool_max 10 = 40 sessions — clear it with the DBA).
+
+**Recommendation for a shared Windows box:** start at **2–4 workers** (often `min(cores, 3)` on a box
+shared with other apps), each with a **small pool** (`pool_max` 5–10), and **measure** RAM + Oracle
+sessions before raising it. More workers ≠ faster here; they mostly add RAM and DB sessions. If RAM is
+tight, prefer **1–2 workers + a larger thread pool** over many workers.
+
+NSSM (`OLS_BACKEND_SERVICE`, from Option C — add `--workers`):
+```
+nssm set OLS_BACKEND_SERVICE AppParameters "-m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 3"
+```
+(Never combine `--workers` with `--reload`; `--reload` forces a single worker and is unreliable on
+Windows anyway — see the memory note. Restart the service after changing the count.)
+
+**Tuning the per-worker thread pool** (the "threading" — cheap RAM, raises in-worker concurrency): set it
+once at startup in `app.py`, e.g.
+```python
+import anyio
+@app.on_event("startup")
+async def _tune_threadpool():
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 60   # default ~40
+```
+Raise this (say 60–80) to handle more concurrent slow calls per worker *without* the RAM cost of extra
+processes. Don't set it huge — every thread can hold a DB connection, so keep `pool_max ≥` the number of
+threads you actually expect to be querying at once, and keep `workers × pool_max` under the DB limit.
+
+### 4. Frontend: global request timeout + cancellation
+Add one Angular `HttpInterceptor` with `timeout(30_000)` so the UI aborts a hung call and **frees the
+browser connection** (that cures the ~6-connection lockup). Use `switchMap` for polls so a new poll
+cancels the previous one, and stop polls on navigation. (Some screens already do this per-call — making
+it global is the durable fix.)
+
+### 5. Don't "fix" it by converting endpoints to `async def`
+oracledb is synchronous; calling it inside `async def` blocks the **event loop** and freezes *every*
+request (worse than a drained thread pool). Keep endpoints `def` (thread pool) and apply §1–§4. A true
+async rewrite (oracledb async API) is possible later but is a large change and unnecessary to solve this.
+
+**Net:** §1 (DB `call_timeout` + connect timeout) + §3 (2–4 workers) + §4 (frontend timeout) together mean
+a slow query or dead share degrades to a fast error on that one call — never a service-wide freeze, and
+never a manual restart to "clear the queue."

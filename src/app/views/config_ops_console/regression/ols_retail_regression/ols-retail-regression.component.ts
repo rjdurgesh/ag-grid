@@ -240,6 +240,7 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly monitorTab = signal<'batches' | 'activity'>('activity');   // Regression Activity shown first
   readonly monitorDb = signal('retail_batch');
   readonly batchResult = signal<BatchMonitorResult | null>(null);
+  readonly batchError = signal(false);       // true when the last batch-monitor load failed → show a retryable message, not a stuck spinner
   readonly activityRows = signal<RegressionActivityRow[]>([]);
   readonly monitorLoading = signal(false);
 
@@ -1483,9 +1484,12 @@ export class OlsRetailRegressionComponent implements OnInit {
   // --- monitoring ------------------------------------------------------------
   loadBatches(): void {
     this.monitorLoading.set(true);
+    this.batchError.set(false);
     this.svc.batchMonitor(this.monitorDb()).subscribe({
       next: (r) => { this.monitorLoading.set(false); this.batchResult.set(r); this.batchAt.set(new Date()); this.nowTick.set(Date.now()); },
-      error: (e) => { this.monitorLoading.set(false); this.fail(e, 'Could not load batch status'); }
+      // On failure clear the spinner AND flag the error so the panel shows a retryable message instead of
+      // "Loading…" forever (batchResult stays null on error, which the template otherwise reads as loading).
+      error: (e) => { this.monitorLoading.set(false); this.batchError.set(true); this.fail(e, 'Could not load batch status'); }
     });
   }
   loadActivity(): void {

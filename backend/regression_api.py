@@ -26,6 +26,7 @@ from pydantic import BaseModel
 import config_loader
 import database
 import regression_ops as ops
+from auth_token import resolve_caller  # OIDC: caller from validated token / AUTH_DEV_USER (see AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -145,8 +146,13 @@ class ActivityBody(Caller):
 
 
 # ---- gate ------------------------------------------------------------------
-def _require_regression(request: Request, caller: str):
-    """Return the app DB config after confirming DEV/STG + CIB Config access; else 403. None in dummy."""
+def _require_regression(request: Request, body: Caller):
+    """Resolve the caller from the OIDC token (falling back to AUTH_DEV_USER / the body per the
+    AUTH_VALIDATE_TOKEN switch), stamp it back onto ``body.caller`` so every downstream audit write uses
+    the real identity, then return the app DB config after confirming DEV/STG + CIB Config access (else
+    403; None in dummy). With OIDC on, a missing/invalid token → 401 here."""
+    body.caller = resolve_caller(request, body.caller)
+    caller = body.caller
     if REGRESSION_USE_DUMMY:
         return None
     if str(getattr(request.app.state, "app_env", "PROD")).upper() not in ("DEV", "STG"):
@@ -198,7 +204,7 @@ def _mark_in_progress(cfg: Any, run_id: int, step_key: str, caller: str) -> None
 # ---- run + steps -----------------------------------------------------------
 @router.post("/run/current")
 def run_current(request: Request, body: Caller) -> dict:
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "run": None, "steps": {}}
     return {"status": "success", **(database.regression_run_current(cfg, request.app.state.app_env) or {"run": None, "steps": {}})}
@@ -209,7 +215,7 @@ def run_start(request: Request, body: StartBody) -> dict:
     """Open a run for a specific release: the pulled `branch` + a `release_date` (YYYYMMDD folder).
     The date is HARD-VALIDATED against the release folders actually present in the pulled branch, so a
     wrong/absent date is rejected with the list of what's available (no run is created)."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     chg = (body.change_number or "").strip().upper()
     if not chg:
         raise HTTPException(status_code=400, detail="A Change (CHG) number is required to start a regression run.")
@@ -232,7 +238,7 @@ def run_start(request: Request, body: StartBody) -> dict:
 
 @router.post("/step/mark")
 def step_mark(request: Request, body: MarkBody) -> dict:
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -250,7 +256,7 @@ def step_mark(request: Request, body: MarkBody) -> dict:
 def step_unlock(request: Request, body: UnlockBody) -> dict:
     """Clear a stuck in_progress step (crash/drop between start and result) so the run isn't
     deadlocked. Logged as an 'unlock' with who did it; the step becomes re-runnable (status error)."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -264,7 +270,7 @@ def refresh_databases(request: Request, body: Caller) -> dict:
     """The databases refreshable for THIS scope in the current env (DEV/STG can have several — both
     batch + reporting). Scope-specific (cib screen → cib DBs) and env-specific (per-server config), so
     the Refresh-DB picker only ever shows this env's own databases. `{databases: [{key,label}]}`."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         env = str(getattr(request.app.state, "app_env", "DEV")).upper() or "DEV"
         # grouped BATCH / REPORTING, with a few instances each to exercise the dropdown
@@ -290,7 +296,7 @@ def refresh_db(request: Request, body: RefreshBody) -> dict:
     endpoint is not wired yet, so a database currently reports success; when ``refresh_url`` is wired, call it
     per DB inside the loop, set ``status``/``message`` from the real response (``error`` + the failure reason
     on a non-2xx / exception), and the summary + step status below already roll that up correctly."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     _require_step_free(cfg, body.run_id, "refresh_db")
     _mark_in_progress(cfg, body.run_id, "refresh_db", body.caller)
     dbs = body.dbs or []
@@ -323,7 +329,7 @@ def refresh_db(request: Request, body: RefreshBody) -> dict:
 @router.post("/run/complete")
 def run_complete(request: Request, body: CompleteBody) -> dict:
     """Close out a run once every step is complete/forced — log the completion + mark it finished."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -336,7 +342,7 @@ def run_complete(request: Request, body: CompleteBody) -> dict:
 # ---- git -------------------------------------------------------------------
 @router.post("/git/branches")
 def git_branches(request: Request, body: Caller) -> dict:
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "branches": ["release/2026-09-10", "release/2026-08-15"]}
     try:
@@ -347,7 +353,7 @@ def git_branches(request: Request, body: Caller) -> dict:
 
 @router.post("/git/pull")
 def git_pull(request: Request, body: PullBody) -> dict:
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "scripts": ["reset/reset_batches.sql", "trigger/trigger_all.sql"],
                 "release_dates": ["20260910", "20260815", "20260710"]}
@@ -365,7 +371,7 @@ def git_pull(request: Request, body: PullBody) -> dict:
 def release_dates(request: Request, body: Caller) -> dict:
     """Release folders (YYYYMMDD) present in the pulled branch, newest first — refresh the date hint
     without re-pulling."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "release_dates": ["20260910", "20260815", "20260710"]}
     return {"status": "success", "release_dates": ops.list_release_dates(config_loader.regression_scope_config(body.scope))}
@@ -375,7 +381,7 @@ def release_dates(request: Request, body: Caller) -> dict:
 def release_scripts(request: Request, body: ReleaseScriptsBody) -> dict:
     """chg*.sql for a release from the scope's SINGLE Scripts folder (<root>/<date>/) — a flat list. The
     operator then picks, per file, which DB(s) to run it on. `{scripts: string[]}`."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         rd = body.release_date
         return {"status": "success", "scripts": [
@@ -389,7 +395,7 @@ def release_scripts(request: Request, body: ReleaseScriptsBody) -> dict:
 
 @router.post("/git/scripts")
 def git_scripts(request: Request, body: Caller) -> dict:
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "scripts": ["apply/CHG_20260828.sql", "reset/reset_batches.sql", "trigger/trigger_all.sql"]}
     return {"status": "success", "scripts": ops.list_branch_scripts(config_loader.regression_scope_config(body.scope))}
@@ -399,7 +405,7 @@ def git_scripts(request: Request, body: Caller) -> dict:
 def batch_db_scripts(request: Request, body: BatchDBScriptsBody) -> dict:
     """.sql scripts from the scope's SINGLE **RegressionTesting** folder — the Reset / Trigger steps pick
     from here (checkbox + sequence), then choose which DB(s) to run them on. `{scripts: string[]}`."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         base = "sql/RegressionTesting"
         return {"status": "success", "scripts": [f"{base}/reset_batches.sql", f"{base}/trigger_all.sql",
@@ -411,7 +417,7 @@ def batch_db_scripts(request: Request, body: BatchDBScriptsBody) -> dict:
 def git_tree(request: Request, body: Caller) -> dict:
     """The whole pulled branch (files) + info, so the operator can browse it and verify referenced
     packages/procs exist with the latest code."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "workdir": "D:/ols/regression/work", "branch": "release/20260828",
                 "files": ["apply/CHG_20260828.sql", "apply/CHG_20260828_MISC1.sql",
@@ -425,7 +431,7 @@ def git_tree(request: Request, body: Caller) -> dict:
 @router.post("/git/file")
 def git_file(request: Request, body: FileBody) -> dict:
     """Content of one file in the pulled branch (verification / review)."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "path": body.path,
                 "content": f"-- {body.path}\nCREATE OR REPLACE PACKAGE BODY abc AS\n  PROCEDURE run IS BEGIN NULL; END;\nEND abc;\n/"}
@@ -447,7 +453,7 @@ def _run_sql_combos(body: RunSqlBody) -> list[tuple[str, str]]:
 
 @router.post("/run-sql")
 def run_sql(request: Request, body: RunSqlBody) -> dict:
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     combos = _run_sql_combos(body)
     if not combos:
         raise HTTPException(status_code=400, detail="Pick at least one script and one database.")
@@ -514,7 +520,7 @@ def _run_sql_done_comment(results: list[dict]) -> str:
 def run_sql_stream(request: Request, body: RunSqlBody):
     """LIVE sqlplus: stream each script×db run's output line-by-line (SSE) so the console fills in
     real time. Same per-script + summary audit logging as /run-sql. Used by Apply/Reset/Trigger."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     combos = _run_sql_combos(body)
     if not combos:
         raise HTTPException(status_code=400, detail="Pick at least one script and one database.")
@@ -573,7 +579,7 @@ def run_sql_stream(request: Request, body: RunSqlBody):
 
 @router.post("/log/read")
 def log_read(request: Request, body: LogBody) -> dict:
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "content": "Dummy log content.\nConnected.\nPL/SQL procedure successfully completed."}
     try:
@@ -704,7 +710,7 @@ def _finalize_copy(cfg, run_id: int, caller: str, action_results: list[dict], ma
 def file_copy_manifests(request: Request, body: ManifestsBody) -> dict:
     """Discover filecopy_manifest*.json in the pulled branch under each Scripts root's <release_date>/
     folder → one entry per folder that has one (the UI shows a labelled dropdown per folder)."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         d = body.release_date or "20260921"
         return {"status": "success", "locations": [
@@ -716,7 +722,7 @@ def file_copy_manifests(request: Request, body: ManifestsBody) -> dict:
 @router.post("/file-copy/manifest")
 def file_copy_manifest(request: Request, body: ReadManifestBody) -> dict:
     """Read one chosen manifest (by repo-relative path) → its {source,destination} items."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "items": [
             {"source": "\\\\eur17\\d$\\release\\cib\\app.config", "destination": "\\\\eur34\\e$\\apps\\cib\\app.config"},
@@ -732,7 +738,7 @@ def file_copy_manifest(request: Request, body: ReadManifestBody) -> dict:
 def file_copy_preflight(request: Request, body: PreflightBody) -> dict:
     """READ-ONLY readiness check before a copy — per item: source exists, destination reachable/writable,
     enough free space. Copies + logs NOTHING; lets the operator catch problems before running the step."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "results": _dummy_preflight(body.items)}
     return {"status": "success", "results": ops.preflight_items(body.items)}
@@ -742,7 +748,7 @@ def file_copy_preflight(request: Request, body: PreflightBody) -> dict:
 def file_copy_run(request: Request, body: CopyBody) -> dict:
     """Copy the selected items; log each incrementally (crash-safe) then a summary row whose status is
     Complete/Partial/Error vs the full manifest. (Mock/stream variants share this shape.)"""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if not body.items:
         raise HTTPException(status_code=400, detail="Select at least one item to copy.")
     _require_step_free(cfg, body.run_id, "file_copy")
@@ -768,7 +774,7 @@ def file_copy_run(request: Request, body: CopyBody) -> dict:
 def file_copy_run_stream(request: Request, body: CopyBody):
     """LIVE file copy: stream one event per item as it finishes (SSE) so the UI shows a progress bar +
     per-file ✓/✗. Same incremental logging + manifest-based step status as /file-copy/run."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if not body.items:
         raise HTTPException(status_code=400, detail="Select at least one item to copy.")
     _require_step_free(cfg, body.run_id, "file_copy")
@@ -886,7 +892,7 @@ def _finalize_cleanup(cfg, run_id: int, caller: str, results: list[dict], manife
 def cleanup_manifests(request: Request, body: ManifestsBody) -> dict:
     """Discover cleanup_manifest*.json in the pulled branch under each Scripts root's <release_date>/ folder
     → one entry per folder that has one (the UI shows a labelled dropdown per folder)."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         d = body.release_date or "20260921"
         return {"status": "success", "locations": [
@@ -898,7 +904,7 @@ def cleanup_manifests(request: Request, body: ManifestsBody) -> dict:
 @router.post("/cleanup/manifest")
 def cleanup_manifest(request: Request, body: ReadManifestBody) -> dict:
     """Read one chosen cleanup manifest (by repo-relative path) → its normalised path/flag entries."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "items": [
             {"path": "D:\\ols\\temp", "include_subdir": "N", "remove_empty_dir": "N", "include_pattern": "*", "exclude_pattern": "", "older_than_days": 0},
@@ -914,7 +920,7 @@ def cleanup_manifest(request: Request, body: ReadManifestBody) -> dict:
 def cleanup_preview(request: Request, body: CleanupPreviewBody) -> dict:
     """DRY-RUN: report exactly which files/dirs WOULD be removed per path + the space that would be freed.
     Deletes NOTHING and logs NOTHING — the operator reviews this before running the real, confirmed delete."""
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "results": _dummy_cleanup_results(body.items, True)}
     return {"status": "success", "results": ops.cleanup_items(body.items, dry_run=True)}
@@ -924,7 +930,7 @@ def cleanup_preview(request: Request, body: CleanupPreviewBody) -> dict:
 def cleanup_run(request: Request, body: CleanupBody) -> dict:
     """DELETE the matching files for the selected paths (DESTRUCTIVE — the UI confirms first). Logs each path
     incrementally (crash-safe) then a summary row whose status is Complete/Partial/Error vs the full manifest."""
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if not body.items:
         raise HTTPException(status_code=400, detail="Select at least one path to clean up.")
     _require_step_free(cfg, body.run_id, "space_cleanup")
@@ -948,7 +954,7 @@ def cleanup_run(request: Request, body: CleanupBody) -> dict:
 # ---- monitoring ------------------------------------------------------------
 @router.post("/batch-monitor")
 def batch_monitor(request: Request, body: MonitorBody) -> dict:
-    _require_regression(request, body.caller)
+    _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "columns": ["BUSINESS_LINE", "BATCH", "STATUS_ID", "STARTED", "FINISHED"],
                 "rows": [["CB", "CB_LOAD", 2, "2026-08-28 09:00", "2026-08-28 09:12"],
@@ -963,7 +969,7 @@ def batch_monitor(request: Request, body: MonitorBody) -> dict:
 
 @router.post("/activity")
 def activity(request: Request, body: ActivityBody) -> dict:
-    cfg = _require_regression(request, body.caller)
+    cfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "rows": []}
     return {"status": "success", "rows": database.regression_activity(cfg, body.run_id)}

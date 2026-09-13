@@ -34,10 +34,12 @@ from typing import Any
 
 from env_loader import env_bool, env_int  # importing also loads backend/.env into os.environ
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import database  # data layer — ALL SQL lives here; this module only massages it for the UI
+import db_errors  # DB busy/timeout → friendly 503/504 (see DEPLOYMENT.md "Concurrency, workers & timeouts")
+from auth_token import current_username, resolve_caller  # OIDC token → validated caller (see AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -217,7 +219,7 @@ def space(request: Request, db: str) -> dict:
         return _space_payload(rows)
     except Exception:
         logger.exception("space failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 def _sev_for(pct: float) -> str:
@@ -305,7 +307,7 @@ def top_segments(request: Request, db: str) -> dict:
         return {"status": "success", "columns": _TOP_COLS, "rows": rows}
     except Exception:
         logger.exception("top_segments failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 _TOP_COLS = [
@@ -370,7 +372,7 @@ def top_indexes(request: Request, db: str) -> dict:
         return {"status": "success", "columns": _IDX_COLS, "rows": rows}
     except Exception:
         logger.exception("top_indexes failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # =============================================================================
@@ -412,7 +414,7 @@ def index_health(request: Request, db: str) -> dict:
         return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
     except Exception:
         logger.exception("index_health failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # =============================================================================
@@ -443,7 +445,7 @@ def locks(request: Request, db: str) -> dict:
         return _locks_payload(rows)
     except Exception:
         logger.exception("locks failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 _LOCK_COLS = [
@@ -527,10 +529,14 @@ class KillRequest(BaseModel):
 
 
 @router.post("/{db}/kill-session")
-def kill_session(db: str, body: KillRequest) -> dict:
+def kill_session(request: Request, db: str, body: KillRequest,
+                 caller: str = Depends(current_username)) -> dict:
     """Kill one session (Locks / Blocking / Sessions). Destructive — UI-gated behind admin + a
-    confirm. The real kill needs a SEPARATE privileged, audited connection (ALTER SYSTEM), which
-    the read-only monitor deliberately lacks — wire it here; never widen the monitor grant."""
+    confirm. `caller` (from the validated OIDC token when AUTH_VALIDATE_TOKEN=1; else AUTH_DEV_USER)
+    identifies + AUTHENTICATES the operator — a missing/invalid token is 401 before any kill. The real
+    kill needs a SEPARATE privileged, audited connection (ALTER SYSTEM), which the read-only monitor
+    deliberately lacks — wire it here (audit `caller`); never widen the monitor grant."""
+    _ = caller  # authentication side-effect of the dependency; use as the audit actor when the kill is wired
     t = _target(db)
     if ORACLE_CC_USE_DUMMY:
         return kill_session_dummy(t, body)
@@ -617,7 +623,7 @@ def blocking(request: Request, db: str) -> dict:
         return _blocking_payload([_blk_row(r) for r in database.fetch_blocking(request.app.state.db_configs.get(db))])
     except Exception:
         logger.exception("blocking failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # =============================================================================
@@ -681,7 +687,7 @@ def temp_usage(request: Request, db: str) -> dict:
                 "summary": {"sessions": len(rows), "total_mb": total_mb}}
     except Exception:
         logger.exception("temp-usage failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # --- Materialized Views (Section 6c — after Temp, before Sessions) ------------
@@ -735,7 +741,7 @@ def mviews(request: Request, db: str) -> dict:
                 "summary": {"mviews": len(rows), "stale": stale}}
     except Exception:
         logger.exception("mviews failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 # --- Privileged write actions (gather stats / MV refresh) --------------------
@@ -767,6 +773,7 @@ def mview_refresh(request: Request, db: str, body: MviewRefreshRequest) -> dict:
     behind DB-write + confirm). Returns immediately with `action_id` + `state:'RUNNING'`; the UI polls
     `action-status`. Runs `ols_util.occ_submit_mv_refresh` on a PRIVILEGED connection. `method`:
     complete | fast | force (user-chosen; mapped to DBMS_MVIEW C | F | ?)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real requester from token (401 if OIDC on + no token)
     t = _target(db)
     code = _MV_METHODS.get((body.method or "").lower())
     if not code:
@@ -778,7 +785,7 @@ def mview_refresh(request: Request, db: str, body: MviewRefreshRequest) -> dict:
                                            method=code, requested_by=body.caller or "unknown")
     except Exception as exc:  # noqa: BLE001 — surface the real ORA text to the (admin) operator
         logger.exception("mview-refresh submit failed for %s.%s on %s", body.owner, body.mview, db)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"status": "success", "action_id": action_id, "state": "RUNNING",
             "message": f"{body.owner}.{body.mview} refresh submitted ({body.method}) — running in the background."}
 
@@ -795,6 +802,7 @@ def gather_stats(request: Request, db: str, body: GatherStatsRequest) -> dict:
     behind DB-write + confirm). Returns immediately with `action_id` + `state:'RUNNING'`; the UI polls
     `action-status`. Runs `ols_util.occ_submit_gather` on a PRIVILEGED connection; its worker picks
     the granularity (subpartition+partition / partition / table)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real requester from token (401 if OIDC on + no token)
     t = _target(db)
     if not (body.owner or "").strip() or not (body.table or "").strip():
         raise HTTPException(status_code=400, detail="owner and table are required.")
@@ -805,7 +813,7 @@ def gather_stats(request: Request, db: str, body: GatherStatsRequest) -> dict:
                                                  table=body.table, requested_by=body.caller or "unknown")
     except Exception as exc:  # noqa: BLE001
         logger.exception("gather-stats submit failed for %s.%s on %s", body.owner, body.table, db)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise db_errors.http_error_verbose(exc)
     return {"status": "success", "action_id": action_id, "state": "RUNNING",
             "message": f"Statistics gather submitted for {body.owner}.{body.table} — running in the background."}
 
@@ -849,22 +857,33 @@ def _action_view(r: dict) -> dict:
 
 
 class ActionStatusRequest(BaseModel):
-    action_id: int
+    # Optional on purpose: a missing/empty payload returns a clean UNKNOWN (see below) instead of the
+    # raw 422 "Field required" validation error FastAPI would otherwise raise for a required field.
+    action_id: int | None = None
 
 
 @router.post("/{db}/action-status")
-def action_status(request: Request, db: str, body: ActionStatusRequest) -> dict:
-    """Live status of one submitted action (the UI polls this until `state` != RUNNING)."""
+def action_status(request: Request, db: str, body: ActionStatusRequest | None = None) -> dict:
+    """Live status of one submitted action (the UI polls this until `state` != RUNNING).
+
+    Both the body and `action_id` are optional: a missing/empty payload is not an error here — there is
+    simply nothing to check — so we return a clean `state:"UNKNOWN"` (HTTP 200) rather than a 422. That
+    keeps the poller from choking on an empty payload and gives a direct caller (curl/Swagger) a readable
+    message instead of a validation-error array."""
+    action_id = body.action_id if body else None
+    if action_id is None:
+        return {"status": "success", "state": "UNKNOWN", "action_id": None,
+                "message": "No action_id supplied — nothing to check."}
     t = _target(db)
     if ORACLE_CC_USE_DUMMY:
-        return action_status_dummy(t, body.action_id)
+        return action_status_dummy(t, action_id)
     try:
-        row = database.fetch_occ_action(request.app.state.db_configs.get(db), body.action_id)
+        row = database.fetch_occ_action(request.app.state.db_configs.get(db), action_id)
     except Exception:
-        logger.exception("action-status failed for %s (%s)", db, body.action_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("action-status failed for %s (%s)", db, action_id)
+        raise db_errors.http_error()
     if not row:
-        return {"status": "success", "state": "UNKNOWN", "action_id": body.action_id}
+        return {"status": "success", "state": "UNKNOWN", "action_id": action_id}
     return {"status": "success", **_action_view(row)}
 
 
@@ -882,7 +901,7 @@ def actions(request: Request, db: str) -> dict:
                 "summary": {"actions": len(rows), "running": running}}
     except Exception:
         logger.exception("actions failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 class SessionsQuery(BaseModel):
@@ -905,7 +924,7 @@ def sessions(request: Request, db: str, body: SessionsQuery | None = None) -> di
             raw = database.fetch_sessions(request.app.state.db_configs.get(db), status)
         except Exception:
             logger.exception("sessions failed for %s", db)
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise db_errors.http_error()
     return _sessions_payload(raw)
 
 
@@ -1000,7 +1019,7 @@ def session_detail(request: Request, db: str, body: SessionDetailQuery) -> dict:
         raw = database.fetch_session_detail(cfg, sid, serial, q.sql_id, OCC_SCHEMA, q.panel)
     except Exception:
         logger.exception("session-detail failed for %s (%s,%s)", db, sid, serial)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
     errors = raw.get("errors") or {}
     f = raw.get("facts") or {}
     # The session vanished between listing it and drilling in (it closed immediately) → there is no
@@ -1738,7 +1757,7 @@ def sql_finder(request: Request, db: str, body: SqlFinderQuery | None = None) ->
                 "summary": {"days": days, "count": len(rows)}}
     except Exception:
         logger.exception("sql_finder failed for %s", db)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/overview")
@@ -1753,7 +1772,7 @@ def sqli_overview(request: Request, db: str, sql_id: str) -> dict:
                                       _sqli_norm_aggs(raw.get("aggs") or []))
     except Exception:
         logger.exception("sqli_overview failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/plan_timeline")
@@ -1770,7 +1789,7 @@ def sqli_plan_timeline(request: Request, db: str, sql_id: str) -> dict:
         return _sqli_timeline_payload(pts, _sqli_norm_aggs(raw.get("aggs") or []))
     except Exception:
         logger.exception("sqli_plan_timeline failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/plans")
@@ -1784,7 +1803,7 @@ def sqli_plans(request: Request, db: str, sql_id: str) -> dict:
         return _sqli_plans_payload(_sqli_norm_aggs(raw.get("aggs") or []), _sqli_norm_mgmt(raw.get("mgmt") or []))
     except Exception:
         logger.exception("sqli_plans failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/plan_analysis")
@@ -1799,7 +1818,7 @@ def sqli_plan_analysis(request: Request, db: str, sql_id: str) -> dict:
         return _sqli_plan_analysis_payload(database.fetch_sql_plan_analysis(request.app.state.db_configs.get(db), sql_id))
     except Exception:
         logger.exception("sqli_plan_analysis failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/sql_monitor")
@@ -1813,7 +1832,7 @@ def sqli_monitor(request: Request, db: str, sql_id: str) -> dict:
         return _sql_monitor_payload(database.fetch_sql_monitor(request.app.state.db_configs.get(db), sql_id))
     except Exception:
         logger.exception("sqli_monitor failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/plan_text")
@@ -1828,7 +1847,7 @@ def sqli_plan_text(request: Request, db: str, sql_id: str, body: PhvBody) -> dic
                 "text": text or "(plan not found in AWR or the cursor cache)"}
     except Exception:
         logger.exception("sqli_plan_text failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/perf")
@@ -1846,7 +1865,7 @@ def sqli_perf(request: Request, db: str, sql_id: str) -> dict:
         return {"status": "success", "columns": _SQLI_PERF_COLS, "rows": rows}
     except Exception:
         logger.exception("sqli_perf failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/ash")
@@ -1865,7 +1884,7 @@ def sqli_ash(request: Request, db: str, sql_id: str) -> dict:
         return {"status": "success", "columns": _SQLI_ASH_COLS, "rows": rows}
     except Exception:
         logger.exception("sqli_ash failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/binds")
@@ -1882,7 +1901,7 @@ def sqli_binds(request: Request, db: str, sql_id: str) -> dict:
         return {"status": "success", "columns": _SQLI_BINDS_COLS, "rows": rows}
     except Exception:
         logger.exception("sqli_binds failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/fix")
@@ -1903,13 +1922,17 @@ def sqli_fix(request: Request, db: str, sql_id: str) -> dict:
                                  advisor)
     except Exception:
         logger.exception("sqli_fix failed for %s / %s", db, sql_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise db_errors.http_error()
 
 
 @router.post("/{db}/sql/{sql_id}/apply_fix")
-def sqli_apply_fix(db: str, sql_id: str, body: SqlFixApply) -> dict:
-    """WRITE. Admin-gated in the UI and disable-able server-side via SQLI_ALLOW_APPLY. Must run on
-    a SEPARATE privileged/audited connection (like kill-session) — never the read-only monitor."""
+def sqli_apply_fix(request: Request, db: str, sql_id: str, body: SqlFixApply,
+                   caller: str = Depends(current_username)) -> dict:
+    """WRITE. Admin-gated in the UI and disable-able server-side via SQLI_ALLOW_APPLY. `caller` (from the
+    validated OIDC token when AUTH_VALIDATE_TOKEN=1; else AUTH_DEV_USER) AUTHENTICATES the operator — a
+    missing/invalid token is 401 before any apply. Must run on a SEPARATE privileged/audited connection
+    (like kill-session) — never the read-only monitor."""
+    _ = caller  # authentication side-effect of the dependency; use as the audit actor when apply is wired
     t = _target(db)
     if not SQLI_ALLOW_APPLY:
         raise HTTPException(status_code=403,

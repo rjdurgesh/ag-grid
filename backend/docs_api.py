@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 import config_loader
 import database
+from auth_token import resolve_caller  # OIDC: caller from validated token / AUTH_DEV_USER (see AUTH_SETUP.md)
 from utils import fs_browser
 from utils.logging import get_logger
 
@@ -197,6 +198,7 @@ def docs_catalog(request: Request, body: CatalogBody) -> dict:
     """The RBAC-filtered catalogue: local markdown docs + wiki links. Entries are kept per the caller's
     grants — user-audience entries need the User Guide grant, technical-audience the Technical Guide
     grant. A caller with neither gets an empty list (Docs hidden)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real caller from token (401 if OIDC on + no token)
     can_user, can_tech = _docs_access(request, body.caller, body.app_env)
     if not (can_user or can_tech):
         return {"status": "success", "entries": []}
@@ -214,6 +216,7 @@ def docs_catalog(request: Request, body: CatalogBody) -> dict:
 def docs_content(request: Request, body: ContentBody) -> dict:
     """Raw markdown for one local doc (addressed by opaque id). RBAC re-checked; path confirmed inside
     the base dir before reading."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real caller from token (401 if OIDC on + no token)
     can_user, can_tech = _docs_access(request, body.caller, getattr(request.app.state, "app_env", "PROD"))
     if not (can_user or can_tech):
         raise HTTPException(status_code=403, detail="No Documentation access.")

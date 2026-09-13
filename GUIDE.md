@@ -96,6 +96,12 @@ JSON → restart the backend (read at import).
 
 ## 3. Authentication
 
+> **Going live with real SSO?** [`AUTH_SETUP.md`](AUTH_SETUP.md) is the step-by-step guide:
+> OIDC provider registration, filling `SSO_CONFIG`, the backend **token validation** that still
+> needs building (`backend/auth_token.py`), and the `ACCESS_USE_DUMMY=0` + `app_db_config` wiring
+> that makes real `ols_users` / `ols_app_access` grants take effect. The summary below is the map;
+> AUTH_SETUP.md is the checklist.
+
 All auth code lives in [`src/app/auth/`](src/app/auth). The mode is chosen by
 `IS_SSO_ENABLED` (section 1) — the `AuthService` facade
 ([`auth/auth.service.ts`](src/app/auth/auth.service.ts)) hides the difference from

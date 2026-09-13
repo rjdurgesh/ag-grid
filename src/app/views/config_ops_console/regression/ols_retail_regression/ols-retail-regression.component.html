@@ -635,9 +635,15 @@
             </svg>
           </button>
         </div>
-        @if (batchResult(); as br) {
-          <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="batchRowData()"
-                           [columnDefs]="batchColDefs()" [gridOptions]="batchGridOptions"></ag-grid-angular>
+        @if (batchError()) {
+          <p class="rg-hint rg-hint--err">Couldn't load batch status. Try refresh.</p>
+        } @else if (monitorLoading() && !batchResult()) {
+          <p class="rg-hint">Loading batch status…</p>
+        } @else if (batchResult(); as br) {
+          @if (batchRowData().length) {
+            <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="batchRowData()"
+                             [columnDefs]="batchColDefs()" [gridOptions]="batchGridOptions"></ag-grid-angular>
+          } @else { <p class="rg-hint">No batch activity to display.</p> }
         } @else { <p class="rg-hint">Loading batch status…</p> }
       } @else {
         <div class="rg-row rg-row--tools">

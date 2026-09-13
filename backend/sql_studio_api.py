@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 import access_api           # reuse the OCC DB labels + the dummy ops-admin check
 import database             # data layer — all SQL lives here
+from auth_token import resolve_caller  # OIDC: caller from validated token / AUTH_DEV_USER (see AUTH_SETUP.md)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,8 +57,12 @@ def _dbs_for_scope(scope: str, db_keys: list[str]) -> list[str]:
     return [k for k in db_keys if k == s or k.startswith(s + "_")]
 
 
-def _require_sql_admin(request: Request, caller: str):
-    """Confirm the caller may use S-Studio (`can_sql`), else 403. Returns the app DB config (None in dummy)."""
+def _require_sql_admin(request: Request, body: DbQuery | ExecBody):
+    """Resolve the caller from the OIDC token (else AUTH_DEV_USER / body per AUTH_VALIDATE_TOKEN), stamp
+    it onto ``body.caller``, then confirm the caller may use S-Studio (`can_sql`) — else 403. With OIDC
+    on, a missing/invalid token → 401 here. Returns the app DB config (None in dummy)."""
+    body.caller = resolve_caller(request, body.caller)
+    caller = body.caller
     if SQL_USE_DUMMY:
         if not access_api._dummy_is_ops_admin(caller):
             raise HTTPException(status_code=403, detail="S-Studio is restricted to authorised operators")
@@ -71,7 +76,7 @@ def _require_sql_admin(request: Request, caller: str):
 @router.post("/databases")
 def sql_databases(request: Request, body: DbQuery) -> dict:
     """The databases available to run against for one config scope (ops-admin + can_sql only)."""
-    _require_sql_admin(request, body.caller)
+    _require_sql_admin(request, body)
     db_keys = list(getattr(request.app.state, "db_configs", {}) or access_api.OCC_DB_LABELS)
     keys = _dbs_for_scope(body.scope, db_keys)
     return {"status": "success", "databases": [
@@ -93,7 +98,7 @@ def sql_execute(request: Request, body: ExecBody) -> dict:
     appropriate and needed to debug): a statement/connection failure comes back as a `kind:'error'`
     result with the ORA-xxxxx text; a DB that never connected at startup returns a 503 carrying the
     captured reason (see `app.state.db_config_errors`)."""
-    _require_sql_admin(request, body.caller)
+    _require_sql_admin(request, body)
     if SQL_USE_DUMMY:
         return {"status": "success", "result": _dummy_execute(body.db, body.sql)}
     # Prefer the privileged S-Studio connections; fall back to the monitor configs with a warning.

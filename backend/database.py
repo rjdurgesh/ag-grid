@@ -23,6 +23,39 @@ from typing import Any
 import config_loader
 
 
+# --- connection tunables (env; read once at import — restart to change) ------
+# call_timeout: a per-round-trip ceiling (ms) so a hung query (lock wait / dead session) can't hold a
+# worker thread forever. Generous BY DESIGN — a safety net against *infinite* hangs, NOT a per-query SLA.
+# 0 = no timeout (use only for deliberately-long ops, via the connect() override). tcp_connect_timeout
+# bounds the CONNECT so a dead listener fails fast; the acquire timeout bounds waiting for a pooled
+# connection. See DEPLOYMENT.md "Concurrency, workers & timeouts".
+DB_CALL_TIMEOUT_MS = int(os.getenv("DB_CALL_TIMEOUT_MS", "60000") or 0)
+DB_TCP_CONNECT_TIMEOUT_S = int(os.getenv("DB_TCP_CONNECT_TIMEOUT_S", "5") or 0)
+DB_ACQUIRE_TIMEOUT_S = int(os.getenv("DB_ACQUIRE_TIMEOUT_S", "5") or 0)
+
+
+class DbBusyError(Exception):
+    """No DB connection could be obtained in time — a pool that's exhausted, or a connect that timed
+    out. The API layer maps this to **HTTP 503** ("system busy, retry") via ``db_errors``."""
+
+
+class DbTimeoutError(Exception):
+    """A DB call exceeded ``call_timeout`` (a hung / too-slow query was cancelled). Mapped to
+    **HTTP 504**. Defined here so the data + API layers share one type; the API layer usually derives
+    it from the driver's own timeout error text (DPI-1067 / ORA-03136 / ORA-01013)."""
+
+
+def _apply_timeouts(connection: Any, call_timeout_ms: int | None) -> Any:
+    """Set the per-call timeout on a live connection. ``call_timeout_ms=None`` → the env default
+    (``DB_CALL_TIMEOUT_MS``); an explicit value overrides it (0 = no timeout, for known-long ops)."""
+    ms = DB_CALL_TIMEOUT_MS if call_timeout_ms is None else call_timeout_ms
+    try:
+        connection.call_timeout = int(ms)     # milliseconds; 0 disables
+    except Exception:
+        pass                                  # older/unsupported driver → best-effort, don't fail the call
+    return connection
+
+
 def _lob_output_type_handler(cursor, *args):
     """Fetch CLOB/NCLOB as ``str`` and BLOB as ``bytes`` directly, so callers NEVER receive a LOB
     locator object. Without this, ``DBMS_XPLAN.DISPLAY_CURSOR``, ``REPORT_SQL_MONITOR``,
@@ -49,33 +82,50 @@ def _install_lob_handler(connection: Any) -> Any:
     return connection
 
 
-def connect(db_config: Any):
+def connect(db_config: Any, call_timeout_ms: int | None = None):
     """Open (or pass through) a DB connection for one scope's ``db_config``.
 
-    Handles three shapes so it drops into most setups:
+    Handles four shapes so it drops into most setups:
       * an already-live connection (has ``.cursor``)   → returned as-is (the caller won't close it);
+      * a connection POOL (has ``.acquire``)           → a connection is checked out with an ACQUIRE
+        TIMEOUT (``DB_ACQUIRE_TIMEOUT_S``); if none is free in time → ``DbBusyError`` (→ HTTP 503);
       * a mapping with user/password/dsn               → ``oracledb.connect(**...)``;
       * a DSN / EZConnect string                       → ``oracledb.connect(dsn)``.
     Replace the body with your own connector if you connect differently.
 
-    Every returned connection gets a LOB output-type handler so CLOB/BLOB columns come back as
-    plain ``str``/``bytes`` (see ``_lob_output_type_handler``) — applied here ONCE so all queries
-    in this module are covered.
+    Every returned connection gets (a) the LOB output-type handler so CLOB/BLOB columns come back as
+    plain ``str``/``bytes`` and (b) a per-call timeout (``DB_CALL_TIMEOUT_MS``, overridable per call via
+    ``call_timeout_ms`` — 0 = no timeout, for a deliberately-long operation) so a hung query can't hold a
+    worker thread forever. New connections also get ``tcp_connect_timeout`` so a dead listener fails fast.
     """
     if db_config is None:
         raise RuntimeError("No db_config for this scope (connection is None / DB unreachable).")
     if hasattr(db_config, "cursor"):          # already a live connection → reuse it
-        return _install_lob_handler(db_config)
+        return _apply_timeouts(_install_lob_handler(db_config), call_timeout_ms)
     import oracledb                            # lazy: the driver isn't needed in dummy mode
+    if hasattr(db_config, "acquire"):          # a connection POOL → check out with an acquire timeout
+        try:
+            conn = (db_config.acquire(timeout=DB_ACQUIRE_TIMEOUT_S) if DB_ACQUIRE_TIMEOUT_S
+                    else db_config.acquire())
+        except oracledb.DatabaseError as exc:  # pool exhausted / acquire timed out → busy, not a 500
+            raise DbBusyError(str(exc)) from exc
+        return _apply_timeouts(_install_lob_handler(conn), call_timeout_ms)
     if isinstance(db_config, dict):
         if not db_config:                      # empty stub (dev/dummy) — nothing to connect with
             raise RuntimeError("db_config is an empty stub; run with dummy mode, or provide real credentials.")
-        return _install_lob_handler(oracledb.connect(
+        kwargs: dict[str, Any] = dict(
             user=db_config.get("user"),
             password=db_config.get("password"),
             dsn=db_config.get("dsn") or db_config.get("connect_string"),
-        ))
-    return _install_lob_handler(oracledb.connect(str(db_config)))    # a bare DSN / connect string
+        )
+        if DB_TCP_CONNECT_TIMEOUT_S:
+            kwargs["tcp_connect_timeout"] = DB_TCP_CONNECT_TIMEOUT_S
+        return _apply_timeouts(_install_lob_handler(oracledb.connect(**kwargs)), call_timeout_ms)
+    # a bare DSN / connect string
+    if DB_TCP_CONNECT_TIMEOUT_S:
+        return _apply_timeouts(_install_lob_handler(
+            oracledb.connect(str(db_config), tcp_connect_timeout=DB_TCP_CONNECT_TIMEOUT_S)), call_timeout_ms)
+    return _apply_timeouts(_install_lob_handler(oracledb.connect(str(db_config))), call_timeout_ms)
 
 
 # =============================================================================

@@ -15,7 +15,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import time
+
 import env_loader  # noqa: F401  — loads backend/.env into os.environ before we read APP_ENV etc.
+import db_errors   # maps DB busy/timeout errors → HTTP 503/504 (see DEPLOYMENT.md "Concurrency…")
 import oracle_cc_api
 from access_api import router as access_router
 from infrastructure_health_api import router as infra_health_router
@@ -125,6 +128,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Turn DB busy/timeout failures into clean 503/504 responses (with a UI-readable message) instead of a
+# generic 500, so the frontend can tell the user WHY. Catches DB errors that reach FastAPI unwrapped;
+# endpoints that catch their own errors raise `db_errors.http_error()` for the same classification.
+db_errors.register_handlers(app)
+
+# Slow-request logging (observability): log any request slower than SLOW_REQUEST_MS so you can SEE which
+# endpoint/query is slow and tune DB_CALL_TIMEOUT_MS from real data (0 disables). See DEPLOYMENT.md.
+SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "5000") or 0)
+
+
+@app.middleware("http")
+async def _log_slow_requests(request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    if SLOW_REQUEST_MS:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if elapsed_ms >= SLOW_REQUEST_MS:
+            logger.warning("SLOW REQUEST %s %s took %.0f ms (status %s)",
+                           request.method, request.url.path, elapsed_ms, response.status_code)
+    return response
+
 
 app.include_router(access_router)
 app.include_router(log_analytics_router)
