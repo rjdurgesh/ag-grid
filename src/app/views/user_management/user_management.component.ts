@@ -9,8 +9,18 @@ import { AccessCatalogue, AccessUser, GrantRow, OpsAdmin, UserLookup } from '../
 
 /** The friendly "grant type" a form row builds (maps to resource_type + scope). */
 type GrantKind =
-  | 'full' | 'screen' | 'server' | 'config_category' | 'config_table'
+  | 'full' | 'screen' | 'server' | 'config_category' | 'config_table' | 'config_tab'
   | 'infra_app' | 'service_app' | 'oracle_db' | 'section';
+
+/** The Config Ops screen tabs that RBAC can reveal per scope. OLS CIB carries the extra
+ *  Regression tab; every scope (GROUP included) can hold Data Reconciliation. MISC Activity is
+ *  always visible (no gate) and S-Studio is driven by the separate SQL-access toggle, so neither
+ *  is listed here. Each tab maps to a resource_type in buildGrant(). */
+const CONFIG_TABS: { key: string; label: string; scopes: string[] }[] = [
+  { key: 'config',         label: 'Config (screen visibility)',    scopes: ['group', 'cib', 'retail'] },
+  { key: 'reconciliation', label: 'Data Reconciliation (DEV/STG)', scopes: ['group', 'cib', 'retail'] },
+  { key: 'regression',     label: 'Regression (DEV/STG)',          scopes: ['cib'] }
+];
 
 type Level = 'READ' | 'WRITE' | 'DENY';
 interface Toast { kind: 'ok' | 'err' | 'info'; text: string; }
@@ -293,6 +303,7 @@ export class UserManagementComponent implements OnInit {
     { key: 'screen', label: 'Screen visibility' },
     { key: 'config_category', label: 'Config Ops — table category' },
     { key: 'config_table', label: 'Config Ops — single table' },
+    { key: 'config_tab', label: 'Config Ops — screen tab (show/hide)' },
     { key: 'service_app', label: 'Service Console — app' },
     { key: 'oracle_db', label: 'Oracle Command Center — database' },
     { key: 'section', label: 'Hide an OCC section' }
@@ -325,6 +336,9 @@ export class UserManagementComponent implements OnInit {
           { value: CUSTOM, label: 'Other (type a name)…' }];
       case 'config_category':
         return c.config.categories.map((x) => ({ value: x.key, label: x.label }));
+      case 'config_tab':
+        // Tabs available for the chosen scope (CIB adds Regression). Reads scope() so it re-filters.
+        return CONFIG_TABS.filter((t) => t.scopes.includes(this.scope())).map((t) => ({ value: t.key, label: t.label }));
       case 'infra_app':
       case 'service_app':
         return [{ value: '*', label: 'All apps (*)' }, ...c.apps.map((a) => ({ value: a.key, label: a.label }))];
@@ -338,6 +352,7 @@ export class UserManagementComponent implements OnInit {
   });
 
   readonly usesScope = computed(() => this.kind() === 'config_category' || this.kind() === 'config_table'
+    || this.kind() === 'config_tab'
     || (this.kind() === 'screen' && this.selKey() === 'config_ops_console'));
   readonly usesFreeKey = computed(() =>
     this.kind() === 'config_table' || (this.kind() === 'server' && this.selKey() === CUSTOM));
@@ -349,6 +364,10 @@ export class UserManagementComponent implements OnInit {
     switch (this.kind()) {
       case 'section':
         return ['DENY'];                                   // sections are hide-only
+      case 'config_tab':
+        // Tabs are opt-in: grant (READ) to show; to hide, REVOKE the row from the user's grant list
+        // (the backend ignores DENY for these additive tab grants).
+        return ['READ'];
       case 'server':
       case 'infra_app':
       case 'service_app':
@@ -383,6 +402,16 @@ export class UserManagementComponent implements OnInit {
   onKeyChange(): void {
     const levels = this.allowedLevels();
     if (!levels.includes(this.level())) { this.level.set(levels[0]); }
+  }
+
+  /** Change the config scope. For the tab picker the available tabs differ per scope (CIB has an
+   *  extra Regression tab), so drop a now-invalid tab selection back to the first valid one. */
+  onScopeChange(v: string): void {
+    this.scope.set(v);
+    const opts = this.keyOptions();
+    if (opts.length && !opts.some((o) => o.value === this.selKey())) {
+      this.selKey.set(opts[0].value);
+    }
   }
 
   // --- Load a user -----------------------------------------------------------
@@ -438,6 +467,17 @@ export class UserManagementComponent implements OnInit {
         resource_type = 'TABLE_CATEGORY'; resource_scope = 'config_ops:' + this.scope(); resource_key = dropKey; break;
       case 'config_table':
         resource_type = 'TABLE'; resource_scope = 'config_ops:' + this.scope(); resource_key = free; break;
+      case 'config_tab':
+        // Each tab reveals a Config Ops screen tab for this scope. Config → the scope screen itself;
+        // reconciliation / regression → their own opt-in resource_types (DEV/STG-gated in the app).
+        if (dropKey === 'config') {
+          resource_type = 'SCREEN'; resource_scope = 'config_ops:' + this.scope(); resource_key = '*';
+        } else if (dropKey === 'reconciliation') {
+          resource_type = 'RECONCILIATION'; resource_scope = this.scope(); resource_key = '*';
+        } else if (dropKey === 'regression') {
+          resource_type = 'REGRESSION'; resource_scope = this.scope(); resource_key = '*';
+        }
+        break;
       case 'infra_app':
         resource_type = 'APP'; resource_scope = 'infra_health'; resource_key = dropKey; break;
       case 'service_app':
@@ -769,6 +809,10 @@ export class UserManagementComponent implements OnInit {
         const dbPart = g.resource_scope.includes(':') ? ' on ' + g.resource_scope.split(':')[1] : ' (all DBs)';
         return 'Hide OCC section · ' + (c?.sections.find((x) => x.key === key)?.label ?? key) + dbPart;
       }
+      case 'RECONCILIATION':
+        return 'Reconciliation tab · ' + this.scopeLabel(g.resource_scope) + ' (DEV/STG)';
+      case 'REGRESSION':
+        return 'Regression tab · ' + this.scopeLabel(g.resource_scope) + ' (DEV/STG)';
       default:
         return `${g.resource_type} · ${g.resource_scope} · ${key}`;
     }
@@ -784,6 +828,8 @@ export class UserManagementComponent implements OnInit {
       case 'TABLE_CATEGORY': return 'Category';
       case 'TABLE': return 'Table';
       case 'SECTION': return 'Section';
+      case 'RECONCILIATION': return 'Recon tab';
+      case 'REGRESSION': return 'Regr tab';
       default: return g.resource_type;
     }
   }

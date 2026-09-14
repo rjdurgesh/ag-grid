@@ -101,11 +101,17 @@ export class AuthService {
     return environment.isSsoEnabled ? this.sso.accessToken : localStorage.getItem(TOKEN_KEY);
   }
 
+  /** Attempt a silent token renewal (used by the 401 interceptor to re-auth on the current page
+   *  without a redirect). Resolves true if a fresh token is now stored. No-op when SSO is off. */
+  tryRenew(): Promise<boolean> {
+    return environment.isSsoEnabled ? this.sso.renew() : Promise.resolve(false);
+  }
+
   logout(): void {
     this.rbac.reset();
     if (environment.isSsoEnabled) {
-      // Clears the session and redirects to the provider end-session → /login,
-      // so the next sign-in re-authenticates.
+      // Clears the session, then either logs out at the provider (if an
+      // end_session_endpoint is configured) or goes straight to /login locally.
       this.user.set(null);
       this.sso.logout();
       return;

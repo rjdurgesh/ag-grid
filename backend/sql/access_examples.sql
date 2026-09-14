@@ -22,8 +22,9 @@
 --       docs_user_only | docs_technical_only        (Documentation: one guide granted; defaults_only = none)
 --     (clear: localStorage.removeItem('ols.devScenario'))
 --
--- resource_type : SCREEN | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION
+-- resource_type : SCREEN | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION | RECONCILIATION
 --   (SERVER and APP/infra_health are retired — Log Analytics + Infra Health are ungated defaults.)
+--   (RECONCILIATION needs the CHECK-constraint migration in rbac_setup.sql on pre-existing tables.)
 --------------------------------------------------------------------------------
 SET DEFINE OFF;   -- '&' in comments/values is literal, not a substitution prompt
 
@@ -262,6 +263,30 @@ INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_ke
 VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','WRITE','ADMIN','Config: GROUP screen (to reach the tab)');
 INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
 VALUES ('CHANGE_ME','REGRESSION','group','*','READ','ADMIN','Regression tab on GROUP');
+-- NOTE: the grant is env-independent; the tab only appears when the APP itself runs in DEV/STG.
+
+
+--==============================================================================
+-- 8b) DATA RECONCILIATION TAB  (Config Ops → Data Reconciliation; per scope; DEV/STG only)
+--    resource_type='RECONCILIATION', scope = group | cib | retail (or config_ops:<scope>), key '*'.
+--    Separate grant from REGRESSION (GROUP can hold Reconciliation even though it has no Regression tab).
+--    Hidden unless granted. INDEPENDENT of the config-scope grant: the user ALSO needs a Config Ops
+--    grant (section 2) for that scope, because the tab lives inside the scope screen. Only shows when
+--    the app runs in DEV/STG. ADMIN sees it everywhere already.
+--    PREREQUISITE on existing DBs: run the CHECK-constraint migration in rbac_setup.sql (adds
+--    'RECONCILIATION'); otherwise these inserts fail with ORA-02290.
+--==============================================================================
+-- Reconciliation on GROUP: config grant (to reach the GROUP screen, read-only) + the Reconciliation grant.
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','READ','ADMIN','Config: GROUP screen read-only (to reach the tab)');
+INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+VALUES ('CHANGE_ME','RECONCILIATION','group','*','READ','ADMIN','Data Reconciliation tab on GROUP');
+
+-- Reconciliation on CIB / RETAIL follow the same pattern (swap group → cib | retail):
+-- INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+-- VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','READ','ADMIN','Config: CIB screen read-only');
+-- INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
+-- VALUES ('CHANGE_ME','RECONCILIATION','cib','*','READ','ADMIN','Data Reconciliation tab on CIB');
 -- NOTE: the grant is env-independent; the tab only appears when the APP itself runs in DEV/STG.
 
 

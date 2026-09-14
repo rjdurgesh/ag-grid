@@ -14,6 +14,7 @@ import {
 } from '@coreui/angular';
 
 import { RbacService } from '../../auth/rbac.service';
+import { IdleTimeoutService } from '../../auth/idle-timeout.service';
 import { screenForNavUrl } from '../../auth/rbac.config';
 import { DefaultFooterComponent, DefaultHeaderComponent } from './';
 import { AppVersionComponent } from './app-version.component';
@@ -48,6 +49,11 @@ function isOverflown(element: HTMLElement) {
 })
 export class DefaultLayoutComponent {
   private readonly rbac = inject(RbacService);
+
+  constructor() {
+    // Start the app-side inactivity timeout (no-op unless SSO_CONFIG.idleTimeoutMinutes > 0).
+    inject(IdleTimeoutService).start();
+  }
 
   /** Sidebar items filtered to what the user's roles allow (reactive). */
   readonly navItems = computed(() => filterNav(NAV_ITEMS, this.rbac));

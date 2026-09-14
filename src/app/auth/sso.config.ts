@@ -23,7 +23,11 @@ export interface SsoConfig {
   authorizeEndpoint: string;
   /** Token endpoint (code → tokens, and refresh_token → new tokens). */
   tokenEndpoint: string;
-  /** End-session endpoint (provider logout). */
+  /** End-session endpoint (provider RP-initiated logout — the discovery doc's
+   *  `end_session_endpoint`). LEAVE BLANK ('') if your provider does NOT expose one:
+   *  logout then simply clears the local session and navigates to `postLogoutRedirectUri`
+   *  (the login page) WITHOUT contacting the provider. Do NOT put the Provider Meta
+   *  (discovery) URL or a Revocation URL here — neither performs a browser logout. */
   endSessionEndpoint: string;
   /** Public client id registered with the provider. */
   clientId: string;
@@ -35,6 +39,10 @@ export interface SsoConfig {
   scope: string;
   /** Seconds before token expiry to silently renew (and re-auth leeway). */
   renewLeewaySeconds: number;
+  /** App-enforced INACTIVITY timeout, in minutes. This is separate from the token lifetime (which
+   *  the IdP owns and the app cannot extend). After this many minutes with no user activity the
+   *  app ends the session and returns to /login. 0 disables it. */
+  idleTimeoutMinutes: number;
 }
 
 /** redirect/logout URIs default to the current origin so they work in any environment once the
@@ -52,34 +60,37 @@ const SSO_BY_ENV: Record<AppEnv, SsoConfig> = {
     issuer: 'https://your-openid-provider-dev.example.com',
     authorizeEndpoint: 'https://your-openid-provider-dev.example.com/authorize',
     tokenEndpoint: 'https://your-openid-provider-dev.example.com/oauth2/token',
-    endSessionEndpoint: 'https://your-openid-provider-dev.example.com/logout',
+    endSessionEndpoint: '',   // provider's end_session_endpoint, or '' → local logout to /login
     clientId: 'ols-dashboard-dev',
     redirectUri,
     postLogoutRedirectUri,
     scope: 'openid profile email offline_access',
-    renewLeewaySeconds: 60
+    renewLeewaySeconds: 60,
+    idleTimeoutMinutes: 0          // 0 = no app idle timeout; e.g. 30 = log out after 30 min idle
   },
   STG: {
     issuer: 'https://your-openid-provider-stg.example.com',
     authorizeEndpoint: 'https://your-openid-provider-stg.example.com/authorize',
     tokenEndpoint: 'https://your-openid-provider-stg.example.com/oauth2/token',
-    endSessionEndpoint: 'https://your-openid-provider-stg.example.com/logout',
+    endSessionEndpoint: '',   // provider's end_session_endpoint, or '' → local logout to /login
     clientId: 'ols-dashboard-stg',
     redirectUri,
     postLogoutRedirectUri,
     scope: 'openid profile email offline_access',
-    renewLeewaySeconds: 60
+    renewLeewaySeconds: 60,
+    idleTimeoutMinutes: 0
   },
   LIVE: {
     issuer: 'https://your-openid-provider.example.com',
     authorizeEndpoint: 'https://your-openid-provider.example.com/authorize',
     tokenEndpoint: 'https://your-openid-provider.example.com/oauth2/token',
-    endSessionEndpoint: 'https://your-openid-provider.example.com/logout',
+    endSessionEndpoint: '',   // provider's end_session_endpoint, or '' → local logout to /login
     clientId: 'ols-dashboard',
     redirectUri,
     postLogoutRedirectUri,
     scope: 'openid profile email offline_access',
-    renewLeewaySeconds: 60
+    renewLeewaySeconds: 60,
+    idleTimeoutMinutes: 0
   }
 };
 

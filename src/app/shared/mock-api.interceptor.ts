@@ -803,6 +803,7 @@ function umFeatureLabel(g: UmGrant): string | null {
   if (rs === 'log_analytics' || rt === 'SERVER') { return 'Log Analytics'; }
   if (rs === 'infra_health') { return 'Infra Health'; }
   if (rt === 'REGRESSION') { return 'Regression'; }
+  if (rt === 'RECONCILIATION') { return 'Reconciliation'; }
   return null;
 }
 function umFeatures(grants: UmGrant[]): { name: string; level: string }[] {

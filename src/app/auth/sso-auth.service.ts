@@ -31,6 +31,8 @@ export class SsoAuthService {
   readonly sessionExpired = signal(false);
 
   private renewTimer?: ReturnType<typeof setTimeout>;
+  /** Shared in-flight renewal, so concurrent 401s (and the timer) trigger ONE refresh call. */
+  private renewInFlight?: Promise<boolean>;
 
   constructor() {
     // Resume the renew schedule after a page reload.
@@ -92,8 +94,13 @@ export class SsoAuthService {
     return stored.returnUrl || '/home';
   }
 
-  /** Silent renew via refresh token; marks the session expired on failure. */
-  async renew(): Promise<boolean> {
+  /** Silent renew via refresh token; marks the session expired on failure. Deduped: a call while
+   *  one is already running returns the SAME promise (no duplicate refresh requests). */
+  renew(): Promise<boolean> {
+    return (this.renewInFlight ??= this.performRenew().finally(() => { this.renewInFlight = undefined; }));
+  }
+
+  private async performRenew(): Promise<boolean> {
     const refresh = localStorage.getItem(REFRESH_KEY);
     if (!refresh) {
       this.fail();
@@ -122,14 +129,21 @@ export class SsoAuthService {
     }
   }
 
-  /** Clear the session and redirect to the provider's end-session endpoint. */
+  /** Clear the session, then log out at the provider if it supports RP-initiated logout.
+   *  If no `endSessionEndpoint` is configured (the provider has none), just go to the
+   *  login page locally — never navigate to a non-logout URL (e.g. the discovery doc). */
   logout(): void {
     this.clear();
+    const end = (SSO_CONFIG.endSessionEndpoint || '').trim();
+    if (!end) {
+      window.location.assign(SSO_CONFIG.postLogoutRedirectUri);   // local logout → /login
+      return;
+    }
     const params = new URLSearchParams({
       client_id: SSO_CONFIG.clientId,
       post_logout_redirect_uri: SSO_CONFIG.postLogoutRedirectUri
     });
-    window.location.assign(`${SSO_CONFIG.endSessionEndpoint}?${params.toString()}`);
+    window.location.assign(`${end}?${params.toString()}`);
   }
 
   private async exchangeCode(code: string, verifier: string): Promise<void> {

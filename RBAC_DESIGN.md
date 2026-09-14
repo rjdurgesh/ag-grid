@@ -57,7 +57,7 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 | Column | Meaning |
 |---|---|
 | `USERNAME` | the user (matched case-insensitively) |
-| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `APP` \| `DB` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` \| `REGRESSION` |
+| `RESOURCE_TYPE` | `SCREEN` \| `SERVER` \| `APP` \| `DB` \| `TABLE_CATEGORY` \| `TABLE` \| `SECTION` \| `REGRESSION` \| `RECONCILIATION` |
 | `RESOURCE_SCOPE` | the screen/scope the resource lives in (see below) |
 | `RESOURCE_KEY` | the specific resource id, or `*` for "all in scope". `APP` keys: `OLS_GROUP`/`OLS_CIB`/`OLS_RETAIL`/`POSEIDON`. `DB` keys: `group`/`cib_batch`/`cib_reporting`/`retail_batch`/`retail_reporting` |
 | `ACCESS_LEVEL` | `READ` \| `WRITE` \| `DENY` |
@@ -67,14 +67,25 @@ Everything finer-grained is a grant row. One table, generic shape so it never ne
 
 **`RESOURCE_SCOPE` values:** `log_analytics`, `config_ops:group`, `config_ops:cib`,
 `config_ops:retail`, `infra_health`, `service_console`, `oracle_command_center`
-(and `oracle_command_center:<db>` for a per-DB `SECTION` deny). For `REGRESSION`, the scope is the
-bare config scope (`cib` / `retail` / `group`) or `config_ops:<scope>`.
+(and `oracle_command_center:<db>` for a per-DB `SECTION` deny). For `REGRESSION` and `RECONCILIATION`,
+the scope is the bare config scope (`cib` / `retail` / `group`) or `config_ops:<scope>`.
 
-**Regression tab (per scope):** the Config Ops → Regression tab is hidden unless the user has a
-`REGRESSION` grant for that scope (and the screen is DEV/STG) — a per-`ols_app_access` grant, deliberately
-NOT on the `ols_ops_access` table (which stays only for User Management + S-Studio). It's independent of
+**Regression / Data Reconciliation tabs (per scope):** each Config Ops tab is hidden unless the user has
+the matching grant for that scope (and the screen is DEV/STG) — a per-`ols_app_access` grant, deliberately
+NOT on the `ols_ops_access` table (which stays only for User Management + S-Studio). Both are independent of
 the config-scope grant, so the user still needs `config_ops:<scope>` to reach the screen the tab lives in.
-`rbac.regressionVisible(scope)`; ADMIN always. Example grant: `REGRESSION` / `cib` / `*` / `READ`.
+`rbac.regressionVisible(scope)` / `rbac.reconciliationVisible(scope)`; ADMIN always. Reconciliation is
+offered on every scope (Group included); Regression on CIB only. Example grants:
+`REGRESSION` / `cib` / `*` / `READ` and `RECONCILIATION` / `group` / `*` / `READ`.
+
+> **DB note:** `RECONCILIATION` was added to the `ols_app_access_ck_type` CHECK constraint later than the
+> others. On a database created before that, run the migration `ALTER` in `backend/sql/rbac_setup.sql`
+> or a `RECONCILIATION` insert fails with ORA-02290.
+
+These tabs are opt-in (additive): granting shows the tab, and to **hide** it you revoke the grant —
+`DENY` is ignored for `REGRESSION`/`RECONCILIATION`. Both are grantable from the **User Management**
+screen via the *Config Ops — screen tab (show/hide)* grant type (§11), which lists the tabs for the
+chosen scope (OLS CIB carries the extra Regression tab).
 
 **Config scope route guard:** the sidebar hides non-granted scopes (`configScopeVisible`), and
 `configScopeGuard` on the `group`/`cib`/`retail` routes hard-blocks a direct URL to a non-granted scope
@@ -91,7 +102,7 @@ is reproduced here for reference:
 ```sql
 CREATE TABLE ols_app_access (
   username       VARCHAR2(64)  NOT NULL,
-  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION
+  resource_type  VARCHAR2(20)  NOT NULL,   -- SCREEN | SERVER | APP | DB | TABLE_CATEGORY | TABLE | SECTION | REGRESSION | RECONCILIATION
   resource_scope VARCHAR2(64)  NOT NULL,
   resource_key   VARCHAR2(128) DEFAULT '*' NOT NULL,
   access_level   VARCHAR2(10)  NOT NULL,   -- READ | WRITE | DENY
@@ -317,6 +328,12 @@ Bootstrap by SQL once (chicken-and-egg is intentional); after that the screen ca
   servers, apps, DBs, sections, plus levels & env. Data-driven lists (servers, OCC DBs) populate
   live; config tables are free-text; a new screen/section shows up once it's in its normal registry
   (§3/§7). Includes the “all EXCEPT” DENY pattern.
+- **Config Ops — screen tab (show/hide)** grant type — a per-scope *tab* picker for the Config Ops
+  screen. Pick a scope (OLS GROUP / CIB / RETAIL) and it lists that scope's controllable tabs —
+  **Config** (→ `SCREEN`/`config_ops:<scope>`), **Data Reconciliation** (→ `RECONCILIATION`/`<scope>`)
+  and, **for OLS CIB only, Regression** (→ `REGRESSION`/`<scope>`). Level is fixed to READ (opt-in:
+  granting shows the tab; **hiding = revoke the row**). MISC Activity has no gate (always shown) and
+  S-Studio is driven by the SQL-access toggle (§12), so neither is listed here.
 - **Load a user** (`/admin/user`) — validated against `ols_users`. If absent or `LGCL_DEL_FLG≠'N'`
   → *“The &lt;uid&gt; user does not exist in OLS. Please submit the appropriate provisioning request
   before proceeding.”* (via `access_api.no_ols_user_msg`) and no editing.
