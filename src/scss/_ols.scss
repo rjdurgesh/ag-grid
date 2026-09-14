@@ -145,20 +145,18 @@
   gap: 10px;
 }
 
-/* Hide the version chip when the sidebar is folded to icons (also while unfoldable and
-   not hovered), so only the toggle icon shows in the collapsed rail. */
-.sidebar-narrow .ols-sidebar-footer app-version,
-.sidebar-narrow-unfoldable:not(:hover) .ols-sidebar-footer app-version {
-  display: none;
+/* Collapsed rail: keep the version but STACK it compactly (UI over API) so it fits the ~64px rail —
+   drop the icon, divider and pill padding, shrink the type. */
+#sidebar1.sidebar-narrow .ols-sidebar-footer { padding-inline: 2px; }
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver {
+  flex-direction: column; align-items: center; gap: 1px;
+  padding: 3px 2px; border-radius: 8px; max-width: 100%;
 }
-
-/* Collapsed rail: show ONLY the brand icon, centered (no wordmark). */
-.sidebar-narrow .ols-brand,
-.sidebar-narrow-unfoldable:not(:hover) .ols-brand {
-  justify-content: center;
-  gap: 0;
-  width: 100%;
-}
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver__ico,
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver__div { display: none; }
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver__item { gap: 3px; }
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver__k { font-size: 8px; letter-spacing: 0.3px; }
+#sidebar1.sidebar-narrow .ols-sidebar-footer .appver__v { font-size: 9px; }
 
 // ---- Advanced sidebar surface + nav ------------------------------------------
 #sidebar1 {
@@ -176,6 +174,11 @@
 #sidebar1 .ols-brand__mark {
   box-shadow: 0 8px 20px -8px rgba(77, 93, 251, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
+
+/* Brand: full wordmark ("OLS DASHBOARD" + "Operations Command Center") shows when the panel is OPEN.
+   Only the COLLAPSED rail drops the wordmark (CoreUI hides .sidebar-brand-full in narrow) and centres
+   the lone logo mark. */
+#sidebar1.sidebar-narrow .ols-brand { justify-content: center; gap: 0; width: 100%; }
 
 /* Nav items: rounded pills, hover slide, glowing active state with a left accent rail. */
 #sidebar1 .sidebar-nav .nav-link,
@@ -211,17 +214,14 @@
   transition: color 0.16s ease, transform 0.16s ease;
 }
 /* Collapsed icon rail: icons are the ONLY content — render them at full strength. */
-#sidebar1.sidebar-narrow .sidebar-nav .nav-icon,
-#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-icon {
+#sidebar1.sidebar-narrow .sidebar-nav .nav-icon {
   color: #ffffff;
 }
 
-/* Collapsed rail is only ~50px wide — the expanded pill's side margins / radius / left
+/* Collapsed rail is only ~64px wide — the expanded pill's side margins / radius / left
    accent shift + clip the icon (shows half). Drop them so CoreUI centres the icon. */
 #sidebar1.sidebar-narrow .sidebar-nav .nav-link,
-#sidebar1.sidebar-narrow .sidebar-nav .nav-group-toggle,
-#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-link,
-#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-group-toggle {
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group-toggle {
   margin-left: 0 !important;
   margin-right: 0 !important;
   padding-left: 0 !important;
@@ -229,11 +229,91 @@
   border-radius: 0 !important;
   transform: none !important;
   justify-content: center !important;   /* icon dead-centre in the rail, whatever its width */
+  overflow: visible !important;         /* CoreUI sets nav-link overflow:hidden → would clip the tooltip */
 }
-#sidebar1.sidebar-narrow .sidebar-nav .nav-link.active::before,
-#sidebar1.sidebar-narrow-unfoldable:not(:hover) .sidebar-nav .nav-link.active::before {
+#sidebar1.sidebar-narrow .sidebar-nav .nav-link.active::before {
   display: none;
 }
+
+/* ==========================================================================
+   COLLAPSED ICON RAIL. The header hamburger sets CoreUI `narrow` (a true 64px icon
+   rail that NEVER hover-expands — see default-layout `narrow` signal). Simple items
+   show a hover TOOLTIP; parents (Config Ops / Infra Pulse / Docs) show a hover FLYOUT
+   of their children. Everything shows instantly → fine under prefers-reduced-motion.
+   ========================================================================== */
+
+/* Our sidebar is position:fixed (not a flex item), so CoreUI's narrow (which shrinks via flex-basis)
+   leaves width at 16rem. Drive the icon-rail size by overriding the width VARIABLE — CoreUI derives
+   both the sidebar width AND the content offset from it, so both follow. */
+#sidebar1.sidebar-narrow {
+  --cui-sidebar-width: var(--cui-sidebar-narrow-width, 4rem) !important;
+  width: var(--cui-sidebar-narrow-width, 4rem) !important;
+  min-width: var(--cui-sidebar-narrow-width, 4rem) !important;
+}
+
+/* Let the pop-outs escape the sidebar's scroll clipping (few items → no scroll needed).
+   ng-scrollbar's viewport uses `contain: strict` which PAINT-CLIPS descendants to its box even with
+   overflow:visible — so we must also drop `contain` for tooltips/flyouts to show outside the rail. */
+#sidebar1.sidebar-narrow .sidebar-nav,
+#sidebar1.sidebar-narrow .ng-scroll-viewport-wrapper,
+#sidebar1.sidebar-narrow .ng-scroll-viewport {
+  overflow: visible !important;
+  contain: none !important;
+}
+
+/* Rail: hide the inline label so ONLY the centred icon shows (fixes the clipped-text
+   "Hoı / Anal / fig Op" bug — the label was left visible and shoved the icon off-edge).
+   Simple items wrap the label in <c-sidebar-nav-link-content>; group parents render it as a
+   BARE TEXT NODE next to the icon, so collapse those with font-size:0 (the svg icon is unaffected). */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-link c-sidebar-nav-link-content { display: none; }
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group-toggle { font-size: 0; }
+/* the group toggle's dropdown caret is meaningless in the rail */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group-toggle::after { display: none !important; }
+/* keep children collapsed in the rail unless the parent is hovered (below) */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group > .nav-group-items { display: none; }
+/* section titles (TOOLS / ADMINISTRATION / DOCUMENTATION) → thin dividers in the rail */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-title {
+  font-size: 0; height: 0; overflow: hidden; padding: 0; margin: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* anchor for the pop-outs */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-item,
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group { position: relative; }
+
+/* --- hover TOOLTIP for a TOP-LEVEL simple item — reuse its own hidden label as the bubble ---
+   CoreUI hides nav labels with visibility/opacity (not just display), so the show state MUST
+   restore visibility+opacity or the bubble stays invisible. The `> .nav-item` (direct child of
+   .sidebar-nav) scoping is IMPORTANT: flyout children are ALSO `.nav-item > .nav-link`, so without it
+   this rule would yank a hovered child's label out of the flyout into a floating bubble (name vanishes).
+   Children already show their full label in the flyout, so they need no tooltip. */
+#sidebar1.sidebar-narrow .sidebar-nav > .nav-item > .nav-link:hover c-sidebar-nav-link-content {
+  display: block !important; visibility: visible !important; opacity: 1 !important;
+  position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+  padding: 6px 12px; white-space: nowrap; border-radius: 8px; z-index: 1200; pointer-events: none;
+  background: #1a2234; color: #fff; font-size: 0.82rem; font-weight: 600; letter-spacing: 0.2px;
+  border: 1px solid rgba(255, 255, 255, 0.10); box-shadow: 0 10px 28px rgba(4, 8, 20, 0.55);
+}
+
+/* --- hover FLYOUT for a parent — a panel listing its children ---
+   Override CoreUI's accordion collapse (display:none + height:0 + visibility:hidden + opacity:0). */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group:hover > .nav-group-items {
+  display: block !important; visibility: visible !important; opacity: 1 !important;
+  height: auto !important; overflow: visible !important;
+  position: absolute; left: 100%; top: 0; z-index: 1200;
+  box-sizing: border-box; min-width: 216px; padding: 6px; font-size: 1rem;
+  background: #1a2234; border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 10px;
+  box-shadow: 0 18px 38px rgba(4, 8, 20, 0.6);
+}
+/* children rows: normal icon + label, left-aligned inside the flyout */
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group:hover > .nav-group-items c-sidebar-nav-link-content {
+  display: inline !important; visibility: visible !important; opacity: 1 !important;
+}
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group:hover > .nav-group-items .nav-link {
+  justify-content: flex-start !important; gap: 10px; padding: 7px 10px !important; border-radius: 7px;
+}
+#sidebar1.sidebar-narrow .sidebar-nav .nav-group:hover > .nav-group-items .nav-icon { margin: 0 !important; }
+
 #sidebar1 .sidebar-nav .nav-link:hover .nav-icon {
   color: #8ab4ff;
 }

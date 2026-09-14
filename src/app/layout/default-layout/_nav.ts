@@ -13,7 +13,7 @@ export const navItems: INavData[] = [
   {
     name: 'Log Analytics Hub',
     url: '/log_analytics',
-    iconComponent: { name: 'cil-notes' }
+    iconComponent: { name: 'cil-list-numbered' }
   },
   {
     name: 'Config Ops Console',

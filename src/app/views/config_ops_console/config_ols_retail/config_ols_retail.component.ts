@@ -6,12 +6,13 @@ import { ConfigScope } from '../../../shared/api-endpoints';
 import { ConfigScopeBase } from '../config-scope.base';
 import { SqlStudioComponent } from '../sql_studio/sql-studio.component';
 import { OlsRetailRegressionComponent } from '../regression/ols_retail_regression/ols-retail-regression.component';
+import { ReconciliationComponent } from '../reconciliation/reconciliation.component';
 
 @Component({
   selector: 'app-config-ols-retail',
   templateUrl: './config_ols_retail.component.html',
   styleUrls: ['./config_ols_retail.component.scss'],
-  imports: [GridDataComponent, LoaderComponent, SqlStudioComponent, OlsRetailRegressionComponent]
+  imports: [GridDataComponent, LoaderComponent, SqlStudioComponent, OlsRetailRegressionComponent, ReconciliationComponent]
 })
 export class ConfigOlsRetailComponent extends ConfigScopeBase {
   protected readonly scope: ConfigScope = 'retail';

@@ -1,0 +1,19 @@
+{
+  "_comment": "Data Reconciliation config, PER SERVER (copy to reconciliation.json, gitignored). Report definitions themselves live in the DB table ols_recon_report_config (per scope DB) — this file holds only the non-secret, per-server bits: the base folder where report extract CSVs land (FILE mode), the TABLE-mode staging table, and the mapping from the monitoring-batches status column values to our three side-states. Any key left out falls back to the defaults below, then to the legacy RECON_* .env var.",
+  "defaults": {
+    "extract_base_dir": "D:/ols/reconciliation/extracts",
+    "staging_table": "OLS_RECON_DATA",
+    "poll_timeout_secs": 3600,
+    "stale_minutes": 60,
+    "status_map": {
+      "running": ["RUNNING", "SUBMITTED", "STARTED", "IN_PROGRESS"],
+      "done":    ["COMPLETED", "COMPLETE", "SUCCESS", "SUCCEEDED", "FINISHED"],
+      "failed":  ["FAILED", "ERROR", "ABORTED", "CANCELLED", "KILLED"]
+    }
+  },
+  "scopes": {
+    "group": {},
+    "cib":   {},
+    "retail": {}
+  }
+}

@@ -11,48 +11,117 @@ so callers fall back to the body username exactly as before — and ``jwt`` is i
 backend runs without ``PyJWT`` installed. Flip ``AUTH_VALIDATE_TOKEN=1`` (and set the ``OIDC_*``
 vars) to enforce real validation. Full go-live guide: AUTH_SETUP.md.
 
-Config (backend/.env — read ONCE at import, so restart after changing):
-  AUTH_VALIDATE_TOKEN   THE ON/OFF SWITCH. 1 = OIDC ON — require + validate a bearer token, identity
-                        comes from the token. 0 = OIDC OFF (debug/dummy) — no token needed; the caller
-                        is AUTH_DEV_USER if set, else the request body's own username field.
-  AUTH_DEV_USER         (only when OIDC is OFF) a hardcoded UID to authenticate AS while debugging —
-                        give it the needed access in ols_users / ols_app_access (or, under
-                        ACCESS_USE_DUMMY=1, a name containing "ADMIN" for the canned admin). Blank =
-                        fall back to the body username (the frontend keeps working unchanged).
-  OIDC_ISSUER           the provider's issuer URL (validated against the token's ``iss``).
-  OIDC_AUDIENCE         expected ``aud`` (comma-separated allowed; empty = skip the aud check).
-  OIDC_JWKS_URL         the provider's JWKS endpoint (defaults to <issuer>/.well-known/jwks.json).
-  OIDC_USERNAME_CLAIM   claim carrying the corporate UID that matches ols_users.USERNAME
-                        (default ``preferred_username``; falls back to ``sub``). Must be present in
-                        the ACCESS token, which is what the SPA sends as the bearer.
-  OIDC_ALGORITHMS       allowed signing algs (default ``RS256``; comma-separated).
-  OIDC_LEEWAY           seconds of clock-skew tolerance for exp/iat (default 30).
+Config lives in ``backend/config/oidc_config.yml`` — ONE file with ``dev`` / ``stg`` / ``prod`` sections;
+the section is chosen by ``APP_ENV`` (backend/.env), so .env stays generic and the config travels with the
+code. All values are read ONCE at import, so restart after changing them. Precedence per key: the matching
+env var (if set — break-glass / back-compat) → the YAML section → a built-in default. If PyYAML or the file
+is absent, only env vars + defaults are used (the previous behaviour). Point elsewhere with OIDC_CONFIG_FILE.
+
+  Key (YAML / env-var override)   Meaning
+  validate_token / AUTH_VALIDATE_TOKEN   THE ON/OFF SWITCH. true(1) = OIDC ON — require + validate a bearer
+                        token, identity from the token. false(0) = OIDC OFF (debug/dummy) — no token; the
+                        caller is dev_user/AUTH_DEV_USER if set, else the request body's own username.
+  dev_user / AUTH_DEV_USER   (only when OIDC is OFF) a hardcoded UID to authenticate AS while debugging —
+                        give it access in ols_users / ols_app_access (or, under ACCESS_USE_DUMMY=1, a name
+                        containing "ADMIN"). Blank = fall back to the body username.
+  issuer / OIDC_ISSUER            the provider's issuer URL (validated against the token's ``iss``).
+  audience / OIDC_AUDIENCE        expected ``aud`` (YAML list, or comma-separated env; empty = skip aud check).
+  jwks_url / OIDC_JWKS_URL        the provider's JWKS endpoint (defaults to <issuer>/.well-known/jwks.json).
+  username_claim / OIDC_USERNAME_CLAIM   claim carrying the corporate UID that matches ols_users.USERNAME
+                        (default ``preferred_username``; falls back to ``sub``). Must be in the access token.
+  algorithms / OIDC_ALGORITHMS    allowed signing algs (YAML list, or comma-separated env; default ``RS256``).
+  leeway / OIDC_LEEWAY            seconds of clock-skew tolerance for exp/iat (default 30).
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import HTTPException, Request
 
-from env_loader import env_bool  # importing also loads backend/.env into os.environ
+import env_loader  # noqa: F401 — importing loads backend/.env into os.environ before we read APP_ENV etc.
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# THE ON/OFF SWITCH. 0 = OIDC off (debug/dummy) → no token; 1 = OIDC on → validate a bearer token.
-AUTH_VALIDATE_TOKEN = env_bool("AUTH_VALIDATE_TOKEN", False)
+# --- per-environment OIDC config (backend/config/oidc_config.yml, section chosen by APP_ENV) ----------
+# ONE YAML holds dev/stg/prod sections of NON-SECRET provider values, so .env stays generic (only APP_ENV
+# changes per server) and the config travels with the code. Precedence per key: the OIDC_*/AUTH_* env var
+# (if set — break-glass / back-compat) → the YAML section for APP_ENV → a built-in default. If PyYAML or the
+# file is missing, we fall back to env vars + defaults only — i.e. exactly the previous behaviour.
+_APP_ENV = os.getenv("APP_ENV", "PROD").strip().lower()
+
+
+def _load_oidc_section() -> dict:
+    """The oidc_config.yml section for APP_ENV (dev/stg/prod). {} on any problem (file/PyYAML/parse) so
+    callers cleanly fall back to env vars + defaults."""
+    path = Path(os.getenv("OIDC_CONFIG_FILE", str(Path(__file__).parent / "config" / "oidc_config.yml")))
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+    except Exception:
+        logger.warning("oidc_config.yml present but PyYAML is not installed — using OIDC_* env vars only.")
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Could not parse %s: %s — using OIDC_* env vars only.", path, exc)
+        return {}
+    section = data.get(_APP_ENV) or data.get(_APP_ENV.upper()) or {}
+    return section if isinstance(section, dict) else {}
+
+
+_OIDC = _load_oidc_section()
+
+
+def _cfg_str(env_key: str, yaml_key: str, default: str = "") -> str:
+    """env var (non-empty) → YAML section value → default, as a trimmed string."""
+    v = os.getenv(env_key)
+    if v is not None and v.strip():
+        return v.strip()
+    yv = _OIDC.get(yaml_key)
+    return str(yv).strip() if yv is not None and str(yv).strip() else default
+
+
+def _cfg_bool(env_key: str, yaml_key: str, default: bool = False) -> bool:
+    v = os.getenv(env_key)
+    if v is not None and v.strip():
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    yv = _OIDC.get(yaml_key)
+    if isinstance(yv, bool):
+        return yv
+    if yv is not None and str(yv).strip():
+        return str(yv).strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def _cfg_list(env_key: str, yaml_key: str, default: list[str]) -> list[str]:
+    v = os.getenv(env_key)
+    if v is not None and v.strip():
+        return [x.strip() for x in v.split(",") if x.strip()]
+    yv = _OIDC.get(yaml_key)
+    if isinstance(yv, (list, tuple)):
+        return [str(x).strip() for x in yv if str(x).strip()]
+    if yv is not None and str(yv).strip():
+        return [x.strip() for x in str(yv).split(",") if x.strip()]
+    return list(default)
+
+
+# THE ON/OFF SWITCH. false = OIDC off (debug/dummy) → no token; true = OIDC on → validate a bearer token.
+AUTH_VALIDATE_TOKEN = _cfg_bool("AUTH_VALIDATE_TOKEN", "validate_token", False)
 # When OIDC is OFF, authenticate as this fixed UID (give it real access in the tables). Blank → the
 # request body's own username is used instead (so the frontend keeps working with no extra config).
-AUTH_DEV_USER = os.getenv("AUTH_DEV_USER", "").strip()
+AUTH_DEV_USER = _cfg_str("AUTH_DEV_USER", "dev_user", "")
 
-OIDC_ISSUER = os.getenv("OIDC_ISSUER", "").strip()
-OIDC_AUDIENCE = [a.strip() for a in os.getenv("OIDC_AUDIENCE", "").split(",") if a.strip()]
-OIDC_JWKS_URL = os.getenv("OIDC_JWKS_URL", "").strip() or (
+OIDC_ISSUER = _cfg_str("OIDC_ISSUER", "issuer", "")
+OIDC_AUDIENCE = _cfg_list("OIDC_AUDIENCE", "audience", [])
+OIDC_JWKS_URL = _cfg_str("OIDC_JWKS_URL", "jwks_url", "") or (
     f"{OIDC_ISSUER.rstrip('/')}/.well-known/jwks.json" if OIDC_ISSUER else "")
-OIDC_USERNAME_CLAIM = os.getenv("OIDC_USERNAME_CLAIM", "preferred_username").strip() or "preferred_username"
-OIDC_ALGORITHMS = [a.strip() for a in os.getenv("OIDC_ALGORITHMS", "RS256").split(",") if a.strip()]
-OIDC_LEEWAY = int(os.getenv("OIDC_LEEWAY", "30") or 30)
+OIDC_USERNAME_CLAIM = _cfg_str("OIDC_USERNAME_CLAIM", "username_claim", "preferred_username") or "preferred_username"
+OIDC_ALGORITHMS = _cfg_list("OIDC_ALGORITHMS", "algorithms", ["RS256"])
+OIDC_LEEWAY = int(_cfg_str("OIDC_LEEWAY", "leeway", "30") or 30)
 
 # Lazily-built JWKS client (PyJWKClient caches fetched signing keys). Created on first real use so the
 # module imports cleanly when PyJWT isn't installed and validation is off.

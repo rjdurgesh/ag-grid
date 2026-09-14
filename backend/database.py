@@ -2357,6 +2357,345 @@ def fetch_batch_monitor(db_config: Any, max_rows: int | None = None) -> dict:
 
 
 # =============================================================================
+# Data Reconciliation (Phase 1 — trigger + extract monitoring). See reconciliation_api.py.
+# The report catalogue + run/extract tables are OURS (ols_recon_*). The batch TRIGGER and the STATUS
+# POLL touch the customer's own batch framework, so those two SQLs are PLACEHOLDERS — replace with your
+# real proc call / monitoring query (like BATCH_MONITOR_SQL above). Everything else is ready to run.
+# =============================================================================
+
+# PLACEHOLDER — replace with your batch monitor query. Must return the raw status for each job_run_no.
+RECON_POLL_SQL = """
+    SELECT j.job_run_no  AS job_run_no,
+           j.status      AS status,
+           j.start_time  AS started,
+           j.end_time    AS finished
+      FROM bm_job_utils j
+     WHERE j.job_run_no IN ({placeholders})
+"""
+
+
+def fetch_recon_reports(db_config: Any) -> list[dict]:
+    """Active reports for a scope's dropdown, from ols_recon_report_config (in the scope's own DB)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT report_code, report_name, category, sub_category, output_mode, key_columns,
+                   measure_columns, tolerance_type, tolerance_value
+              FROM ols_recon_report_config
+             WHERE is_active = 'Y'
+             ORDER BY category, sub_category, sort_order, report_name
+        """)
+        cols = [d[0].lower() for d in cursor.description]
+        return [dict(zip(cols, [_cell(v) for v in r])) for r in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_recon_regression_runs(db_config: Any, scope: str, limit: int = 10, months: int = 2) -> list[dict]:
+    """Recent regression runs to optionally link a reconciliation to (→ carries CHG + release date).
+    Windowed to the last ``months`` calendar months by activity date (load_dt) so the query stays fast
+    as ols_regression_run grows — e.g. run in Sep, ``months=2`` returns every run from Jul 1 onward —
+    then capped at ``limit`` rows. Group has no regression → usually returns none."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT run_id, change_number, release_date
+              FROM ols_regression_run
+             WHERE load_dt >= ADD_MONTHS(TRUNC(SYSDATE, 'MM'), :back)
+             ORDER BY run_id DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"back": -abs(months), "lim": limit})
+        out = []
+        for run_id, chg, rel in cursor.fetchall():
+            label = f"Run #{run_id}" + (f" · {chg}" if chg else "") + (f" · {rel}" if rel else "")
+            out.append({"run_id": int(run_id), "change_number": chg, "release_date": rel, "label": label})
+        return out
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_run_start(db_config: Any, app_env: str, scope: str, live_db: str, regression_db: str,
+                    business_date: str, triggered_by: str, regression_run_id: int | None = None) -> int:
+    """Open a reconciliation run; carries CHG + release date from the linked regression run if given.
+    Returns run_id. Commits."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        chg = rel = None
+        if regression_run_id:
+            cursor.execute("SELECT change_number, release_date FROM ols_regression_run WHERE run_id = :r",
+                           {"r": regression_run_id})
+            row = cursor.fetchone()
+            if row:
+                chg, rel = row[0], row[1]
+        rid = cursor.var(int)
+        cursor.execute("""
+            INSERT INTO ols_recon_run (app_env, scope, live_db, regression_db, business_date,
+                                       regression_run_id, change_number, release_date, status, triggered_by)
+            VALUES (:env, :scope, :live, :reg, :bd, :rrid, :chg, :rel, 'running', :by)
+            RETURNING run_id INTO :rid
+        """, {"env": app_env, "scope": scope, "live": live_db, "reg": regression_db, "bd": business_date,
+              "rrid": regression_run_id, "chg": chg, "rel": rel, "by": triggered_by, "rid": rid})
+        connection.commit()
+        return int(rid.getvalue()[0])
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_extract_insert(db_config: Any, run_id: int, report_code: str, side: str, db_source: str,
+                         job_run_no: str | None, status: str, message: str | None) -> int:
+    """Record one triggered extract (report × side). Returns extract_id. Commits."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        eid = cursor.var(int)
+        cursor.execute("""
+            INSERT INTO ols_recon_extract (run_id, report_code, side, db_source, job_run_no, status, message)
+            VALUES (:run_id, :code, :side, :db, :job, :st, :msg)
+            RETURNING extract_id INTO :eid
+        """, {"run_id": run_id, "code": report_code, "side": side, "db": db_source,
+              "job": job_run_no, "st": status, "msg": (message or "")[:2000], "eid": eid})
+        connection.commit()
+        return int(eid.getvalue()[0])
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_call_trigger(db_config: Any, trigger_proc: str, report_code: str, db_source: str,
+                       business_date: str) -> str | None:
+    """PLACEHOLDER — call the report's PL/SQL batch and return its unique job_run_no. Adjust the anonymous
+    block to your proc's real signature. Identifiers can't be bound, so trigger_proc is validated (regex)
+    before interpolation; the values are bound. Expected: an OUT param yielding the job_run_no."""
+    if not re.fullmatch(r"[A-Za-z0-9_.$]+", trigger_proc or ""):
+        raise ValueError(f"Invalid trigger_proc name: {trigger_proc!r}")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        job = cursor.var(str)
+        cursor.execute(
+            f"BEGIN {trigger_proc}(p_report_code => :code, p_db_source => :db, "
+            f"p_business_date => :bd, p_job_run_no => :job); END;",
+            {"code": report_code, "db": db_source, "bd": business_date, "job": job})
+        connection.commit()
+        val = job.getvalue()
+        return str(val) if val is not None else None
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_run_extracts(db_config: Any, run_id: int) -> list[dict]:
+    """The stored extracts for a run (report, side, db_source, job_run_no, status) — the poll input."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT extract_id, report_code, side, db_source, job_run_no, status, message
+              FROM ols_recon_extract WHERE run_id = :r ORDER BY report_code, side
+        """, {"r": run_id})
+        cols = [d[0].lower() for d in cursor.description]
+        return [dict(zip(cols, [_cell(v) for v in r])) for r in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_poll_status(db_config: Any, job_run_nos: list[str]) -> dict:
+    """PLACEHOLDER — poll the batch monitor for a set of job_run_nos → {job_run_no: {status, started,
+    finished}}. Replace RECON_POLL_SQL with your real monitoring query."""
+    nos = [j for j in (job_run_nos or []) if j]
+    if not nos:
+        return {}
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        binds = {f"j{i}": v for i, v in enumerate(nos)}
+        placeholders = ", ".join(f":j{i}" for i in range(len(nos)))
+        cursor.execute(RECON_POLL_SQL.format(placeholders=placeholders), binds)
+        out: dict[str, dict] = {}
+        for row in cursor.fetchall():
+            out[str(row[0])] = {"status": row[1], "started": _cell(row[2]), "finished": _cell(row[3])}
+        return out
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_activity(db_config: Any, scope: str, limit: int = 200) -> list[dict]:
+    """Extract Log history for a scope: recent extracts joined to their run (db, report, business date,
+    status, who/when)."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT e.report_code, e.side, e.db_source, r.business_date, e.job_run_no,
+                   e.status, r.triggered_by, e.start_time
+              FROM ols_recon_extract e
+              JOIN ols_recon_run r ON r.run_id = e.run_id
+             WHERE r.scope = :scope
+             ORDER BY e.extract_id DESC FETCH FIRST :lim ROWS ONLY
+        """, {"scope": scope, "lim": limit})
+        cols = [d[0].lower() for d in cursor.description]
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(zip(cols, [_cell(v) for v in r]))
+            d["triggered_on"] = d.pop("start_time", None)
+            rows.append(d)
+        return rows
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# --- Data Reconciliation — Phase 2 (comparison results) ----------------------
+
+def recon_result_upsert(db_config: Any, run_id: int, report_code: str, summary: dict,
+                        detail_json: str, compared_by: str | None = None) -> None:
+    """Store (replace) one report's comparison result for a run: the PASS/FAIL summary + the discrepancy
+    grid JSON. Commits. `detail_json` is bound as a CLOB so a large grid persists."""
+    import oracledb
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.setinputsizes(det=oracledb.DB_TYPE_CLOB)
+        cursor.execute("""
+            MERGE INTO ols_recon_result t
+            USING (SELECT :run_id AS run_id, :code AS report_code FROM dual) s
+               ON (t.run_id = s.run_id AND t.report_code = s.report_code)
+            WHEN MATCHED THEN UPDATE SET
+                 status = :status, matched = :matched, changed = :changed, missing = :missing,
+                 extra = :extra, compared = :compared, detail_json = :det, compared_by = :by,
+                 compared_on = SYSTIMESTAMP
+            WHEN NOT MATCHED THEN INSERT
+                 (run_id, report_code, status, matched, changed, missing, extra, compared, detail_json, compared_by)
+                 VALUES (:run_id, :code, :status, :matched, :changed, :missing, :extra, :compared, :det, :by)
+        """, {"run_id": run_id, "code": report_code, "status": summary.get("status"),
+              "matched": summary.get("matched", 0), "changed": summary.get("changed", 0),
+              "missing": summary.get("missing", 0), "extra": summary.get("extra", 0),
+              "compared": summary.get("compared", 0), "det": detail_json, "by": compared_by})
+        connection.commit()
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_result_get(db_config: Any, run_id: int, report_code: str) -> dict | None:
+    """One report's stored result (incl. the discrepancy grid JSON), or None if not compared yet."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT status, matched, changed, missing, extra, compared, detail_json
+              FROM ols_recon_result WHERE run_id = :r AND report_code = :c
+        """, {"r": run_id, "c": report_code})
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {"status": row[0], "matched": row[1], "changed": row[2], "missing": row[3],
+                "extra": row[4], "compared": row[5], "detail_json": _cell(row[6])}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_results_for_run(db_config: Any, run_id: int) -> dict:
+    """All stored result summaries for a run, keyed by report_code (no detail_json) — the overview."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT report_code, status, matched, changed, missing, extra, compared
+              FROM ols_recon_result WHERE run_id = :r
+        """, {"r": run_id})
+        out: dict[str, dict] = {}
+        for rc, st, mt, ch, ms, ex, cp in cursor.fetchall():
+            out[rc] = {"status": st, "matched": mt, "changed": ch, "missing": ms, "extra": ex, "compared": cp}
+        return out
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def recon_load_dataset_table(db_config: Any, staging_table: str, run_id: int, side: str,
+                             report_code: str) -> dict | None:
+    """TABLE-mode output loader: read one run/side/report's rows from the shared staging table into
+    ``{columns, rows}``. `staging_table` is regex-validated (can't be bound); values are bound. Returns
+    None when no rows (→ NO_DATA). Expects columns run_id, side, report_code + the report's own columns."""
+    if not re.fullmatch(r"[A-Za-z0-9_$.]+", staging_table or ""):
+        raise ValueError(f"Invalid staging_table name: {staging_table!r}")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
+            f"SELECT * FROM {staging_table} WHERE run_id = :r AND side = :s AND report_code = :c",  # noqa: S608
+            {"r": run_id, "s": side, "c": report_code})
+        meta_cols = {"RUN_ID", "SIDE", "REPORT_CODE"}
+        all_cols = [d[0] for d in cursor.description]
+        keep = [(i, c) for i, c in enumerate(all_cols) if c.upper() not in meta_cols]
+        rows = [[_cell(r[i]) for i, _ in keep] for r in cursor.fetchall()]
+        if not rows:
+            return None
+        return {"columns": [c for _, c in keep], "rows": rows}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
 # Config Ops — CSV Upload & Load (see GUIDE.md §4, "Config Ops — CSV Upload & Load")
 # Identifiers (table/columns) are interpolated (Oracle can't bind them), so they MUST be validated
 # against the catalogue by the API layer AND regex-checked here (defense in depth). Values are bound.

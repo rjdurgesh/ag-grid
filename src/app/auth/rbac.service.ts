@@ -189,6 +189,19 @@ export class RbacService {
     return (s.config.regression ?? []).includes(scope);
   }
 
+  /** Is the Reconciliation tab granted for this scope? Same model as {@link regressionVisible} but a
+   *  separate grant (`config.reconciliation`) — Group gets it too. ADMIN always; DEV/STG gate at screen. */
+  reconciliationVisible(scope: string): boolean {
+    const s = this.snapshot();
+    if (!s.active) {
+      return false;
+    }
+    if (s.role === 'ADMIN') {
+      return true;
+    }
+    return (s.config.reconciliation ?? []).includes(scope);
+  }
+
   /**
    * Effective access to one config table — resolves per-table grants (which WIN, incl. DENY) over
    * category grants. `tableCategory` (OMT-TECHNICAL / OMT-FUNCTIONAL / OMT-BOTH) matches category

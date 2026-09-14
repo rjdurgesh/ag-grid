@@ -16,6 +16,11 @@
         Regression
       </button>
     }
+    @if (showReconciliation()) {
+      <button type="button" class="scope-tab scope-tab--sql" [class.scope-tab--active]="activeTab() === 'reconciliation'" (click)="selectTab('reconciliation')" role="tab">
+        Data Reconciliation
+      </button>
+    }
   </div>
 
   @if (activeTab() === 'config') {
@@ -50,6 +55,8 @@
     <app-sql-studio [scope]="scopeKey" />
   } @else if (activeTab() === 'regression' && showRegression()) {
     <app-ols-cib-regression />
+  } @else if (activeTab() === 'reconciliation' && showReconciliation()) {
+    <app-reconciliation [scope]="scopeKey" />
   } @else {
     <div class="ols-card scope-misc">
       <h3 class="scope-misc__title">MISC Activity</h3>

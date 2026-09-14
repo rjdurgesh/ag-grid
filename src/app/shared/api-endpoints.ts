@@ -118,6 +118,22 @@ export const API = {
     activity: `${API_BASE_URL}/api/regression/activity`
   },
   /**
+   * Data Reconciliation (DEV/STG) — Phase 1: trigger report extracts + monitor them. Every body
+   * carries `{ caller, scope }`. See reconciliation_api.py.
+   */
+  reconciliation: {
+    reports: `${API_BASE_URL}/api/reconciliation/reports`,
+    databases: `${API_BASE_URL}/api/reconciliation/databases`,
+    regressionRuns: `${API_BASE_URL}/api/reconciliation/regression-runs`,
+    trigger: `${API_BASE_URL}/api/reconciliation/trigger`,
+    status: `${API_BASE_URL}/api/reconciliation/status`,
+    /** `{ caller, scope, run_id, report_code }` → force a fresh comparison → `{ report_code, result }`. */
+    compare: `${API_BASE_URL}/api/reconciliation/compare`,
+    /** `{ caller, scope, run_id, report_code }` → `{ columns, rows }` (the discrepancy drill-down grid). */
+    discrepancies: `${API_BASE_URL}/api/reconciliation/discrepancies`,
+    activity: `${API_BASE_URL}/api/reconciliation/activity`
+  },
+  /**
    * S-Studio — the Config Ops SQL console (ops-admins with `can_sql` only). See sql_studio_api.py.
    */
   sqlStudio: {

@@ -1,0 +1,59 @@
+# =============================================================================
+# OpenID Connect (OIDC) configuration — PER ENVIRONMENT.
+#
+# ONE file, three sections (dev / stg / prod). The backend picks the section that
+# matches APP_ENV in backend/.env, so .env stays GENERIC (only APP_ENV differs per
+# server) and this file travels with the code. Read by backend/auth_token.py.
+#
+# These are NON-SECRET provider/discovery values (the SPA uses Authorization Code +
+# PKCE — no client secret lives here), so this file is committed. Fill in each
+# environment's real values below. The matching frontend config is per-env too:
+# src/app/auth/sso.config.ts (SSO_BY_ENV) + environment.ts (SSO_ENABLED_BY_ENV).
+#
+# Any single key can still be overridden on a specific server by its environment
+# variable (AUTH_VALIDATE_TOKEN / AUTH_DEV_USER / OIDC_ISSUER / OIDC_AUDIENCE /
+# OIDC_JWKS_URL / OIDC_USERNAME_CLAIM / OIDC_ALGORITHMS / OIDC_LEEWAY) — env var
+# wins, then this file, then a built-in default. Full guide: AUTH_SETUP.md.
+#
+# Keys per section:
+#   validate_token  true = OIDC ON (require + verify a bearer token; identity comes
+#                   from the token). false = OIDC OFF (debug/dummy; no token needed).
+#   dev_user        (only when validate_token=false) fixed UID to authenticate AS
+#                   while debugging; blank → fall back to the request body username.
+#   issuer          provider issuer URL (validated against the token `iss`).
+#   audience        expected `aud` (list; empty = skip the aud check).
+#   jwks_url        provider JWKS endpoint; blank → <issuer>/.well-known/jwks.json.
+#   username_claim  claim carrying the corporate UID (default preferred_username; → sub).
+#   algorithms      allowed signing algs (list; default [RS256]).
+#   leeway          clock-skew tolerance in seconds for exp/iat (default 30).
+# =============================================================================
+
+dev:
+  validate_token: false            # DEV: OIDC off by default (dev-bypass login). Set true to enforce.
+  dev_user: ""                     # e.g. "OPS-10432" to debug AS a specific user; blank = body username
+  issuer: "https://login-dev.example.com"
+  audience: ["ols-dashboard-dev"]
+  jwks_url: ""
+  username_claim: "preferred_username"
+  algorithms: ["RS256"]
+  leeway: 30
+
+stg:
+  validate_token: true             # STG: real OIDC
+  dev_user: ""
+  issuer: "https://login-stg.example.com"
+  audience: ["ols-dashboard-stg"]
+  jwks_url: ""
+  username_claim: "preferred_username"
+  algorithms: ["RS256"]
+  leeway: 30
+
+prod:
+  validate_token: true             # PROD: real OIDC
+  dev_user: ""
+  issuer: "https://login.example.com"
+  audience: ["ols-dashboard"]
+  jwks_url: ""
+  username_claim: "preferred_username"
+  algorithms: ["RS256"]
+  leeway: 30

@@ -117,7 +117,12 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
   /** Server shown in the info dialog (null = closed). */
   readonly infoServer = signal<{ appLabel: string; server: ServerServices } | null>(null);
 
-  readonly anyExpanded = computed(() => this.panels.some((p) => p.expanded()));
+  /** Any section open in the CURRENT view (By App → panels, By Status → status groups) — drives the
+   *  Collapse-All / Expand-All button label + action for whichever view is showing. */
+  readonly anyExpanded = computed(() =>
+    this.view() === 'status'
+      ? this.statusGroups.some((g) => g.expanded())
+      : this.panels.some((p) => p.expanded()));
 
   ngOnInit(): void {
     this.refreshAll();
@@ -163,6 +168,11 @@ export class ServiceConsoleComponent implements OnInit, OnDestroy {
 
   toggleCollapseAll(): void {
     const collapse = this.anyExpanded();
+    if (this.view() === 'status') {
+      // By Status: the sections are the status groups (Stopped / Unaccessible / Running).
+      this.statusGroups.forEach((group) => group.expanded.set(!collapse));
+      return;
+    }
     this.panels.forEach((panel) => {
       panel.expanded.set(!collapse);
       if (collapse) {

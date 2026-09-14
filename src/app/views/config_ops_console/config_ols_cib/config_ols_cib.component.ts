@@ -6,12 +6,13 @@ import { ConfigScope } from '../../../shared/api-endpoints';
 import { ConfigScopeBase } from '../config-scope.base';
 import { SqlStudioComponent } from '../sql_studio/sql-studio.component';
 import { OlsCibRegressionComponent } from '../regression/ols_cib_regression/ols-cib-regression.component';
+import { ReconciliationComponent } from '../reconciliation/reconciliation.component';
 
 @Component({
   selector: 'app-config-ols-cib',
   templateUrl: './config_ols_cib.component.html',
   styleUrls: ['./config_ols_cib.component.scss'],
-  imports: [GridDataComponent, LoaderComponent, SqlStudioComponent, OlsCibRegressionComponent]
+  imports: [GridDataComponent, LoaderComponent, SqlStudioComponent, OlsCibRegressionComponent, ReconciliationComponent]
 })
 export class ConfigOlsCibComponent extends ConfigScopeBase {
   protected readonly scope: ConfigScope = 'cib';

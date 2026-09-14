@@ -316,6 +316,12 @@ CSV into the open table. Client: pick file → auto/override **delimiter** → R
 validation** (name + order; **trailing columns may be omitted → NULL**) → **editable, virtualized AG-Grid
 preview** with per-cell validation (bad cells red; dates must be `YYYY-MM-DD`, fix inline or **Issues only** /
 **Export**) → **Append** (insert only) or **Replace** (delete-then-insert; whole table, or the single COB date).
+For **date-managed tables (`is_cobdt=Y`)** an **Override COB/Reporting date** picker stamps **every** row with
+one chosen date, so an exported file can be re-uploaded for any business date **without editing it** (it also
+collapses a multi-date file to a single date; **Clear** restores the file's own dates). The picker targets the
+**authoritative date column** — the retrieve response now carries `date_column` (resolved server-side by
+`ols_util.get_date_column`), so it works for COB_DT / REPORTING_DT / **any** date label and is labelled from
+that column. Selecting an override **asks for confirmation first** (it rewrites the date in every row).
 The server ([`config_api.py`](backend/config_api.py)) is the authority: validates against the real schema
 (`ALL_TAB_COLUMNS`), resolves the **date column via the DB function `ols_util.get_date_column(:table)`**, type-casts
 (explicit `TO_DATE`/native bind — never NLS), then `database.config_load_table` does the **atomic** load (per-table
@@ -528,6 +534,34 @@ ADMIN role also stands in for the ops-admin gate, so User Management is reachabl
 **To go live:** wire `app.state.app_db_config` (the app DB holding `ols_users` + `ols_app_access`),
 set `ACCESS_USE_DUMMY=0`, ensure `/api/config/{scope}/tables` returns `TABLE_CATEGORY`, and
 **re-check every write server-side from the SSO token** (RBAC_DESIGN.md §9 — UI hiding is not security).
+
+**Data Reconciliation** (Config Ops → **Data Reconciliation** tab, on **all three scopes incl. Group**,
+**DEV/STG only** AND granted per scope via an `ols_app_access` **`RECONCILIATION`** grant —
+`rbac.reconciliationVisible(scope)`) validates a regression by running business reports on a **LIVE db**
+and a **Regression db** and (Phase 2) comparing the aggregate output. **Phase 1 (built):** pick LIVE db +
+Regression db + **business date** + optionally **link a regression run** (→ carries CHG + release date) +
+multi-select **reports** (from the `ols_recon_report_config` table in the scope's own DB — nothing
+hardcoded), then **Trigger** → each report's PL/SQL batch (`trigger_proc`) is called per side (LIVE + REG)
+with `db_source` (e.g. `OLSCD1`), returning a unique **`job_run_no`**. The batches run async; the screen
+**polls the batch monitor by `job_run_no`** and shows a per-report **state machine** — *Extracting →
+Ready / Extract failed / No data* (precedence Failed > No-data > Extracting > Ready; one report's failure
+never affects others). Reports are picked from a **per-category grouped multi-select** (one dropdown per
+`category`, grouped by `sub_category`). The optional "Link regression run" dropdown lists
+recent runs from the **last 2 calendar months** (capped at 10) so it stays fast as `ols_regression_run`
+grows. Directly below the Run section is a **collapsible** **Data
+Reconciliation** results grid (Report · **Category** · Status · LIVE · REG · Matched/Changed/Missing/Extra ·
+Detail), and under it a single **Extract Log** history sub-tab — both AG-Grid (filter/sort/pagination) with a
+live "Last refreshed …" label + refresh icon. **Phase 2 (built):** once a report's both sides are READY, the
+LIVE vs Regression output is **compared automatically** (server-side in `/status`): a full-outer-join on the
+configured `key_columns`, comparing `measure_columns` within `tolerance` → **PASS/FAIL** +
+matched/changed/missing/extra counts on the overview row. **Clicking a PASS/FAIL report** opens a
+**discrepancy drill-down** (a centered, content-sized modal with a self-describing grid: `Type · keys ·
+<measure> LIVE/REG/Δ`, with **Changed / Missing / Extra** rows) — filter/sort/paginate, **Download CSV**, and
+**Re-compare**. Backend `reconciliation_api.py` (`/api/reconciliation/*` incl.
+`/compare` + `/discrepancies`, DEV/STG + grant gate, dummy path), compare engine in `reconciliation_ops.py`,
+SQL in `database.py` (`recon_call_trigger` + `RECON_POLL_SQL` are placeholders to wire to your batch
+proc/monitor), DDL `sql/reconciliation_setup.sql` (+ sample DML), config `reconciliation/reconciliation.json`
+(extract dir + status-value map). See the `reconciliation-screen-design` memory.
 
 ---
 
@@ -814,6 +848,12 @@ Both modes apply to **every** table type; only the DELETE scope differs.
 - **Export keeps ORIGINAL headers.** Export Data writes the raw column names (`COB_DT`, not the prettified
   "COB DT") as the CSV header (`toCsv` uses `c.field`), so an exported file uploads straight back and
   passes header validation.
+- **Export emits canonical dates.** `toCsv` formats **date** columns as `YYYY-MM-DD` and **timestamp /
+  SYSTIMESTAMP** columns as `YYYY-MM-DD HH:MM:SS[.ffffff]` (by column `type`), extracting the date/time
+  textually from an ISO-ish value: it **keeps up to 6 fractional-second digits**, **drops the `T` and any
+  timezone** (`Z` / `±HH:MM`), and never shifts the day across a timezone. This matches the upload validator
+  exactly, so an **export → import round-trip validates cleanly**. (The inline date-cell editor likewise
+  stores the local canonical form, not `toISOString()`.)
 - **`DELETE`, never `TRUNCATE`** — TRUNCATE is DDL, auto-commits, can't roll back; a failed insert after
   TRUNCATE would leave the table empty with no undo. DELETE keeps the whole load atomic.
 

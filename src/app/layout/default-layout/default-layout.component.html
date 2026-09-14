@@ -4,6 +4,7 @@
   class="d-print-none sidebar sidebar-fixed border-end"
   colorScheme="dark"
   id="sidebar1"
+  [narrow]="narrow()"
   visible
 >
   <c-sidebar-header class="border-bottom ols-sidebar-header">
@@ -22,11 +23,9 @@
     <c-sidebar-nav [navItems]="navItems()" dropdownMode="close" compact />
   </ng-scrollbar>
 
-  @if (!sidebar1.narrow) {
-    <c-sidebar-footer class="border-top ols-sidebar-footer d-none d-lg-flex">
-      <app-version />
-    </c-sidebar-footer>
-  }
+  <c-sidebar-footer class="border-top ols-sidebar-footer d-none d-lg-flex">
+    <app-version />
+  </c-sidebar-footer>
 </c-sidebar>
 
 <!--main-->
@@ -37,6 +36,7 @@
     class="mb-4 d-print-none header header-sticky p-0 shadow-sm"
     position="sticky"
     sidebarId="sidebar1"
+    (collapseToggle)="toggleNarrow()"
   />
   <!--app-body-->
   <div class="body flex-grow-1">

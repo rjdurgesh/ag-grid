@@ -49,8 +49,8 @@ provider. There are **two switches — one per layer** (frontend and backend). K
 
 | Layer | Flag | Where | ON (enforce) | OFF (bypass — debug) |
 |---|---|---|---|---|
-| **Frontend** | `isSsoEnabled` | [`src/environments/environment.ts`](src/environments/environment.ts) | `true` → redirect to the IdP (real OIDC login) | `false` → dev-bypass login button, no IdP; the user is `environment.username` |
-| **Backend** | `AUTH_VALIDATE_TOKEN` | `backend/.env` | `1` → verify the bearer token; no/invalid token → **401**; identity from the token | `0` (default) → **no token required** |
+| **Frontend** | `isSsoEnabled` (per env) | [`environment.ts`](src/environments/environment.ts) `SSO_ENABLED_BY_ENV` + [`sso.config.ts`](src/app/auth/sso.config.ts) `SSO_BY_ENV` | `true` → redirect to the IdP (real OIDC login) | `false` → dev-bypass login button, no IdP; the user is `environment.username` |
+| **Backend** | `validate_token` (per env) | [`backend/config/oidc_config.yml`](backend/config/oidc_config.yml), section chosen by `APP_ENV` in `backend/.env` | `true` → verify the bearer token; no/invalid token → **401**; identity from the token | `false` (default) → **no token required** |
 
 **What identity the backend uses when `AUTH_VALIDATE_TOKEN=0` (OIDC off):** it reads, in order —
 1. **`AUTH_DEV_USER`** (env) — if set, every request authenticates AS this fixed UID (the "hardcoded
@@ -129,40 +129,39 @@ Create a **public / SPA client** (Authorization Code + PKCE, **no client secret*
 - **Audience** — note what the provider stamps into the **access token's `aud`**; the backend (§3B)
   verifies it. Often the client ID or a dedicated API identifier.
 
-### 3.2 Fill in `SSO_CONFIG`
+### 3.2 Fill in `SSO_CONFIG` (per environment)
 
-Edit [`src/app/auth/sso.config.ts`](src/app/auth/sso.config.ts) — replace the
-`your-openid-provider.example.com` placeholders with your real values:
+Edit [`src/app/auth/sso.config.ts`](src/app/auth/sso.config.ts). It holds **one block per environment**
+(`DEV` / `STG` / `LIVE`) in `SSO_BY_ENV`; the app auto-selects the block for the current environment via
+`environment.appEnv` (resolved from the browser hostname — see `environment.ts` `ENV_BY_HOST`). Replace the
+`your-openid-provider*.example.com` placeholders with each environment's real values:
 
 ```ts
-export const SSO_CONFIG: SsoConfig = {
-  issuer:              'https://login.yourbank.com',
-  authorizeEndpoint:  'https://login.yourbank.com/authorize',
-  tokenEndpoint:      'https://login.yourbank.com/oauth2/token',
-  endSessionEndpoint: 'https://login.yourbank.com/logout',
-  clientId:           'ols-dashboard',
-  redirectUri:          `${window.location.origin}/auth/callback`,   // leave as-is (per-origin)
-  postLogoutRedirectUri:`${window.location.origin}/login`,           // leave as-is
-  scope:              'openid profile email offline_access',
-  renewLeewaySeconds: 60,
+const SSO_BY_ENV: Record<AppEnv, SsoConfig> = {
+  DEV:  { issuer: 'https://login-dev.yourbank.com',  clientId: 'ols-dashboard-dev',  /* …endpoints… */ },
+  STG:  { issuer: 'https://login-stg.yourbank.com',  clientId: 'ols-dashboard-stg',  /* …endpoints… */ },
+  LIVE: { issuer: 'https://login.yourbank.com',      clientId: 'ols-dashboard',      /* …endpoints… */ },
 };
+export const SSO_CONFIG: SsoConfig = SSO_BY_ENV[environment.appEnv];   // active block for this env
 ```
 
-`redirectUri` / `postLogoutRedirectUri` derive from `window.location.origin`, so one build works in
-every environment as long as each origin's callback is registered with the IdP (3.1).
+So the **same built bundle** works in all three: DEV hosts pick the DEV block, STG the STG block, PROD the
+LIVE block. `redirectUri` / `postLogoutRedirectUri` derive from `window.location.origin`, so each origin
+just needs its callback registered with that environment's IdP (3.1).
 
-### 3.3 Turn SSO on
+### 3.3 Turn SSO on (per environment)
 
-In [`src/environments/environment.ts`](src/environments/environment.ts) set:
+In [`src/environments/environment.ts`](src/environments/environment.ts), flip the per-env switch in
+`SSO_ENABLED_BY_ENV` (which feeds `environment.isSsoEnabled`):
 
 ```ts
-isSsoEnabled: true,
+const SSO_ENABLED_BY_ENV: Record<AppEnv, boolean> = { DEV: false, STG: true, LIVE: true };
 ```
 
-This is what [`auth.service.ts`](src/app/auth/auth.service.ts) reads to switch the login button from
-the dev-bypass session to the real OIDC redirect. It is a single build-time flag today (same for all
-environments). **If you want SSO only in STG/PROD but keep the bypass locally**, make it env-aware,
-e.g. `isSsoEnabled: !IS_LOCAL`.
+`environment.isSsoEnabled` is what [`auth.service.ts`](src/app/auth/auth.service.ts) reads to switch the
+login button from the dev-bypass session to the real OIDC redirect. Because it's per-env you can, e.g.,
+keep the **dev-bypass locally/DEV** while **STG and PROD use real SSO** — all from one build. Pair each
+environment with its backend switch: `isSsoEnabled` for env X ↔ `AUTH_VALIDATE_TOKEN=1` on env X's server.
 
 ### 3.4 What the SPA reads from the token (already handled)
 
@@ -277,24 +276,41 @@ kill/apply and `service_console` start/stop/restart (write-gated only in the UI 
 are now authenticated but still rely on the UI for the write-permission check; adding a server-side
 RBAC re-check there is the recommended next hardening.
 
-### 4.5 Backend config (`backend/.env`) — DONE in `.env.example`
+### 4.5 Backend config — per-environment YAML ([`backend/config/oidc_config.yml`](backend/config/oidc_config.yml))
 
-The keys below are documented (commented) in [`backend/.env.example`](backend/.env.example). Set them
-in each server's gitignored `.env`:
+OIDC provider details live in **one committed YAML with `dev` / `stg` / `prod` sections**. The backend reads
+the section matching **`APP_ENV`** (the only env-specific line in `backend/.env`), so `.env` stays generic and
+the config travels with the code — no per-server OIDC edits. Fill each section in once:
 
-```ini
-AUTH_VALIDATE_TOKEN=1                 # the on/off switch: 1 = enforce OIDC, 0 = debug (no token)
-# AUTH_DEV_USER=OPS-10432             # only when AUTH_VALIDATE_TOKEN=0 — authenticate AS this UID
-OIDC_ISSUER=https://login.yourbank.com
-OIDC_AUDIENCE=ols-dashboard
-OIDC_JWKS_URL=https://login.yourbank.com/.well-known/jwks.json
-OIDC_USERNAME_CLAIM=preferred_username
-# OIDC_ALGORITHMS=RS256
-# OIDC_LEEWAY=30
+```yaml
+dev:
+  validate_token: false            # OIDC off in DEV (dev-bypass); true = enforce
+  issuer:  "https://login-dev.yourbank.com"
+  audience: ["ols-dashboard-dev"]
+  # jwks_url blank → <issuer>/.well-known/jwks.json ; username_claim/algorithms/leeway have defaults
+stg:
+  validate_token: true
+  issuer:  "https://login-stg.yourbank.com"
+  audience: ["ols-dashboard-stg"]
+prod:
+  validate_token: true
+  issuer:  "https://login.yourbank.com"
+  audience: ["ols-dashboard"]
 ```
 
-> These are read **once at process start** — **restart the backend** after editing (`--reload` is
-> unreliable on Windows; hard-restart per [`backend-uvicorn-reload-unreliable`]).
+Then each server's `backend/.env` just needs its environment selector:
+
+```ini
+APP_ENV=PROD                         # DEV | STG | PROD → picks the oidc_config.yml section
+```
+
+**Precedence per key:** the matching env var (if set — a break-glass override on one server) → the YAML
+section → a built-in default. So the commented `AUTH_VALIDATE_TOKEN` / `OIDC_*` keys in `.env.example` still
+work to override a single value, but normally you leave them unset and edit the YAML. `OIDC_CONFIG_FILE`
+relocates the YAML; if PyYAML or the file is missing, the backend falls back to env vars + defaults.
+
+> Values are read **once at process start** — **restart the backend** after editing the YAML or `.env`
+> (`--reload` is unreliable on Windows; hard-restart per [`backend-uvicorn-reload-unreliable`]).
 
 ---
 

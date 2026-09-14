@@ -34,9 +34,9 @@ import {
 import { LoaderComponent } from '../loader/loader.component';
 import { ConfigUploadComponent } from './upload/config-upload.component';
 
-import { previousWeekdayIso } from '../../shared/date-utils';
+import { formatDate, formatDateTime, previousWeekdayIso } from '../../shared/date-utils';
 import { ConfigScope } from '../../shared/api-endpoints';
-import { CellDataType, TableContent, UploadResult } from '../../shared/models';
+import { CellDataType, ColumnMeta, TableContent, UploadResult } from '../../shared/models';
 import { ConfirmService } from '../confirm/confirm.service';
 import { ErrorReportService } from '../error-report/error-report.service';
 import { environment } from '../../../environments/environment';
@@ -88,16 +88,47 @@ function expandDates(start: string, end: string): string[] {
   return out;
 }
 
+/** Date column → `YYYY-MM-DD` for CSV export. Prefers a TEXTUAL extract from an ISO-ish value so a UTC
+ *  'Z' timestamp (e.g. `2026-05-06T00:00:00.000Z`) can never shift the day; falls back to local-time
+ *  formatting for Date/number inputs. Matches the upload validator, which expects exactly `YYYY-MM-DD`. */
+function csvDate(value: unknown): string {
+  if (value === null || value === undefined || value === '') { return ''; }
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ]|$)/.exec(String(value));
+  return m ? m[1] : formatDate(value as string);
+}
+
+/** Timestamp / SYSTIMESTAMP column → `YYYY-MM-DD HH:MM:SS[.ffffff]` for CSV export. Keeps up to 6
+ *  fractional-second digits (Oracle SYSTIMESTAMP precision, which the upload validator also accepts) and
+ *  DROPS any trailing timezone (`Z` or `±HH:MM`) and the `T` separator, so a value like
+ *  `2026-05-06T13:45:09.123456+05:30` round-trips as `2026-05-06 13:45:09.123456`. Extraction is textual
+ *  (no `new Date`) so the day/second never shifts across a timezone. */
+function csvTimestamp(value: unknown): string {
+  if (value === null || value === undefined || value === '') { return ''; }
+  const s = String(value);
+  const withTime = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,6})?/.exec(s);
+  if (withTime) { return `${withTime[1]} ${withTime[2]}${withTime[3] ?? ''}`; }
+  const dateOnly = /^(\d{4}-\d{2}-\d{2})(?:[T ]|$)/.exec(s);
+  if (dateOnly) { return `${dateOnly[1]} 00:00:00`; }
+  return formatDateTime(value as string);
+}
+
 /** Serialise table content to RFC-4180 CSV (quotes doubled, fields escaped). Header row uses the
  *  ORIGINAL column names (`c.field`, e.g. COB_DT) — NOT the prettified display header ("COB DT") —
- *  so an exported file can be uploaded straight back and pass the upload's header validation. */
+ *  so an exported file can be uploaded straight back and pass the upload's header validation. Date and
+ *  timestamp cells are emitted in the canonical `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS` form the upload
+ *  expects (never a raw `...T00:00:00Z`), so a round-trip export→import validates cleanly. */
 function toCsv(content: TableContent): string {
   const escape = (value: unknown): string => {
     const text = value == null ? '' : String(value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
+  const cell = (col: ColumnMeta, value: unknown): string => {
+    if (col.type === 'date') { return csvDate(value); }
+    if (col.type === 'timestamp') { return csvTimestamp(value); }
+    return value == null ? '' : String(value);
+  };
   const header = content.columns.map((c) => escape(c.field)).join(',');
-  const rows = content.rows.map((row) => content.columns.map((c) => escape(row[c.field])).join(','));
+  const rows = content.rows.map((row) => content.columns.map((c) => escape(cell(c, row[c.field]))).join(','));
   return [header, ...rows].join('\r\n');
 }
 
@@ -236,6 +267,10 @@ export class GridDataComponent {
     const row = this.modalRow();
     return !!row && this.isRowCob()(row);
   });
+  /** Authoritative date column for the open table (from the retrieve response's `dateColumn`, resolved
+   *  server-side by ols_util.get_date_column) — passed to the upload dialog so its override picker targets
+   *  the right column dynamically. */
+  readonly modalDateColumn = computed(() => this.modalContent()?.dateColumn ?? '');
   /** May the user WRITE the table currently open in the modal? Per-row gate if `canWriteRow` is
    *  supplied (RBAC per-table), else the global `readOnly`. Gates every mutating control. */
   readonly modalWritable = computed(() => {

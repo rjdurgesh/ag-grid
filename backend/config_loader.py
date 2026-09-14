@@ -34,6 +34,7 @@ _CONFIG_DIR = Path(os.getenv("OLS_CONFIG_DIR", str(_BACKEND_DIR / "config")))
 _FEATURE_DIRS = {
     "occ": _BACKEND_DIR / "oraclecc",
     "regression": _BACKEND_DIR / "regression",
+    "reconciliation": _BACKEND_DIR / "reconciliation",
     "config_ops": _BACKEND_DIR / "config_ops",
     "docs": _BACKEND_DIR / "docs",
 }
@@ -239,4 +240,45 @@ def regression_scope_config(scope: str) -> dict:
         "refresh_url": val("refresh_url", "REGRESSION_REFRESH_URL", ""),
         # File-copy post-copy integrity check: off | size (default) | hash (size + SHA-256, slower).
         "filecopy_verify": str(val("filecopy_verify", "REGRESSION_FILECOPY_VERIFY", "size")).lower(),
+    }
+
+
+# --- Data Reconciliation -----------------------------------------------------
+_RECON_STATUS_MAP_DEFAULT = {
+    "running": ["RUNNING", "SUBMITTED", "STARTED", "IN_PROGRESS"],
+    "done": ["COMPLETED", "COMPLETE", "SUCCESS", "SUCCEEDED", "FINISHED"],
+    "failed": ["FAILED", "ERROR", "ABORTED", "CANCELLED", "KILLED"],
+}
+
+
+def reconciliation_config(scope: str | None = None) -> dict:
+    """Per-server reconciliation settings (report definitions live in the DB table, NOT here). Returns
+    the extract base dir (FILE mode), the staging table (TABLE mode), poll/stale timeouts, and the
+    status-map (batch status-column value → running/done/failed). Scope-JSON wins, else defaults."""
+    scope = (scope or "").lower()
+    j = _load("reconciliation")
+    defaults = j.get("defaults", {}) if isinstance(j.get("defaults"), dict) else {}
+    scopes = j.get("scopes", {}) if isinstance(j.get("scopes"), dict) else {}
+    s = scopes.get(scope, {}) if isinstance(scopes.get(scope), dict) else {}
+
+    def val(key: str, env: str, default: Any) -> Any:
+        if key in s and s[key] not in (None, ""):
+            return _coerce(s[key], default)
+        if key in defaults and defaults[key] not in (None, ""):
+            return _coerce(defaults[key], default)
+        return _pick({}, key, env, default)
+
+    # status_map is a dict → merge defaults with any override (scope wins, then defaults, then built-in).
+    smap = dict(_RECON_STATUS_MAP_DEFAULT)
+    for src in (defaults.get("status_map"), s.get("status_map")):
+        if isinstance(src, dict):
+            for k, v in src.items():
+                if isinstance(v, list):
+                    smap[str(k).lower()] = [str(x).upper() for x in v]
+    return {
+        "extract_base_dir": val("extract_base_dir", "RECON_EXTRACT_BASE_DIR", ""),
+        "staging_table": val("staging_table", "RECON_STAGING_TABLE", "OLS_RECON_DATA"),
+        "poll_timeout_secs": val("poll_timeout_secs", "RECON_POLL_TIMEOUT_SECS", 3600),
+        "stale_minutes": val("stale_minutes", "RECON_STALE_MINUTES", 60),
+        "status_map": smap,
     }

@@ -75,6 +75,30 @@ def resolve_jailed(base: str, path: str) -> Path:
     resolved = fs_browser.resolve_within_bases([base], path)
     if resolved is None:
         raise HTTPException(status_code=400, detail="Path is outside the server's base log directory")
-    if not resolved.exists():
+    # Path.exists() re-raises PermissionError / other OSErrors (it only swallows "not found"), so a
+    # remote path the service account can't reach would otherwise surface as a raw 500 "[WinError 5]
+    # Access is denied: '<path>'". Convert those to clean, actionable messages instead.
+    try:
+        exists = resolved.exists()
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Access is denied to this path on the server. The log service account does not have "
+                "permission to read it. Windows administrative shares such as \\\\server\\d$ require the "
+                "backend service to run as an account with administrator rights on that server; grant "
+                "that, or expose the folder as a regular shared folder (e.g. \\\\server\\ols_logs) with "
+                "read access for the service account, and point base_log_path at that share. Contact OLS Dev."
+            ),
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"The path could not be reached on the server ({getattr(exc, 'strerror', None) or exc}). "
+                "Check the server is online and the share is accessible from the backend host. Contact OLS Dev."
+            ),
+        )
+    if not exists:
         raise HTTPException(status_code=404, detail="Path not found")
     return resolved

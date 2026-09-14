@@ -111,7 +111,7 @@ function buildContent(res: TableContentResponse | null): TableContent {
     header: prettifyHeader(name),
     type: cxOracleTypeToCellType(types[i])
   }));
-  return { columns, rows: res?.Table_data ?? [] };
+  return { columns, rows: res?.Table_data ?? [], dateColumn: res?.date_column };
 }
 
 /**
@@ -177,15 +177,15 @@ export abstract class ConfigScopeBase implements OnInit {
   readonly canWriteRow = (row: Record<string, unknown>): boolean =>
     this.rbac.canWriteTable(this.scope, String(row[this.tableNameKey] ?? ''), String(row[this.categoryKey] ?? ''));
 
-  /** In-page tab: config grid, MISC activity, S-Studio, or the Regression workflow. */
-  readonly activeTab = signal<'config' | 'misc' | 'sstudio' | 'regression'>('config');
+  /** In-page tab: config grid, MISC activity, S-Studio, the Regression workflow, or Reconciliation. */
+  readonly activeTab = signal<'config' | 'misc' | 'sstudio' | 'regression' | 'reconciliation'>('config');
 
-  /** Brief entrance loader on tab switch, so MISC / S-Studio / Regression match the config page's
-   *  loading style (the config grid has its own loader, so it's excluded). */
+  /** Brief entrance loader on tab switch, so MISC / S-Studio / Regression / Reconciliation match the
+   *  config page's loading style (the config grid has its own loader, so it's excluded). */
   readonly tabLoading = signal(false);
   private tabLoadTimer: ReturnType<typeof setTimeout> | null = null;
 
-  selectTab(tab: 'config' | 'misc' | 'sstudio' | 'regression'): void {
+  selectTab(tab: 'config' | 'misc' | 'sstudio' | 'regression' | 'reconciliation'): void {
     if (this.activeTab() === tab) { return; }
     this.activeTab.set(tab);
     if (this.tabLoadTimer) { clearTimeout(this.tabLoadTimer); this.tabLoadTimer = null; }
@@ -201,6 +201,11 @@ export abstract class ConfigScopeBase implements OnInit {
    *  So it's hidden unless explicitly granted — not shown to every config user any more. */
   readonly showRegression = computed(() =>
     (environment.appEnv === 'DEV' || environment.appEnv === 'STG') && this.rbac.regressionVisible(this.scope));
+
+  /** Reconciliation tab: DEV/STG only AND granted for this scope. Shown on ALL three scopes (incl.
+   *  Group, which has no Regression tab) — post-regression report validation, see reconciliation.component. */
+  readonly showReconciliation = computed(() =>
+    (environment.appEnv === 'DEV' || environment.appEnv === 'STG') && this.rbac.reconciliationVisible(this.scope));
 
   /** The config scope, exposed for the S-Studio child (`[scope]`). */
   get scopeKey(): ConfigScope {

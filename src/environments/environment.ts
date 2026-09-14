@@ -72,9 +72,9 @@ const IS_LOCAL = HOST === 'localhost' || HOST === '127.0.0.1' || HOST === '';
 /** hostname substring → environment (first match wins; unknown host → PROD). Substring match so
  *  `www.`, bare domain and any sub-domain all resolve. */
 const ENV_BY_HOST: ReadonlyArray<readonly [string, AppEnv]> = [
-  ['abc.dev.com', 'DEV'],
+  ['abc.dev.com', 'DEV'],       // bare HOSTNAME only — no protocol, no port (window.location.hostname)
   ['abc.stg.com', 'STG'],
-  ['abc.group.com', 'LIVE'],   // production
+  ['abc.group.com', 'LIVE'],    // production
 ];
 
 /**
@@ -108,6 +108,12 @@ const RESOLVED_ENV: AppEnv = forcedEnv() || (IS_LOCAL ? 'DEV' : detectEnv(HOST))
 /** Deployed → '' = same-origin (ui_server proxies /api to this env's backend). Local → :8000. */
 const RESOLVED_API_BASE = IS_LOCAL ? 'http://localhost:8000' : '';
 
+/** OpenID Connect / SSO master switch PER ENVIRONMENT. Flip on where the provider is ready — e.g. keep
+ *  DEV on direct login while STG/PROD use SSO. Provider DETAILS live per-env in `src/app/auth/sso.config.ts`;
+ *  the backend enables validation separately per server via AUTH_VALIDATE_TOKEN (backend/.env). Both sides
+ *  must be turned on together for a given environment — see AUTH_SETUP.md. */
+const SSO_ENABLED_BY_ENV: Record<AppEnv, boolean> = { DEV: false, STG: false, LIVE: false };
+
 export const environment: AppEnvironment = {
   production: !IS_LOCAL,
   // Bump on each UI release — shown in the footer as "UI v…".
@@ -125,7 +131,7 @@ export const environment: AppEnvironment = {
   oracleCommandCenterRefreshMinutes: 30,
   username: 'OPS-10432',
   name: 'Alex Morgan',
-  isSsoEnabled: false,
+  isSsoEnabled: SSO_ENABLED_BY_ENV[RESOLVED_ENV],
   devRoles: { is_admin: true, is_read: false, is_salt: false, label: 'OMT-BOTH' },
   /**
    * Dev-only: force a specific ACCESS SCENARIO so you can validate on screen exactly what each kind
@@ -144,8 +150,8 @@ export const environment: AppEnvironment = {
   // backend on :8000; true = in-app mock. Flip a single screen to develop/test it in isolation.
   apiMocks: IS_LOCAL ? {
     '/api/log/':            true,  // Log Analytics Hub       → in-app mock (canned tree incl. one missing path). Set false to hit the live backend (LOG_ANALYTICS_USE_DUMMY there).
-    '/api/infra_health':    false, // Infrastructure Health   → live backend
-    '/api/service_console': false, // Service Console         → live backend
+    '/api/infra_health':    true,  // Infrastructure Health   → in-app mock (dummy servers/shares). Set false to hit the live backend.
+    '/api/service_console': true,  // Service Console         → in-app mock (dummy servers/services incl. stopped/unaccessible + an unreachable host). Set false to hit the live backend.
     '/api/oracle_cc':       false, // Oracle Command Center   → live backend
     '/api/config':          true,  // Config Ops Console      → in-app mock
     '/api/docs':            false, // Documentation Center    → live backend (real .md files from base_dir)

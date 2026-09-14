@@ -1,4 +1,4 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { RouterLink, RouterOutlet } from '@angular/router';
 import { NgScrollbar } from 'ngx-scrollbar';
 
@@ -51,6 +51,11 @@ export class DefaultLayoutComponent {
 
   /** Sidebar items filtered to what the user's roles allow (reactive). */
   readonly navItems = computed(() => filterNav(NAV_ITEMS, this.rbac));
+
+  /** Desktop collapse → a true icon RAIL (CoreUI `narrow`, never hover-expands). Toggled by the
+   *  header hamburger; the rail's tooltips / flyouts live in _ols.scss. */
+  readonly narrow = signal(false);
+  toggleNarrow(): void { this.narrow.set(!this.narrow()); }
 }
 
 /** Keep only nav entries the user can view; drop section titles left empty. */

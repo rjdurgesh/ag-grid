@@ -25,6 +25,7 @@ from infrastructure_health_api import router as infra_health_router
 from log_analytics.log_analytics_api import router as log_analytics_router
 from oracle_cc_api import router as oracle_cc_router
 from regression_api import router as regression_router
+from reconciliation_api import router as reconciliation_router
 from config_api import router as config_router
 from docs_api import router as docs_router
 from service_console_api import router as service_console_router
@@ -159,6 +160,7 @@ app.include_router(service_console_router)
 app.include_router(oracle_cc_router)
 app.include_router(sql_studio_router)
 app.include_router(regression_router)
+app.include_router(reconciliation_router)
 app.include_router(config_router)
 app.include_router(docs_router)
 

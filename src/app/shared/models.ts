@@ -114,6 +114,9 @@ export interface ColumnMeta {
 export interface TableContent {
   columns: ColumnMeta[];
   rows: Record<string, unknown>[];
+  /** Authoritative date/COB column for a date-managed table (from ols_util.get_date_column) — drives the
+   *  date filter and the upload "override date" picker. Absent for non-COB tables. */
+  dateColumn?: string;
 }
 
 /**
@@ -138,6 +141,8 @@ export interface TableContentResponse {
   cols: string[];
   cols_data_types: string[];
   Table_data: Record<string, unknown>[];
+  /** Resolved date column for a COB table (ols_util.get_date_column) — present only when is_cobdt=Y. */
+  date_column?: string;
 }
 
 /** Live memory usage stats shown in the header. */
@@ -221,6 +226,9 @@ export interface AccessSnapshot {
     /** Scopes where the Regression tab is granted (from ols_app_access, e.g. ['cib']). DEV/STG only;
      *  a scope not listed → the tab is hidden even for a user who can see that scope's config. */
     regression?: string[];
+    /** Scopes where the Reconciliation tab is granted (from ols_app_access, e.g. ['group','cib']).
+     *  DEV/STG only; shown on all three scopes incl. Group (which has no Regression). */
+    reconciliation?: string[];
   };
   /** Log Analytics: visible server names. `all_servers` true → every server; `denied_servers`
    *  subtracts specific servers from that ("all EXCEPT these"). */
@@ -564,4 +572,87 @@ export interface ActivityItem {
   title: string;
   detail: string;
   level: 'info' | 'success' | 'warning' | 'danger';
+}
+
+// --- Data Reconciliation (DEV/STG — POST /api/reconciliation/* — see reconciliation_api.py) --------
+
+/** A configured report (from ols_recon_report_config) — the multi-select dropdown item. */
+export interface ReconReport {
+  report_code: string;
+  report_name: string;
+  category?: string;               // top-level group in the dropdown (e.g. ALMT, CB)
+  sub_category?: string;           // optional nested group (e.g. Activity, StdBs)
+  output_mode?: string;            // FILE | TABLE
+  key_columns?: string;            // comma-separated (Phase 2 compare)
+  measure_columns?: string;        // comma-separated (Phase 2 compare)
+}
+/** A DB choice for the LIVE / Regression dropdowns. */
+export interface ReconDb {
+  key: string;
+  label: string;
+}
+/** A regression run to optionally link (→ carries CHG + release date). */
+export interface ReconRegressionRun {
+  run_id: number;
+  change_number?: string;
+  release_date?: string;
+  label: string;
+}
+/** One triggered extract (report × side) as returned by /trigger. */
+export interface ReconExtract {
+  extract_id?: number;
+  report_code: string;
+  side: 'LIVE' | 'REG';
+  db_source: string;
+  job_run_no: string | null;
+  status: string;                  // queued | running | done | no_data | failed
+  message?: string | null;
+}
+/** One side's live view within a report state (from /status). */
+export interface ReconSideView {
+  status: string;                  // queued | running | done | no_data | failed
+  job_run_no?: string | null;
+  db_source?: string;
+  message?: string | null;
+}
+/** Derived per-report state from /status (both sides collapsed). */
+export interface ReconReportState {
+  report_code: string;
+  state: 'extracting' | 'extract_failed' | 'no_data' | 'ready' | 'pass' | 'fail' | 'compare_error';
+  message: string;
+  live: ReconSideView;
+  reg: ReconSideView;
+  // Phase 2 comparison summary (present once compared):
+  matched?: number;
+  changed?: number;
+  missing?: number;
+  extra?: number;
+  compared?: number;
+}
+/** The discrepancy drill-down grid (self-describing: Type + keys + per-measure LIVE/REG/Δ). */
+export interface ReconDiscrepancies {
+  columns: string[];
+  rows: unknown[][];
+}
+/** One report's comparison summary (from /compare). */
+export interface ReconCompareResult {
+  status: 'PASS' | 'FAIL';
+  matched: number;
+  changed: number;
+  missing: number;
+  extra: number;
+  compared: number;
+  columns: string[];
+  rows: unknown[][];
+}
+/** A row in the Extract Log history. */
+export interface ReconActivityRow {
+  report_code: string;
+  side: string;
+  db_source: string;
+  business_date: string;
+  job_run_no: string | null;
+  status: string;
+  triggered_by: string;
+  triggered_on: string;
 }

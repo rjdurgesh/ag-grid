@@ -2,22 +2,18 @@
   <div class="upl-backdrop" (click)="close()"></div>
   <div class="upl" role="dialog" aria-modal="true" (click)="$event.stopPropagation()">
     <div class="upl__head">
-      <div>
-        <h3 class="upl__title">Upload data</h3>
-        <p class="upl__sub">Load a CSV into <strong>{{ tableName() }}</strong> — reviewed and validated before anything is written.</p>
-      </div>
+      <h3 class="upl__title">Upload data<span class="upl__sub"> | Load a CSV into <strong>{{ tableName() }}</strong> — reviewed and validated before anything is written.</span></h3>
       <button type="button" class="upl__x" (click)="close()" aria-label="Close">×</button>
     </div>
 
     <div class="upl__body">
-      <!-- ---- step 1: file + delimiter ---- -->
+      <!-- ---- step 1: file + delimiter (+ date override once parsed) ---- -->
       <div class="upl-pick">
         <label class="upl-file">
           <input type="file" accept=".csv,text/csv" (change)="onFile($event)" />
           <span class="upl-file__btn">Choose CSV…</span>
-          <span class="upl-file__name">{{ fileName() || 'no file selected' }}</span>
         </label>
-        <label class="upl-field">
+        <label class="upl-field upl-field--inline">
           <span>Delimiter</span>
           <select [ngModel]="delimiter()" (ngModelChange)="delimiter.set($event)">
             <option value="auto">Auto-detect</option>
@@ -29,7 +25,24 @@
           </select>
         </label>
         <button type="button" class="upl-btn upl-btn--primary" [disabled]="!fileName()" (click)="parse()">Parse &amp; validate</button>
+
+        <!-- COB / reporting date override — fills the empty space to the RIGHT; only after a valid parse -->
+        @if (parsed() && !headerError() && dateColField()) {
+          <div class="upl-override" [class.is-on]="!!overrideDate()">
+            <label class="upl-field upl-field--inline">
+              <span>Override {{ dateColLabel() }}</span>
+              <input type="date" [ngModel]="overrideDate()" (ngModelChange)="onOverrideDate($event)" />
+            </label>
+            @if (overrideDate()) {
+              <button type="button" class="upl-btn upl-btn--sm" (click)="onOverrideDate('')">Clear</button>
+            } @else {
+              <span class="upl-override__hint" [title]="'Stamp every row with one ' + dateColLabel() + ' so you can upload this file for any date without editing it.'">stamps every row</span>
+            }
+          </div>
+        }
       </div>
+      <!-- full-width so even a very long filename shows completely -->
+      @if (fileName()) { <p class="upl-file__name">📄 {{ fileName() }}</p> }
       <p class="upl-hint">Dates must be <code>YYYY-MM-DD</code> (timestamps <code>YYYY-MM-DD HH:MM:SS</code>). The header must match the table's columns in the same order; trailing columns may be omitted (loaded as NULL).</p>
 
       @if (headerError()) {
@@ -82,13 +95,15 @@
           (gridReady)="onGridReady($event)"
           (cellValueChanged)="onCellChanged($event)"
         />
-        <p class="upl-hint">Red cells failed validation. Edit any cell and it <strong>re-validates automatically</strong> on Enter/blur — the counts above update live and a fixed row moves from <em>Issues</em> to <em>Valid</em>. Use the column filters (header row) to search, and pagination below for large files. Only valid rows are loaded.</p>
       }
     </div>
 
     <div class="upl__foot">
       @if (resultMsg(); as m) {
         <span class="upl-result" [class.is-ok]="m.ok" [class.is-err]="!m.ok">{{ m.text }}</span>
+      } @else if (parsed() && !headerError()) {
+        <!-- validation hint lives here (footer left) so it never costs the grid a row -->
+        <span class="upl-foot-hint" title="Red cells failed validation — edit inline (re-validates on Enter/blur); filter via the header row; only valid rows are loaded.">Red cells failed validation — edit inline (re-validates on Enter/blur); filter via the header row; only valid rows are loaded.</span>
       }
       <span class="upl-spacer"></span>
       <button type="button" class="upl-btn" (click)="close()">Close</button>

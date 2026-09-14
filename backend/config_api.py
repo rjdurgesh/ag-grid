@@ -418,9 +418,15 @@ def config_retrieve(scope: str, request: Request, body: ContentBody) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Dates must be YYYY-MM-DD ({exc}).")
     try:
-        return database.config_table_content(
+        content = database.config_table_content(
             dbcfg, table=body.table_name, date_col=date_col, is_cob=is_cob,
             start_date=start, end_date=end, date_range=body.date_range, row_cap=CONTENT_MAX_ROWS)
+        # Surface the AUTHORITATIVE date column (ols_util.get_date_column) so the UI's date filter and the
+        # upload "override date" picker target the right column dynamically — COB_DT / REPORTING_DT / any
+        # other label — instead of guessing from column names.
+        if is_cob and date_col:
+            content["date_column"] = date_col
+        return content
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001

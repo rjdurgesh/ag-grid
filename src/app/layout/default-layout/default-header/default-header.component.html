@@ -2,10 +2,10 @@
   <c-container [fluid]="true" class="border-bottom px-4">
     <!-- Desktop: collapse the sidebar to an icon rail (it never fully disappears). -->
     <button
-      [cSidebarToggle]="sidebarId()"
+      type="button"
       cHeaderToggler
       class="btn d-none d-lg-inline-flex"
-      toggle="unfoldable"
+      (click)="collapseToggle.emit()"
       style="margin-inline-start: -14px;"
       aria-label="Collapse or expand sidebar"
     >

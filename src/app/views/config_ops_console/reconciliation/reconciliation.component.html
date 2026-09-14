@@ -1,0 +1,196 @@
+<div class="recon">
+  @if (loadingSetup()) {
+    <app-loader variant="skeleton" [rows]="5" message="Loading reports…" />
+  } @else {
+    <!-- ============ Run report extracts (always on top) ============ -->
+    <section class="ols-card recon-setup">
+      <h3 class="recon-setup__title">Run report extracts</h3>
+      <p class="recon-hint">Pick the LIVE and Regression databases, the business date the batches run for,
+        and the reports to extract. Each report is triggered on <b>both</b> databases; you then monitor them below.</p>
+
+      <div class="recon-fields">
+        <label class="recon-field">
+          <span class="recon-field__label">LIVE database</span>
+          <select class="recon-select" [value]="liveDb()" (change)="liveDb.set($any($event.target).value)">
+            <option value="">Select LIVE db…</option>
+            @for (d of databases(); track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+          </select>
+        </label>
+
+        <label class="recon-field">
+          <span class="recon-field__label">Regression database</span>
+          <select class="recon-select" [value]="regDb()" (change)="regDb.set($any($event.target).value)">
+            <option value="">Select Regression db…</option>
+            @for (d of databases(); track d.key) { <option [value]="d.key">{{ d.label }}</option> }
+          </select>
+        </label>
+
+        <label class="recon-field">
+          <span class="recon-field__label">Business date</span>
+          <input type="date" class="recon-select" [value]="businessIso()"
+                 (change)="businessIso.set($any($event.target).value)" />
+        </label>
+
+        <label class="recon-field">
+          <span class="recon-field__label">Link regression run <span class="recon-opt">(optional)</span></span>
+          <select class="recon-select" [value]="regressionRunId() ?? ''" (change)="setRegressionRun($any($event.target).value)">
+            <option value="">None</option>
+            @for (r of regressionRuns(); track r.run_id) { <option [value]="r.run_id">{{ r.label }}</option> }
+          </select>
+        </label>
+
+        <!-- reports: ONE grouped multi-select dropdown per category (ALMT | CB | …) -->
+        <div class="recon-field recon-field--reports">
+          <span class="recon-field__label">Reports <span class="recon-opt">({{ selected().size }} selected)</span></span>
+          <div class="recon-catrow">
+            @for (g of reportGroups(); track g.category) {
+              <div class="recon-dd">
+                <button type="button" class="recon-dd__trigger" [class.is-open]="openCategory() === g.category"
+                        (click)="toggleCategory(g.category)" [attr.aria-expanded]="openCategory() === g.category">
+                  <span class="recon-dd__cattitle">{{ g.category }}</span>
+                  <span class="recon-dd__count" [class.is-zero]="!categorySelectedCount(g.category)">
+                    {{ categorySelectedCount(g.category) }}/{{ reportsInCategory(g.category).length }}
+                  </span>
+                  <svg class="recon-chevron" [class.is-open]="openCategory() === g.category" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                @if (openCategory() === g.category) {
+                  <div class="recon-dd__backdrop" (click)="closeCategory()"></div>
+                  <div class="recon-dd__panel" role="listbox" [attr.aria-label]="g.category + ' reports'">
+                    <div class="recon-dd__tools">
+                      <span>{{ categorySelectedCount(g.category) }} selected</span>
+                      <button type="button" class="recon-linkbtn" (click)="toggleCategoryAll(g.category)">
+                        {{ categoryAllOn(g.category) ? 'Clear' : 'Select all' }}
+                      </button>
+                    </div>
+                    @for (s of g.subs; track s.sub) {
+                      @if (s.sub) { <div class="recon-dd__subhdr">{{ s.sub }}</div> }
+                      @for (rep of s.reports; track rep.report_code) {
+                        <label class="recon-dd__opt" [class.is-on]="isSelected(rep.report_code)">
+                          <input type="checkbox" [checked]="isSelected(rep.report_code)" (change)="toggleReport(rep.report_code)" />
+                          <span class="recon-dd__optlabel">{{ rep.report_name }}</span>
+                          @if (rep.output_mode) { <span class="recon-dd__optmode">{{ rep.output_mode }}</span> }
+                        </label>
+                      }
+                    }
+                  </div>
+                }
+              </div>
+            }
+            @if (!reports().length) { <p class="recon-hint">No reports configured for this scope.</p> }
+          </div>
+        </div>
+      </div>
+
+      @if (selectedRun(); as r) {
+        <div class="recon-linkinfo">
+          Linked to <b>Run #{{ r.run_id }}</b>
+          @if (r.change_number) { · CHG <b>{{ r.change_number }}</b> }
+          @if (r.release_date) { · release <b>{{ r.release_date }}</b> }
+        </div>
+      }
+
+      <div class="recon-actions">
+        <button type="button" class="recon-btn recon-btn--primary" [disabled]="!canTrigger()" (click)="trigger()">
+          {{ triggering() ? 'Triggering…' : 'Trigger extracts' }}
+        </button>
+      </div>
+      @if (error()) { <p class="recon-hint recon-hint--err">{{ error() }}</p> }
+    </section>
+
+    <!-- ============ Data Reconciliation — comparison results (moved out of the old "Monitoring Batches" tab) ============ -->
+    <section class="ols-card recon-results" [class.is-collapsed]="!resultsOpen()">
+      <div class="recon-results__head">
+        <button type="button" class="recon-results__toggle" (click)="toggleResults()"
+                [attr.aria-expanded]="resultsOpen()" aria-controls="recon-results-body">
+          <svg class="recon-results__chevron" [class.is-collapsed]="!resultsOpen()" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="recon-results__title">Data Reconciliation</span>
+        </button>
+        <span class="recon-spacer"></span>
+        @if (polling()) { <span class="recon-live recon-live--inline">● live</span> }
+        <span class="rg-refreshed">{{ batchRefreshed() || (runId() != null ? 'Extract status — run #' + runId() : 'No run yet') }}</span>
+        <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="polling()"
+                [disabled]="polling() || runId() == null" (click)="refreshStatus()" title="Refresh" aria-label="Refresh status">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+            <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      @if (resultsOpen()) {
+        <div id="recon-results-body">
+          @if (runId() == null) {
+            <p class="recon-hint">Trigger extracts above — the LIVE vs Regression comparison results will appear here.</p>
+          } @else if (!reportStates().length) {
+            <p class="recon-hint">Submitting batches…</p>
+          } @else {
+            <ag-grid-angular class="recon-grid" [theme]="gridTheme()" [rowData]="batchRowData()"
+                             [columnDefs]="batchColDefs" [gridOptions]="batchGridOptions"></ag-grid-angular>
+            <p class="recon-hint">Both sides ready → the LIVE vs Regression output is compared automatically. <b>Click a PASS/FAIL report</b> to see its differences.</p>
+          }
+        </div>
+      }
+    </section>
+
+    <!-- ============ Extract Log — history (below the results) ============ -->
+    <section class="rg__monitor recon-below">
+      <div class="rg-subtabs">
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'log'"
+                (click)="setMonitorTab('log')">Extract Log</button>
+        <!-- "Monitoring Batches" sub-tab removed on purpose: its comparison table now lives in the
+             always-visible "Data Reconciliation" section above. Kept here (commented) for reference.
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'"
+                (click)="setMonitorTab('batches')">Monitoring Batches</button>
+        -->
+      </div>
+
+      <div class="rg-row rg-row--tools">
+        <span class="rg-refreshed">{{ activityRefreshed() || 'Extracts triggered — history' }}</span>
+        <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="activityLoading()"
+                [disabled]="activityLoading()" (click)="loadActivity()" title="Refresh" aria-label="Refresh extract log">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+            <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      @if (activityLoading()) {
+        <app-loader variant="skeleton" [rows]="4" message="Loading extract log…" />
+      } @else if (activity().length) {
+        <ag-grid-angular class="recon-grid" [theme]="gridTheme()" [rowData]="activity()"
+                         [columnDefs]="activityColDefs" [gridOptions]="activityGridOptions"></ag-grid-angular>
+      } @else {
+        <p class="recon-hint">No extracts triggered yet.</p>
+      }
+    </section>
+  }
+
+  <!-- ============ Discrepancy drill-down (modal) ============ -->
+  @if (drilldownCode()) {
+    <div class="recon-modal__backdrop" (click)="closeDrilldown()"></div>
+    <div class="recon-modal" role="dialog" aria-modal="true">
+      <div class="recon-modal__head">
+        <h3 class="recon-modal__title">Differences — {{ drilldownName() }}</h3>
+        <span class="recon-spacer"></span>
+        <button type="button" class="recon-btn recon-btn--ghost" [disabled]="recomparing()" (click)="recompare()">
+          {{ recomparing() ? 'Re-comparing…' : 'Re-compare' }}
+        </button>
+        <button type="button" class="recon-btn recon-btn--ghost" [disabled]="!drilldownData()?.rows?.length" (click)="downloadDiscrepancies()">Download CSV</button>
+        <button type="button" class="recon-modal__x" (click)="closeDrilldown()" aria-label="Close">✕</button>
+      </div>
+      <div class="recon-modal__body">
+        @if (drilldownLoading()) {
+          <app-loader variant="skeleton" [rows]="4" message="Loading differences…" />
+        } @else if (drilldownData()?.rows?.length) {
+          <ag-grid-angular class="recon-grid recon-grid--modal" [theme]="gridTheme()" [rowData]="drilldownRowData()"
+                           [columnDefs]="drilldownColDefs()" [gridOptions]="drilldownGridOptions"></ag-grid-angular>
+        } @else {
+          <p class="recon-hint">No differences — every row matched (LIVE = Regression). ✓</p>
+        }
+      </div>
+    </div>
+  }
+</div>

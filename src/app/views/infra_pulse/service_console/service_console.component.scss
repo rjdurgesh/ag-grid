@@ -487,7 +487,10 @@
 .isc-table {
   border: 1px solid var(--cui-border-color);
   border-radius: 10px;
+  /* Scroll horizontally whenever the columns don't fit the CONTAINER (not the window) — otherwise the
+     last column (Actions) gets clipped on narrower content areas. overflow-y stays hidden for the radius. */
   overflow: hidden;
+  overflow-x: auto;
   background: var(--cui-body-bg);
 }
 
@@ -502,11 +505,14 @@
 .isc-table__head--srv,
 .isc-row--srv {
   grid-template-columns: minmax(220px, 2.4fr) 150px 1fr 190px;
+  /* keep every column at its natural width and let .isc-table scroll instead of clipping the row */
+  min-width: 760px;
 }
 
 .isc-table__head--status,
 .isc-row--status {
   grid-template-columns: minmax(200px, 2fr) 120px 150px 140px 165px 180px;
+  min-width: 1040px;
 }
 
 .isc-table__head {
@@ -705,20 +711,6 @@
   }
   50% {
     opacity: 0.35;
-  }
-}
-
-@media (max-width: 1000px) {
-  .isc-table {
-    overflow-x: auto;
-  }
-  .isc-table__head--srv,
-  .isc-row--srv {
-    min-width: 720px;
-  }
-  .isc-table__head--status,
-  .isc-row--status {
-    min-width: 895px;
   }
 }
 

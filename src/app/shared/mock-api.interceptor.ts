@@ -16,7 +16,11 @@ import {
   mockFileProperties,
   mockMemory,
   mockTableData,
-  isLogPathAllowed
+  isLogPathAllowed,
+  mockInfraCatalogue,
+  mockServiceManage,
+  mockAgentMetrics,
+  mockShareSpace
 } from './mock-data';
 
 /**
@@ -207,6 +211,26 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     return respond(mockRegression(path, (req.body ?? {}) as Record<string, unknown>));
   }
 
+  if (path.startsWith('/api/reconciliation/')) {
+    return respond(mockReconciliation(path, (req.body ?? {}) as Record<string, unknown>));
+  }
+
+  // --- Infrastructure Pulse (Infra Health + Service Console) — dev dummy fan-out ---------------
+  // One catalogue + stateful agent responses so BOTH screens render locally. Enabled by flipping
+  // apiMocks['/api/infra_health'] and ['/api/service_console'] to true in environment.ts.
+  if (path === '/api/infra_health') {
+    return respond(mockInfraCatalogue());
+  }
+  if (path === '/api/infra_health/metrics') {
+    return respond(mockAgentMetrics((req.body ?? {}) as Record<string, unknown>));
+  }
+  if (path === '/api/infra_health/share') {
+    return respond(mockShareSpace((req.body ?? {}) as Record<string, unknown>));
+  }
+  if (path === '/api/service_console/service-manage') {
+    return respond(mockServiceManage((req.body ?? {}) as Record<string, unknown>));
+  }
+
   // --- Documentation Center -------------------------------------------------
   // Catalogue is RBAC-filtered by audience (technical docs only for ADMIN / ops-admin / S-Studio);
   // content is re-checked the same way (UI hiding is never the boundary — mirrors docs_api.py).
@@ -347,13 +371,18 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
       return respondError(400, 'table_name is required');
     }
     const isCob = String(body.is_cobdt ?? '').toUpperCase() === 'Y';
-    return respond(
-      mockTableData(body.table_name, {
-        start: isCob ? body.start_date ?? undefined : undefined,
-        end: isCob ? body.end_date ?? undefined : undefined,
-        range: !!body.date_range
-      })
-    );
+    const content = mockTableData(body.table_name, {
+      start: isCob ? body.start_date ?? undefined : undefined,
+      end: isCob ? body.end_date ?? undefined : undefined,
+      range: !!body.date_range
+    });
+    // Mirror the backend (ols_util.get_date_column): expose the resolved date column so the UI targets it
+    // dynamically — a *_REPORTING_* table is managed on REPORTING_DT, everything else on COB_DT.
+    if (isCob) {
+      (content as { date_column?: string }).date_column =
+        /REPORTING/i.test(body.table_name) ? 'REPORTING_DT' : 'COB_DT';
+    }
+    return respond(content);
   }
 
   // INSERT: /table/{name}/rows  → { inserted_by, columns, rows: [[...]] } → { inserted }
@@ -495,7 +524,7 @@ function baseActive(over: Record<string, unknown>): Record<string, unknown> {
     role: 'READ', app_env: environment.appEnv, is_ops_admin: false, can_sql: false,
     screens: ['home', 'log_analytics', 'infra_health'],
     write_screens: [] as string[],
-    config: { scopes: [] as string[], all: false, all_level: 'READ', category_grants: [], table_grants: [], regression: [] as string[] },
+    config: { scopes: [] as string[], all: false, all_level: 'READ', category_grants: [], table_grants: [], regression: [] as string[], reconciliation: [] as string[] },
     servers: [] as string[], all_servers: true, denied_servers: [],
     infra: { all_apps: true, apps: [], denied_apps: [] },
     service: { all_apps: false, apps: [] as string[], denied_apps: [] },
@@ -1362,6 +1391,189 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
                ['FI', 'FI_POST', 3, '2026-08-28 08:30', '2026-08-28 08:31']] };
     case '/api/regression/activity':
       return { status: 'success', rows: rs.activity };
+    default:
+      return { status: 'success' };
+  }
+}
+
+// --- Data Reconciliation mock (Phase 1: trigger + extract monitoring) ------------------------------
+interface ReconMockExtract { report_code: string; side: 'LIVE' | 'REG'; db_source: string; job_run_no: string; status: string; message?: string | null; }
+interface ReconMockResult { status: string; matched: number; changed: number; missing: number; extra: number; compared: number; columns: string[]; rows: unknown[][]; }
+interface ReconMockRun { submitted: number; reports: string[]; extracts: ReconMockExtract[]; results?: Map<string, ReconMockResult>; }
+const reconRuns = new Map<number, ReconMockRun>();
+let reconRunSeq = 7000;
+let reconJobSeq = 990000;
+const RECON_RUN_SECS = 8;
+
+function reconReportsFor(scope: string): Record<string, unknown>[] {
+  const base = (scope || 'cib').toUpperCase();
+  const r = (code: string, name: string, category: string, sub_category: string, output_mode: string, key_columns: string) =>
+    ({ report_code: `${base}_${code}`, report_name: name, category, sub_category, output_mode, key_columns, measure_columns: 'AMOUNT' });
+  return [
+    r('ALMT_ACT_PNL', 'P&L Aggregate', 'ALMT', 'Activity', 'FILE', 'LMA_CODE,CPT_CODE,AMOUNT_CODE'),
+    r('ALMT_ACT_POS', 'Positions', 'ALMT', 'Activity', 'TABLE', 'LMA_CODE,CPT_CODE'),
+    r('ALMT_STD_BAL', 'Balances', 'ALMT', 'StdBs', 'FILE', 'LMA_CODE'),
+    r('ALMT_STD_FEES', 'Fees Summary', 'ALMT', 'StdBs', 'FILE', 'CPT_CODE,AMOUNT_CODE'),
+    r('CB_RISK', 'Risk Exposure', 'CB', '', 'TABLE', 'LMA_CODE,CPT_CODE,AMOUNT_CODE'),
+    r('CB_LIQ', 'Liquidity Summary', 'CB', '', 'FILE', 'LMA_CODE,CPT_CODE')
+  ];
+}
+
+function reconDerive(extracts: ReconMockExtract[]): Record<string, unknown>[] {
+  const byReport = new Map<string, Record<string, ReconMockExtract>>();
+  for (const e of extracts) {
+    const m = byReport.get(e.report_code) ?? {};
+    m[e.side] = e;
+    byReport.set(e.report_code, m);
+  }
+  const out: Record<string, unknown>[] = [];
+  byReport.forEach((sides, code) => {
+    const live = sides['LIVE'];
+    const reg = sides['REG'];
+    const states = [live, reg].filter(Boolean).map((e) => e!.status);
+    let state = 'ready'; let message = 'Extracts ready — comparison runs in Phase 2.';
+    if (states.includes('failed')) { state = 'extract_failed'; message = 'Extract failed — please take action.'; }
+    else if (states.includes('no_data')) { state = 'no_data'; message = 'Extract finished but no data was produced — please contact OLS Dev.'; }
+    else if (states.some((s) => s === 'queued' || s === 'running') || states.length < 2) { state = 'extracting'; message = 'Extract still running…'; }
+    const view = (e?: ReconMockExtract) => e
+      ? { status: e.status, job_run_no: e.job_run_no, db_source: e.db_source, message: e.message }
+      : { status: 'queued', job_run_no: null };
+    out.push({ report_code: code, state, message, live: view(live), reg: view(reg) });
+  });
+  return out;
+}
+
+// --- Phase 2: fabricated datasets + compare (mirrors reconciliation_ops.compare_datasets) ---
+function reconDatasets(code: string): { cols: string[]; live: unknown[][]; reg: unknown[][] } {
+  const cols = ['LMA_CODE', 'CPT_CODE', 'AMOUNT_CODE', 'AMOUNT'];
+  const live: unknown[][] = [['IXL12', 'CTE23', 'AMC45', 5000], ['IXL12', 'CTE23', 'AMC44', 3000],
+    ['IXL12', 'CTE23', 'AMC42', 2000], ['IXL14', 'CTE24', 'AMC45', 70000],
+    ['IXL15', 'CTE28', 'AMC45', 8000], ['IXL17', 'CTE23', 'AMC45', 30000]];
+  let reg: unknown[][] = live.map((r) => [...r]);
+  if (code.endsWith('ACT_PNL')) {                        // make this report FAIL to demo the drill-down
+    reg[0][3] = 4800;                                     // changed 5000 → 4800
+    reg = reg.filter((r) => r[0] !== 'IXL17');            // missing in REG
+    reg.push(['IXL19', 'CTE23', 'AMC45', 1500]);          // extra in REG
+  }
+  return { cols, live, reg };
+}
+
+function reconCompareFor(code: string): ReconMockResult {
+  const { cols, live, reg } = reconDatasets(code);
+  const keys = ['LMA_CODE', 'CPT_CODE', 'AMOUNT_CODE'];
+  const measures = ['AMOUNT'];
+  const kidx = keys.map((k) => cols.indexOf(k));
+  const midx = measures.map((m) => cols.indexOf(m));
+  const keyOf = (row: unknown[]) => kidx.map((i) => String(row[i])).join('|');
+  const lmap = new Map(live.map((r) => [keyOf(r), r]));
+  const rmap = new Map(reg.map((r) => [keyOf(r), r]));
+  const columns = ['Type', ...keys];
+  measures.forEach((m) => columns.push(`${m} (LIVE)`, `${m} (REG)`, `${m} Δ`));
+  const rows: unknown[][] = [];
+  let matched = 0, changed = 0, missing = 0, extra = 0;
+  for (const k of new Set([...lmap.keys(), ...rmap.keys()])) {
+    const lr = lmap.get(k); const rr = rmap.get(k);
+    if (lr && rr) {
+      let ok = true; const cells: unknown[] = [];
+      midx.forEach((i) => { const lv = lr[i]; const rv = rr[i]; if (Number(lv) !== Number(rv)) { ok = false; } cells.push(lv, rv, Number(lv) - Number(rv)); });
+      if (ok) { matched++; } else { changed++; rows.push(['Changed', ...kidx.map((i) => lr[i]), ...cells]); }
+    } else if (lr) {
+      missing++; const cells: unknown[] = []; midx.forEach((i) => cells.push(lr[i], null, null));
+      rows.push(['Missing', ...kidx.map((i) => lr[i]), ...cells]);
+    } else if (rr) {
+      extra++; const cells: unknown[] = []; midx.forEach((i) => cells.push(null, rr[i], null));
+      rows.push(['Extra', ...kidx.map((i) => rr[i]), ...cells]);
+    }
+  }
+  const compared = matched + changed + missing + extra;
+  return { status: (changed + missing + extra) === 0 ? 'PASS' : 'FAIL', matched, changed, missing, extra, compared, columns, rows };
+}
+
+function reconEnsureResult(run: ReconMockRun, code: string): ReconMockResult {
+  const cache = run.results ?? (run.results = new Map());
+  if (!cache.has(code)) { cache.set(code, reconCompareFor(code)); }
+  return cache.get(code)!;
+}
+
+function mockReconciliation(path: string, body: Record<string, unknown>): Record<string, unknown> {
+  const scope = String(body['scope'] ?? 'cib');
+  switch (path) {
+    case '/api/reconciliation/reports':
+      return { status: 'success', reports: reconReportsFor(scope) };
+    case '/api/reconciliation/databases': {
+      const s = (scope || 'cib').toUpperCase().slice(0, 1) || 'C';
+      return { status: 'success', databases: [
+        { key: `OLS${s}D1`, label: `OLS${s}D1 (DEV 1)` }, { key: `OLS${s}D2`, label: `OLS${s}D2 (DEV 2)` },
+        { key: `OLS${s}R1`, label: `OLS${s}R1 (Regression 1)` }, { key: `OLS${s}R2`, label: `OLS${s}R2 (Regression 2)` }
+      ] };
+    }
+    case '/api/reconciliation/regression-runs':
+      return scope === 'group'
+        ? { status: 'success', runs: [] }
+        : { status: 'success', runs: [
+            { run_id: 42, change_number: 'CHG0123456', release_date: '20260910', label: 'Run #42 · CHG0123456 · 2026-09-10' },
+            { run_id: 39, change_number: 'CHG0123001', release_date: '20260828', label: 'Run #39 · CHG0123001 · 2026-08-28' }
+          ] };
+    case '/api/reconciliation/trigger': {
+      const reports = (body['reports'] as string[]) ?? [];
+      const liveDb = String(body['live_db'] ?? '');
+      const regDb = String(body['regression_db'] ?? '');
+      const runId = ++reconRunSeq;
+      const extracts: ReconMockExtract[] = [];
+      for (const code of reports) {
+        for (const [side, db] of [['LIVE', liveDb], ['REG', regDb]] as [ 'LIVE' | 'REG', string ][]) {
+          extracts.push({ report_code: code, side, db_source: db, job_run_no: String(++reconJobSeq), status: 'queued', message: null });
+        }
+      }
+      reconRuns.set(runId, { submitted: Date.now(), reports: [...reports], extracts });
+      return { status: 'success', run_id: runId, extracts };
+    }
+    case '/api/reconciliation/status': {
+      const runId = Number(body['run_id']);
+      const run = reconRuns.get(runId);
+      if (!run) { return { status: 'success', run_id: runId, reports: [] }; }
+      const elapsed = (Date.now() - run.submitted) / 1000;
+      const last = run.reports[run.reports.length - 1];
+      for (const e of run.extracts) {
+        if (e.status === 'failed' || e.status === 'no_data' || e.status === 'done') { continue; }
+        if (elapsed < RECON_RUN_SECS) { e.status = 'running'; }
+        else if (e.report_code.endsWith('_RISK')) { e.status = 'failed'; e.message = 'Extract batch failed — please take action.'; }
+        else if (e.report_code === last && e.side === 'REG') { e.status = 'no_data'; e.message = 'no rows produced'; }
+        else { e.status = 'done'; }
+      }
+      const reports = reconDerive(run.extracts);
+      for (const rep of reports) {                        // Phase 2: auto-compare READY reports
+        if (rep['state'] === 'ready') {
+          const res = reconEnsureResult(run, String(rep['report_code']));
+          rep['state'] = res.status === 'PASS' ? 'pass' : 'fail';
+          rep['matched'] = res.matched; rep['changed'] = res.changed;
+          rep['missing'] = res.missing; rep['extra'] = res.extra; rep['compared'] = res.compared;
+          rep['message'] = `${res.matched} matched · ${res.changed} changed · ${res.missing} missing · ${res.extra} extra`;
+        }
+      }
+      return { status: 'success', run_id: runId, reports };
+    }
+    case '/api/reconciliation/compare': {
+      const runId = Number(body['run_id']); const code = String(body['report_code'] ?? '');
+      const run = reconRuns.get(runId);
+      const res = run ? reconEnsureResult(run, code) : reconCompareFor(code);
+      return { status: 'success', report_code: code, result: res };
+    }
+    case '/api/reconciliation/discrepancies': {
+      const runId = Number(body['run_id']); const code = String(body['report_code'] ?? '');
+      const run = reconRuns.get(runId);
+      const res = run ? reconEnsureResult(run, code) : reconCompareFor(code);
+      return { status: 'success', columns: res.columns, rows: res.rows };
+    }
+    case '/api/reconciliation/activity': {
+      const base = (scope || 'cib').toUpperCase();
+      const s = base.slice(0, 1);
+      return { status: 'success', rows: [
+        { report_code: `${base}_ALMT_ACT_PNL`, side: 'LIVE', db_source: `OLS${s}D1`, business_date: '20260912', job_run_no: '990101', status: 'done', triggered_by: 'OPS-10432', triggered_on: '2026-09-12 19:40:11' },
+        { report_code: `${base}_ALMT_ACT_PNL`, side: 'REG', db_source: `OLS${s}R1`, business_date: '20260912', job_run_no: '990102', status: 'done', triggered_by: 'OPS-10432', triggered_on: '2026-09-12 19:40:11' },
+        { report_code: `${base}_CB_RISK`, side: 'LIVE', db_source: `OLS${s}D1`, business_date: '20260912', job_run_no: '990109', status: 'failed', triggered_by: 'OPS-10432', triggered_on: '2026-09-12 19:40:11' }
+      ] };
+    }
     default:
       return { status: 'success' };
   }

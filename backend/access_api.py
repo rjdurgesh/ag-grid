@@ -321,7 +321,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "username": (identity or {}).get("username", ""),
             "display_name": "", "email": "", "app_env": app_env,
             "screens": [], "write_screens": [],
-            "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": [], "regression": []},
+            "config": {"scopes": [], "all": False, "all_level": "READ", "category_grants": [], "table_grants": [], "regression": [], "reconciliation": []},
             "servers": [], "all_servers": False, "denied_servers": [],
             "infra": {"all_apps": False, "apps": [], "denied_apps": []},
             "service": {"all_apps": False, "apps": [], "denied_apps": []},
@@ -345,7 +345,8 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
                         "docs", "docs_technical"],
             "write_screens": WRITE_CAPABLE_SCREENS,
             "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
-                       "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES)},
+                       "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES),
+                       "reconciliation": list(CONFIG_SCOPES)},
             "servers": ["*"], "all_servers": True, "denied_servers": [],
             "infra": {"all_apps": True, "apps": [], "denied_apps": []},
             "service": {"all_apps": True, "apps": [], "denied_apps": []},
@@ -361,6 +362,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     table_grants: list[dict] = []
     config_scopes: set[str] = set()
     regression_scopes: set[str] = set()   # scopes where the Regression tab is granted (DEV/STG only)
+    reconciliation_scopes: set[str] = set()  # scopes where the Reconciliation tab is granted (DEV/STG; incl group)
     config_all = False
     config_all_level = "READ"
     servers: list[str] = []
@@ -485,6 +487,12 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             sc = _scope_of(rscope) or (rscope if rscope in CONFIG_SCOPES else None)
             if sc:
                 regression_scopes.add(sc)
+        elif rtype == "RECONCILIATION" and level != "DENY":
+            # Reconciliation tab per scope — resource_scope 'group'/'cib'/'retail' or 'config_ops:<scope>'.
+            # Separate grant from REGRESSION; Group can hold it even though Group has no Regression tab.
+            sc = _scope_of(rscope) or (rscope if rscope in CONFIG_SCOPES else None)
+            if sc:
+                reconciliation_scopes.add(sc)
 
     # A Service Console SCREEN grant with no specific APP grants = all apps.
     if service_screen_grant and not service_apps:
@@ -497,6 +505,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         config_all = True
         config_scopes.update(CONFIG_SCOPES)
         regression_scopes.update(CONFIG_SCOPES)
+        reconciliation_scopes.update(CONFIG_SCOPES)
         if full_write:
             config_all_level = "WRITE"
             all_db_level = "WRITE"
@@ -547,6 +556,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "category_grants": category_grants,
             "table_grants": table_grants,
             "regression": sorted(regression_scopes),
+            "reconciliation": sorted(reconciliation_scopes),
         },
         "servers": sorted(set(servers)),
         "all_servers": all_servers,
@@ -626,7 +636,7 @@ def access_effective(request: Request, body: EffectiveQuery, token_user: str = D
 # `granted_by` is the caller (from the token at go-live). See RBAC_DESIGN.md §User Management.
 # ---------------------------------------------------------------------------
 
-_RESOURCE_TYPES = {"SCREEN", "SERVER", "APP", "DB", "TABLE_CATEGORY", "TABLE", "SECTION", "REGRESSION"}
+_RESOURCE_TYPES = {"SCREEN", "SERVER", "APP", "DB", "TABLE_CATEGORY", "TABLE", "SECTION", "REGRESSION", "RECONCILIATION"}
 
 
 def no_ols_user_msg(uid: str) -> str:

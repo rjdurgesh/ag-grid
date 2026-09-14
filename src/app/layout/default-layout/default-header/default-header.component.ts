@@ -1,5 +1,5 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, computed, inject, input, output } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 
 import {
@@ -65,4 +65,7 @@ export class DefaultHeaderComponent extends HeaderComponent {
   }
 
   readonly sidebarId = input('sidebar1');
+
+  /** Desktop hamburger → toggle the icon RAIL (the layout owns the `narrow` state). */
+  readonly collapseToggle = output<void>();
 }

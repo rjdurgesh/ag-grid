@@ -19,7 +19,7 @@ const AUDIT_COLS = new Set(['INSERTED_BY', 'INSERTED_DATE', 'INSERTED_ON', 'UPDA
 /** Known date-partition column names (the server's ols_util.get_date_column is authoritative). */
 const DATE_COL_NAMES = new Set(['COB_DT', 'REPORTING_DT']);
 
-interface GridRow { __id: number; __err: Record<string, string>; [field: string]: unknown; }
+interface GridRow { __id: number; __err: Record<string, string>; __origDate?: string; [field: string]: unknown; }
 
 /**
  * Config Ops CSV **Upload & Load** dialog (opened from the grid modal's 3-dot → Upload Data).
@@ -48,6 +48,9 @@ export class ConfigUploadComponent {
   readonly tableName = input('');
   readonly columns = input<ColumnMeta[]>([]);
   readonly isCob = input(false);
+  /** Authoritative date column (ols_util.get_date_column), passed from the grid modal. Preferred over the
+   *  name/type heuristic so the override targets the right column for ANY date label. */
+  readonly dateColumn = input('');
 
   readonly closed = output<void>();
   readonly loaded = output<UploadResult>();
@@ -63,6 +66,10 @@ export class ConfigUploadComponent {
   readonly gridRows = signal<GridRow[]>([]);
   readonly mode = signal<'append' | 'replace'>('append');
   readonly viewMode = signal<'all' | 'valid' | 'issues'>('all');
+  /** Optional COB/reporting-date override (YYYY-MM-DD). When set, EVERY row's date column is stamped
+   *  with it before load — so a file (e.g. an export from another COB) can be uploaded for any date
+   *  without editing it. Only shown for COB tables (is_cobdt=Y) that carry the date column in the file. */
+  readonly overrideDate = signal('');
   readonly loading = signal(false);
   readonly resultMsg = signal<{ ok: boolean; text: string } | null>(null);
   private gridApi?: GridApi;
@@ -76,8 +83,16 @@ export class ConfigUploadComponent {
   });
   readonly dateColField = computed<string | null>(() => {
     if (!this.isCob()) { return null; }
-    const named = this.providedCols().find((c) => DATE_COL_NAMES.has((c.field || '').toUpperCase()));
-    const typed = this.providedCols().find((c) => c.type === 'date' || c.type === 'timestamp');
+    const cols = this.providedCols();
+    // 1) The server-resolved date column (authoritative, dynamic — any label), IF it's in the file.
+    const authoritative = (this.dateColumn() || '').trim().toUpperCase();
+    if (authoritative) {
+      const hit = cols.find((c) => (c.field || '').toUpperCase() === authoritative);
+      if (hit) { return hit.field!; }
+    }
+    // 2) Fallback heuristic (older backend / mock without date_column): known names, then first date/timestamp.
+    const named = cols.find((c) => DATE_COL_NAMES.has((c.field || '').toUpperCase()));
+    const typed = cols.find((c) => c.type === 'date' || c.type === 'timestamp');
     return (named ?? typed)?.field ?? null;
   });
   readonly validCount = computed(() => this.gridRows().filter((r) => Object.keys(r.__err).length === 0).length);
@@ -93,6 +108,16 @@ export class ConfigUploadComponent {
   });
   readonly cobDate = computed(() => (this.distinctDates().length === 1 ? this.distinctDates()[0] : null));
   readonly multiDate = computed(() => this.distinctDates().length > 1);
+  /** Friendly label for the resolved date column (drives the override picker's caption) — dynamic, so a
+   *  non-standard date column reads naturally (e.g. BUSINESS_DATE → "Business Date"). */
+  readonly dateColLabel = computed(() => {
+    const f = this.dateColField() || '';
+    const u = f.toUpperCase();
+    if (u === 'COB_DT') { return 'COB date'; }
+    if (u === 'REPORTING_DT') { return 'Reporting date'; }
+    if (!f) { return 'Business date'; }
+    return f.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+  });
   readonly canLoad = computed(() =>
     !!this.parsed() && !this.headerError() && this.validCount() > 0 && !this.multiDate() && !this.loading());
 
@@ -139,6 +164,7 @@ export class ConfigUploadComponent {
     this.delimiter.set('auto'); this.fileName.set(''); this.rawText = '';
     this.parsed.set(null); this.headerError.set(null); this.omittedCols.set([]);
     this.gridRows.set([]); this.mode.set('append'); this.viewMode.set('all');
+    this.overrideDate.set('');
     this.loading.set(false); this.resultMsg.set(null);
   }
 
@@ -176,13 +202,54 @@ export class ConfigUploadComponent {
     this.omittedCols.set(this.loadableCols().slice(fh.length).map((c) => c.field!));
 
     const prov = this.providedCols();
+    const dcol = this.dateColField();
     const grows: GridRow[] = rows.map((r) => {
       const g: GridRow = { __id: this.idSeq++, __err: {} };
       prov.forEach((c, i) => { g[c.field!] = r[i] ?? ''; });
+      if (dcol) { g.__origDate = String(g[dcol] ?? ''); }   // remember the file's own date so "Clear" restores it
       this.validateRow(g);
       return g;
     });
     this.gridRows.set(grows);
+    if (this.overrideDate()) { this.applyOverride(); }   // keep an already-chosen override applied after a re-parse
+  }
+
+  /** Set/clear the COB/reporting-date override and stamp it across every row. Turning the override ON
+   *  (empty → a date) asks for confirmation first, since it rewrites the date in EVERY uploaded row. */
+  async onOverrideDate(value: string): Promise<void> {
+    const turningOn = !!value && !this.overrideDate();
+    if (turningOn) {
+      const col = this.dateColField() || 'the date column';
+      const ok = await this.confirm.ask({
+        title: `Override ${this.dateColLabel()}?`,
+        message: `Every row in this file will be loaded with ${col} = ${value}, replacing whatever `
+          + `${this.dateColLabel().toLowerCase()} the file contains. Continue?`,
+        confirmLabel: 'Override', tone: 'danger'
+      });
+      if (!ok) {
+        this.overrideDate.set('');   // reverts the picker back to empty
+        this.applyOverride();
+        return;
+      }
+    }
+    this.overrideDate.set(value);
+    this.applyOverride();
+  }
+
+  /** Write the override date (or restore each row's original date when cleared) into the date column,
+   *  re-validate, and refresh the grid. All rows then share one date, so `multiDate` clears and the
+   *  load proceeds for the chosen COB date. */
+  private applyOverride(): void {
+    const field = this.dateColField();
+    if (!field) { return; }
+    const ov = this.overrideDate();
+    for (const r of this.gridRows()) {
+      r[field] = ov || (typeof r.__origDate === 'string' ? r.__origDate : '');
+      this.validateRow(r);
+    }
+    this.gridRows.set([...this.gridRows()]);
+    this.gridApi?.refreshCells({ force: true });
+    if (this.viewMode() !== 'all') { this.gridApi?.onFilterChanged(); }
   }
 
   private validateRow(g: GridRow): void {

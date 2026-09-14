@@ -200,13 +200,23 @@ export class DateCellEditor {
     }
   }
 
-  /** Store an ISO string so the value round-trips like the rest of the data. */
+  /**
+   * Store the canonical form the rest of the pipeline uses — `YYYY-MM-DD` (date) or
+   * `YYYY-MM-DD HH:MM:SS` (timestamp) in LOCAL time. The native input already gives local
+   * `YYYY-MM-DD` / `YYYY-MM-DDTHH:MM`, so we never call `toISOString()` (which would add a `T`,
+   * force UTC — shifting the day across a timezone — and break the CSV export / upload validator).
+   */
   getValue(): string {
-    if (!this.input.value) {
+    const v = this.input.value;
+    if (!v) {
       return '';
     }
-    const d = new Date(this.input.value);
-    return Number.isNaN(d.getTime()) ? this.input.value : d.toISOString();
+    if (!this.withTime) {
+      return v;   // already 'YYYY-MM-DD'
+    }
+    // datetime-local → 'YYYY-MM-DDTHH:MM' (seconds optional) → 'YYYY-MM-DD HH:MM:SS'
+    const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2}))?$/.exec(v);
+    return m ? `${m[1]} ${m[2]}:${m[3] ?? '00'}` : v;
   }
 
   isPopup(): boolean {

@@ -8,7 +8,8 @@ import {
   TableContentResponse,
   TabularData
 } from './models';
-import { ConfigScope } from './api-endpoints';
+import { ConfigScope, InfraApp } from './api-endpoints';
+import { ServerHealthConfigResponse, ServerHealthRow, ServiceState } from './infra-models';
 import { environment } from '../../environments/environment';
 
 /**
@@ -249,6 +250,8 @@ interface CatalogueDef {
 const CONFIG_TABLE_DEFS: Record<ConfigScope, CatalogueDef[]> = {
   cib: [
     { name: 'CIB_ACCOUNT_MASTER', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    // COB table whose date column is REPORTING_DT (not COB_DT) — exercises the dynamic date-column path.
+    { name: 'CIB_REPORTING_SUMMARY', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'CIB_LIMIT_CONFIG', cob: false, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'CIB_FX_RATES', cob: true, active: false, category: 'OMT-BOTH' },
     { name: 'CIB_PAYMENT_ROUTES', cob: true, active: true, category: 'OMT-TECHNICAL' },
@@ -258,10 +261,12 @@ const CONFIG_TABLE_DEFS: Record<ConfigScope, CatalogueDef[]> = {
     { name: 'GRP_ENTITY_HIERARCHY', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'GRP_COST_CENTER', cob: false, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'GRP_GL_MAPPING', cob: true, active: false, category: 'OMT-TECHNICAL' },
+    { name: 'GRP_REPORTING_SUMMARY', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'GRP_RISK_WEIGHTS', cob: true, active: true, category: 'OMT-BOTH' }
   ],
   retail: [
     { name: 'RTL_PRODUCT_CATALOG', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
+    { name: 'RTL_REPORTING_SUMMARY', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'RTL_BRANCH_CONFIG', cob: false, active: true, category: 'OMT-TECHNICAL' },
     { name: 'RTL_FEE_SCHEDULE', cob: true, active: true, category: 'OMT-FUNCTIONAL' },
     { name: 'RTL_CARD_BINS', cob: false, active: false, category: 'OMT-BOTH' },
@@ -404,8 +409,12 @@ export function mockTableData(
 ): TableContentResponse {
   // Enough rows to exercise the modal grid's pagination and vertical scrolling.
   const rowCount = 120 + (tableName.length % 40);
-  const cols = CONTENT_SCHEMA.map((c) => c.name);
-  const cols_data_types = CONTENT_SCHEMA.map((c) => c.cx);
+  // A *_REPORTING_* table is date-managed on REPORTING_DT instead of COB_DT — exercises the dynamic
+  // date-column path (the column, the date filter and the upload override all follow it).
+  const dateCol = /REPORTING/i.test(tableName) ? 'REPORTING_DT' : 'COB_DT';
+  const schema = CONTENT_SCHEMA.map((c) => (c.name === 'COB_DT' ? { name: dateCol, cx: c.cx } : c));
+  const cols = schema.map((c) => c.name);
+  const cols_data_types = schema.map((c) => c.cx);
   let Table_data: Record<string, unknown>[] = [];
   for (let i = 1; i <= rowCount; i++) {
     Table_data.push({
@@ -416,7 +425,7 @@ export function mockTableData(
       DEFINITION: xmlDefinition(tableName, i),
       ATTACHMENT: blobData(i),
       ENABLED: i % 3 !== 0 ? 'Y' : 'N',
-      COB_DT: new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
+      [dateCol]: new Date(Date.UTC(2026, 6, 22 - (i % 5))).toISOString(),
       UPDATED_AT: new Date(Date.UTC(2026, 6, 21, 22 - (i % 12), (i * 7) % 60, 0)).toISOString(),
       // DB row id — rides along in the data, hidden from the grid (not in `cols`).
       rowid: `AAAR${tableName.length}${String(i).padStart(6, '0')}`
@@ -463,3 +472,219 @@ export const MOCK_ACTIVITY: ActivityItem[] = [
 
 /** Last 12 samples of used-memory percentage for the dashboard trend chart. */
 export const MOCK_MEMORY_TREND: number[] = [58, 61, 63, 60, 66, 70, 68, 72, 69, 74, 71, 67];
+
+// ---------------------------------------------------------------------------
+// Infrastructure Pulse — dev dummy data (Infra Health config catalogue + Service
+// Console status/actions). Served ONLY when apiMocks['/api/infra_health'] and
+// ['/api/service_console'] are flipped to `true` in environment.ts (local dev).
+//
+// A single catalogue below drives BOTH screens: the health-config response, the
+// per-server service status (stateful — start/stop/restart actually flip the state
+// so the demo behaves), plus dummy agent metrics + share space so Infra Health also
+// renders. States cover every By-Status bucket (Running / Stopped+Faulted / Unknown)
+// and include long service names + an unreachable server to exercise the UI.
+// ---------------------------------------------------------------------------
+
+interface MockSvc { name: string; script?: string | null; state: ServiceState; }
+interface MockServer {
+  app: InfraApp;
+  host: string;
+  address: string;
+  os: 'WINDOWS' | 'LINUX';
+  port: number;
+  comments: string;
+  /** This host's OWN dashboard service name (Restart-only) — matches a services[].name. */
+  self?: string;
+  /** Agent down → status/metrics come back reachable:false. */
+  unreachable?: boolean;
+  services: MockSvc[];
+}
+
+const MOCK_INFRA_SERVERS: MockServer[] = [
+  {
+    app: 'OLS_GROUP', host: 'eurv12', address: '10.20.12.11', os: 'WINDOWS', port: 9101,
+    comments: 'Group primary application host', self: 'OLS Dashboard Service',
+    services: [
+      { name: 'OLS Group Batch Scheduler', state: 'Running' },
+      { name: 'OLS Group Pricing Engine', state: 'Stopped' },
+      { name: 'OLS Group Notification Dispatcher Service', state: 'Running' },
+      { name: 'OLS Dashboard Service', state: 'Running' }
+    ]
+  },
+  {
+    app: 'OLS_GROUP', host: 'eurv13', address: '10.20.12.12', os: 'LINUX', port: 9101,
+    comments: 'Group ETL / reporting host',
+    services: [
+      { name: 'ols_group_etl_worker', script: '/opt/ols/group/etl_worker.sh', state: 'Running' },
+      { name: 'ols_group_report_generator', script: '/opt/ols/group/report_generator.sh', state: 'Faulted' },
+      { name: 'ols_group_cache_sync', script: '/opt/ols/group/cache_sync.sh', state: 'Unknown' }
+    ]
+  },
+  {
+    app: 'OLS_CIB', host: 'eurv20', address: '10.20.20.21', os: 'WINDOWS', port: 9102,
+    comments: 'CIB trading application host',
+    services: [
+      { name: 'OLS CIB Trade Capture Service', state: 'Stopped' },
+      { name: 'OLS CIB Risk Aggregation Engine Worker Process', state: 'Running' },
+      { name: 'OLS CIB Market Data Feed Handler', state: 'Running' },
+      { name: 'OLS CIB Settlement Batch Coordinator Service', state: 'Running' }
+    ]
+  },
+  {
+    app: 'OLS_CIB', host: 'eurv21', address: '10.20.20.22', os: 'LINUX', port: 9102,
+    comments: 'CIB EOD batch host', unreachable: true,
+    services: [
+      { name: 'ols_cib_eod_batch', script: '/opt/ols/cib/eod_batch.sh', state: 'Unknown' },
+      { name: 'ols_cib_recon', script: '/opt/ols/cib/recon.sh', state: 'Unknown' }
+    ]
+  },
+  {
+    app: 'OLS_RETAIL', host: 'eurv30', address: '10.20.30.31', os: 'WINDOWS', port: 9103,
+    comments: 'Retail application host',
+    services: [
+      { name: 'OLS Retail Loan Origination Service', state: 'Running' },
+      { name: 'OLS Retail Statement Generator', state: 'Stopped' }
+    ]
+  },
+  {
+    app: 'POSEIDON', host: 'eurv40', address: '10.20.40.41', os: 'LINUX', port: 9104,
+    comments: 'Poseidon streaming host',
+    services: [
+      { name: 'poseidon_gateway', script: '/opt/poseidon/gateway.sh', state: 'Running' },
+      { name: 'poseidon_stream_processor', script: '/opt/poseidon/stream_processor.sh', state: 'Unknown' }
+    ]
+  }
+];
+
+/** Share drives (Infra Health only). */
+const MOCK_INFRA_SHARES: { app: InfraApp; host: string; address: string }[] = [
+  { app: 'OLS_GROUP', host: 'grp-nas-logs', address: '\\\\eurnas01\\ols_group\\logs' },
+  { app: 'OLS_CIB', host: 'cib-nas-archive', address: '\\\\eurnas02\\ols_cib\\archive' }
+];
+
+/** Live, mutable service states (host::name → state) so start/stop/restart actually flip the demo. */
+const MOCK_SVC_STATE = new Map<string, string>();
+function stateKey(host: string, name: string): string { return `${host}::${name}`; }
+function seedInfraState(): void {
+  if (MOCK_SVC_STATE.size) { return; }
+  for (const srv of MOCK_INFRA_SERVERS) {
+    for (const s of srv.services) { MOCK_SVC_STATE.set(stateKey(srv.host, s.name), s.state); }
+  }
+}
+
+/** Deterministic pseudo-metric from a string seed (stable across reloads). */
+function seededPct(seed: string, min: number, max: number): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) { h = (h * 31 + seed.charCodeAt(i)) & 0xffff; }
+  return +(min + (h % 1000) / 1000 * (max - min)).toFixed(1);
+}
+
+/** Health-config catalogue (`POST /api/infra_health`). */
+export function mockInfraCatalogue(): ServerHealthConfigResponse {
+  const appEnv = environment.appEnv === 'LIVE' ? 'PROD' : environment.appEnv;
+  const rows: ServerHealthRow[] = [];
+  for (const srv of MOCK_INFRA_SERVERS) {
+    rows.push({
+      APP_ENV: appEnv,
+      RESOURCE_CATEGORY: 'SERVER',
+      HOST_PLATFORM: srv.os,
+      HOST_NAME: srv.host,
+      HOST_ADDRESS: srv.address,
+      AGENT_LISTEN_PORT: srv.port,
+      APP_NAME: srv.app,
+      MONITORING_CONFIG: {
+        infra: ['cpu', 'ram'],
+        disk: srv.os === 'WINDOWS' ? ['C:', 'D:'] : ['/', '/var'],
+        services: srv.services.map((s) => ({ [s.name]: s.script ?? 'null' })),
+        ...(srv.self ? { self_service: srv.self } : {})
+      },
+      IS_ACTIVE: 'Y',
+      COMMENTS: srv.comments
+    });
+  }
+  for (const sh of MOCK_INFRA_SHARES) {
+    rows.push({
+      APP_ENV: appEnv,
+      RESOURCE_CATEGORY: 'SHARE_DRIVE',
+      HOST_PLATFORM: 'SHARE_DRIVE',
+      HOST_NAME: sh.host,
+      HOST_ADDRESS: sh.address,
+      AGENT_LISTEN_PORT: 0,
+      APP_NAME: sh.app,
+      MONITORING_CONFIG: null,
+      IS_ACTIVE: 'Y',
+      COMMENTS: 'Shared log/archive drive'
+    });
+  }
+  return { status: 'success', data: rows };
+}
+
+/**
+ * Service Console `POST /api/service_console/service-manage`:
+ *  - bulk STATUS (body has `services[]`) → `{ HOST_NAME, reachable, [name]: {service, status} }`
+ *  - ACTION (body has `action`) → `{ success, action, service, message, reachable }` + flips the state
+ * An unreachable host returns `reachable:false` for both (the UI shows one "Unreachable" server).
+ */
+export function mockServiceManage(body: Record<string, unknown>): Record<string, unknown> {
+  seedInfraState();
+  const host = String(body['host_name'] ?? '');
+  const srv = MOCK_INFRA_SERVERS.find((s) => s.host === host);
+
+  // --- action (start / stop / restart / status) ---
+  if (typeof body['action'] === 'string' && body['action']) {
+    const action = String(body['action']);
+    const ref = String(body['service'] ?? '');   // Windows → name, Linux → script
+    if (!srv) { return { reachable: false, success: false, message: `Unknown host ${host}` }; }
+    if (srv.unreachable) { return { reachable: false, success: false, message: 'Agent not reachable' }; }
+    const svc = srv.services.find((s) => s.name === ref || s.script === ref);
+    if (svc && (action === 'start' || action === 'restart')) { MOCK_SVC_STATE.set(stateKey(host, svc.name), 'Running'); }
+    if (svc && action === 'stop') { MOCK_SVC_STATE.set(stateKey(host, svc.name), 'Stopped'); }
+    return { reachable: true, success: true, action, service: ref,
+      message: `${action} request accepted for ${svc?.name ?? ref}` };
+  }
+
+  // --- bulk status ---
+  if (!srv || srv.unreachable) {
+    return { HOST_NAME: host, reachable: false, error: 'Connection refused — the agent is down or unreachable.' };
+  }
+  const names = Array.isArray(body['services']) ? (body['services'] as string[]) : srv.services.map((s) => s.name);
+  const out: Record<string, unknown> = { HOST_NAME: host, reachable: true };
+  for (const name of names) {
+    out[name] = { service: name, status: MOCK_SVC_STATE.get(stateKey(host, name)) ?? 'Unknown' };
+  }
+  return out;
+}
+
+/** Agent metrics (`POST /api/infra_health/metrics`) — dummy, stable per host. */
+export function mockAgentMetrics(body: Record<string, unknown>): Record<string, unknown> {
+  const host = String(body['host_name'] ?? '');
+  const srv = MOCK_INFRA_SERVERS.find((s) => s.host === host);
+  if (srv?.unreachable) { return { HOST_NAME: host, reachable: false, error: 'Agent did not respond.' }; }
+  const totalRam = 32 * 1024 ** 3;
+  const ramPct = seededPct(host + 'ram', 35, 88);
+  const win = (srv?.os ?? 'LINUX') === 'WINDOWS';
+  const disks = win
+    ? { 'C:': { drive: 'C:', total: '120 GB' }, 'D:': { drive: 'D:', total: '500 GB' } }
+    : { '/': { drive: '/', total: '80 GB' }, '/var': { drive: '/var', total: '250 GB' } };
+  const disk_storage: Record<string, unknown> = {};
+  for (const [k, d] of Object.entries(disks)) {
+    const totalGb = parseFloat(d.total);
+    const pct = seededPct(host + k, 40, 93);
+    const usedGb = +(totalGb * pct / 100).toFixed(2);
+    disk_storage[k] = { drive: d.drive, total: d.total, used: `${usedGb} GB`, free: `${(totalGb - usedGb).toFixed(2)} GB`, percent: pct };
+  }
+  return {
+    HOST_NAME: host, reachable: true, os: win ? 'Windows' : 'Linux',
+    cpu_percent: seededPct(host + 'cpu', 8, 82),
+    ram: { total: totalRam, used: Math.round(totalRam * ramPct / 100), percent: ramPct },
+    disk_storage
+  };
+}
+
+/** Share space (`POST /api/infra_health/share`) — dummy, stable per share. */
+export function mockShareSpace(body: Record<string, unknown>): Record<string, unknown> {
+  const addr = String(body['host_address'] ?? '');
+  const total = 2048;
+  const pct = seededPct(addr, 55, 92);
+  return { reachable: true, used: +(total * pct / 100).toFixed(1), total, unit: 'GB' };
+}

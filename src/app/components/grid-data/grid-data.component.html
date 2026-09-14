@@ -277,6 +277,7 @@
   [tableName]="modalTitle()"
   [columns]="modalContent()?.columns ?? []"
   [isCob]="modalIsCob()"
+  [dateColumn]="modalDateColumn()"
   (closed)="uploadOpen.set(false)"
   (loaded)="onUploadLoaded($event)"
 />
