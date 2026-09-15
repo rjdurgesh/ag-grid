@@ -330,6 +330,12 @@ export const API = {
      *  partition/subpartition/table granularity. Privileged connection. */
     gatherStats: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/gather-stats`,
     /** Live status of one submitted action (poll until `state` != RUNNING). POST `{ action_id }`. */
+    // Object Compress Activity — search a table, list its partitions/subpartitions, submit compression.
+    compressObjectInfo: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/compress/object-info`,
+    compressPartitions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/compress/partitions`,
+    compressSubpartitions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/compress/subpartitions`,
+    compressRun: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/compress/run`,
+
     actionStatus: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/action-status`,
     /** Recent gather-stats / MV-refresh actions (Action History panel). POST `{}`. */
     actions: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/actions`,

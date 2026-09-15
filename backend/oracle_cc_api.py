@@ -818,8 +818,160 @@ def gather_stats(request: Request, db: str, body: GatherStatsRequest) -> dict:
             "message": f"Statistics gather submitted for {body.owner}.{body.table} — running in the background."}
 
 
+# --- Object Compress Activity ------------------------------------------------
+# Compress existing partition/subpartition data (segment MOVE). READS (object-info / partitions /
+# subpartitions) drive the search + dropdowns; the RUN is a privileged async action per selected target.
+# Compression types the UI offers → passed to ols_util.occ_submit_compress, which maps each to a storage
+# clause. ROW STORE (BASIC/ADVANCED) needs Advanced Compression for ADVANCED; COLUMN STORE (QUERY/ARCHIVE)
+# is Hybrid Columnar Compression (Exadata/ZFSSA/licensed). The proc validates + defaults unknown types.
+COMPRESS_TYPES = ["BASIC", "ADVANCED", "QUERY LOW", "QUERY HIGH", "ARCHIVE LOW", "ARCHIVE HIGH"]
+
+
+def _compress_owner(body_owner: str) -> str:
+    """Owner to look up — the typed owner, else the OCC app schema. Upper-cased (unquoted Oracle names)."""
+    return (body_owner or OCC_SCHEMA or "").strip().upper()
+
+
+class CompressInfoRequest(BaseModel):
+    table: str
+    owner: str = ""
+
+
+@router.post("/{db}/compress/object-info")
+def compress_object_info(request: Request, db: str, body: CompressInfoRequest) -> dict:
+    """Does the searched table exist, and is it partitioned / composite? Drives which dropdowns show.
+    READ (monitor connection). Returns the compression-type list so the UI never hardcodes it."""
+    t = _target(db)
+    table = (body.table or "").strip().upper()
+    if not table:
+        raise HTTPException(status_code=400, detail="table is required.")
+    owner = _compress_owner(body.owner)
+    if ORACLE_CC_USE_DUMMY:
+        info = compress_object_info_dummy(owner, table)
+    else:
+        try:
+            info = database.fetch_object_partitioning(request.app.state.db_configs.get(db), owner, table)
+        except Exception:
+            logger.exception("compress object-info failed for %s.%s on %s", owner, table, db)
+            raise db_errors.http_error()
+    return {"status": "success", "owner": owner, "table": table, "compress_types": COMPRESS_TYPES, **info}
+
+
+class CompressPartsRequest(BaseModel):
+    table: str
+    owner: str = ""
+    search: str = ""
+    limit: int = 10
+
+
+@router.post("/{db}/compress/partitions")
+def compress_partitions(request: Request, db: str, body: CompressPartsRequest) -> dict:
+    """Partitions for the dropdown — latest `limit` (default 10), or names matching `search` (a `%2025%`
+    wildcard, or a plain 'contains'), capped at `limit`. READ (monitor connection)."""
+    t = _target(db)
+    table = (body.table or "").strip().upper()
+    owner = _compress_owner(body.owner)
+    if not table:
+        raise HTTPException(status_code=400, detail="table is required.")
+    limit = max(1, min(int(body.limit or 10), 500))
+    if ORACLE_CC_USE_DUMMY:
+        rows = compress_partitions_dummy(table, body.search, limit)
+    else:
+        try:
+            rows = database.fetch_partitions(request.app.state.db_configs.get(db), owner, table, body.search, limit)
+        except Exception:
+            logger.exception("compress partitions failed for %s.%s on %s", owner, table, db)
+            raise db_errors.http_error()
+    return {"status": "success", "rows": rows}
+
+
+class CompressSubpartsRequest(BaseModel):
+    table: str
+    owner: str = ""
+    partitions: list[str] = []
+    search: str = ""
+    limit: int = 10
+
+
+@router.post("/{db}/compress/subpartitions")
+def compress_subpartitions(request: Request, db: str, body: CompressSubpartsRequest) -> dict:
+    """Subpartitions of the selected parent `partitions` (composite tables) — latest `limit`, or names
+    matching `search`, capped. Empty `partitions` → []. READ (monitor connection)."""
+    t = _target(db)
+    table = (body.table or "").strip().upper()
+    owner = _compress_owner(body.owner)
+    if not table:
+        raise HTTPException(status_code=400, detail="table is required.")
+    limit = max(1, min(int(body.limit or 10), 1000))
+    if ORACLE_CC_USE_DUMMY:
+        rows = compress_subpartitions_dummy(table, body.partitions, body.search, limit)
+    else:
+        try:
+            rows = database.fetch_subpartitions(request.app.state.db_configs.get(db), owner, table,
+                                                body.partitions, body.search, limit)
+        except Exception:
+            logger.exception("compress subpartitions failed for %s.%s on %s", owner, table, db)
+            raise db_errors.http_error()
+    return {"status": "success", "rows": rows}
+
+
+class CompressTarget(BaseModel):
+    partition: str
+    subpartition: str | None = None
+
+
+class CompressRunRequest(BaseModel):
+    table: str
+    owner: str = ""
+    compress_type: str
+    targets: list[CompressTarget] = []
+    caller: str = ""
+
+
+@router.post("/{db}/compress/run")
+def compress_run(request: Request, db: str, body: CompressRunRequest) -> dict:
+    """**Submit** compression (segment MOVE) for each selected partition/subpartition as a BACKGROUND job
+    (WRITE — UI-gated behind DB-write + confirm). One action per target; returns each `action_id` for the
+    UI to poll via `action-status`. Runs `ols_util.occ_submit_compress` on a PRIVILEGED connection."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real requester from token (401 if OIDC on + no token)
+    t = _target(db)
+    table = (body.table or "").strip().upper()
+    owner = _compress_owner(body.owner)
+    ctype = (body.compress_type or "").strip().upper()
+    if not table:
+        raise HTTPException(status_code=400, detail="table is required.")
+    if ctype not in COMPRESS_TYPES:
+        raise HTTPException(status_code=400, detail=f"compress_type must be one of {COMPRESS_TYPES}.")
+    if not body.targets:
+        raise HTTPException(status_code=400, detail="Select at least one partition or subpartition to compress.")
+    if ORACLE_CC_USE_DUMMY:
+        return compress_run_dummy(t, owner, table, ctype,
+                                  [{"partition": x.partition, "subpartition": x.subpartition} for x in body.targets],
+                                  body.caller)
+    priv = _priv_cfg(request, db)
+    submitted = []
+    for tg in body.targets:
+        # Partition/subpartition names come from our own list endpoints (real dictionary names); the proc
+        # ENQUOTE_NAMEs them. Pass verbatim — do NOT upper-case (a quoted mixed-case name would break).
+        part = (tg.partition or "").strip()
+        sub = (tg.subpartition or "").strip() or None
+        if not part:
+            continue
+        try:
+            aid = database.compress_object(priv, owner=owner, table=table, partition=part,
+                                           subpartition=sub, compress_type=ctype,
+                                           requested_by=body.caller or "unknown")
+            submitted.append({"partition": part, "subpartition": sub, "action_id": aid, "state": "RUNNING"})
+        except Exception as exc:  # noqa: BLE001 — one bad target must not drop the rest
+            logger.exception("compress submit failed for %s.%s (%s/%s) on %s", owner, table, part, sub, db)
+            submitted.append({"partition": part, "subpartition": sub, "error": db_errors.classify(exc)[1]})
+    ok = sum(1 for s in submitted if s.get("action_id"))
+    return {"status": "success", "submitted": submitted,
+            "message": f"{ok} compression job(s) submitted — running in the background."}
+
+
 # --- Action status (live poll) + history -------------------------------------
-_ACTION_LABEL = {"GATHER_STATS": "Gather stats", "MV_REFRESH": "MV refresh"}
+_ACTION_LABEL = {"GATHER_STATS": "Gather stats", "MV_REFRESH": "MV refresh", "COMPRESS": "Compress"}
 _ACTION_STATE_SEV = {"RUNNING": "muted", "SUCCESS": "ok", "FAILED": "crit"}
 
 _ACTION_COLS = [
@@ -842,10 +994,16 @@ def _action_view(r: dict) -> dict:
     state = (r.get("status") or "RUNNING")
     secs = r.get("duration_secs")
     method = r.get("method")
+    obj = f"{r.get('object_owner')}.{r.get('object_name')}" if r.get("object_owner") else (r.get("object_name") or "—")
+    part, sub = r.get("partition_name"), r.get("subpartition_name")
+    if sub:       # compress target → show the exact partition/subpartition acted on
+        obj = f"{obj}:{part}:{sub}"
+    elif part:
+        obj = f"{obj}:{part}"
     return {
         "action_id": r.get("action_id"),
         "type": _ACTION_LABEL.get(r.get("action_type"), r.get("action_type") or "—"),
-        "object": f"{r.get('object_owner')}.{r.get('object_name')}" if r.get("object_owner") else (r.get("object_name") or "—"),
+        "object": obj,
         "method": _MV_CODE_LABEL.get(method, method or "—"),
         "requested_by": r.get("requested_by") or "—",
         "state": state, "state__sev": _ACTION_STATE_SEV.get(state, "muted"),
@@ -1993,6 +2151,10 @@ from oracle_cc_dummy import (  # noqa: E402
     mviews_dummy,
     mview_refresh_dummy,
     gather_stats_dummy,
+    compress_object_info_dummy,
+    compress_partitions_dummy,
+    compress_subpartitions_dummy,
+    compress_run_dummy,
     action_status_dummy,
     actions_dummy,
     sessions_dummy,

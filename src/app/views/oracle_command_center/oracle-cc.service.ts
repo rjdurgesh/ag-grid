@@ -88,9 +88,37 @@ export class OracleCcService {
     return this.api.post<ActionStatus>(API.oracle.actionStatus(db), { action_id: actionId });
   }
 
-  /** Recent gather-stats / MV-refresh actions (Action History panel). */
+  /** Recent gather-stats / MV-refresh / compress actions (Action History panel). */
   actions(db: string): Observable<DynTable> {
     return this.api.post<DynTable>(API.oracle.actions(db), {});
+  }
+
+  // --- Object Compress Activity --------------------------------------------
+  /** Is the searched table partitioned / composite? Drives which dropdowns show + the type list. */
+  compressObjectInfo(db: string, table: string, owner = ''): Observable<CompressInfo> {
+    return this.api.post<CompressInfo>(API.oracle.compressObjectInfo(db), { table, owner });
+  }
+
+  /** Partitions for the dropdown — latest `limit`, or names matching `search` (e.g. `%2025%`). */
+  compressPartitions(db: string, table: string, search = '', limit = 10, owner = ''):
+    Observable<{ rows: CompressPartition[] }> {
+    return this.api.post<{ rows: CompressPartition[] }>(API.oracle.compressPartitions(db),
+      { table, owner, search, limit });
+  }
+
+  /** Subpartitions of the selected parent partitions (composite tables), latest `limit` or by `search`. */
+  compressSubpartitions(db: string, table: string, partitions: string[], search = '', limit = 200, owner = ''):
+    Observable<{ rows: CompressSubpartition[] }> {
+    return this.api.post<{ rows: CompressSubpartition[] }>(API.oracle.compressSubpartitions(db),
+      { table, owner, partitions, search, limit });
+  }
+
+  /** Submit compression (segment MOVE) for each selected partition/subpartition (one job per target). */
+  compressRun(db: string, table: string, compressType: string,
+              targets: { partition: string; subpartition?: string | null }[], caller: string, owner = ''):
+    Observable<CompressSubmit> {
+    return this.api.post<CompressSubmit>(API.oracle.compressRun(db),
+      { table, owner, compress_type: compressType, targets, caller });
   }
 
   /** Section 7 — session inventory filtered by state (summary carries full per-state counts). */
@@ -205,3 +233,32 @@ export interface ActionStatus {
   error?: string;
   message?: string;
 }
+
+// --- Object Compress Activity ----------------------------------------------
+/** Partitioning shape of a searched table + the compression types the UI should offer. */
+export interface CompressInfo {
+  status?: string;
+  owner: string;
+  table: string;
+  found: boolean;
+  partitioned: boolean;
+  composite: boolean;
+  partitioning_type?: string | null;
+  subpartitioning_type?: string | null;
+  compress_types: string[];
+}
+
+export interface CompressPartition { partition_name: string; partition_position: number; }
+export interface CompressSubpartition {
+  partition_name: string; subpartition_name: string; subpartition_position: number;
+}
+
+/** One submitted (or failed) compress target from `compress/run`. */
+export interface CompressSubmitResult {
+  partition: string;
+  subpartition?: string | null;
+  action_id?: number;
+  state?: string;
+  error?: string;
+}
+export interface CompressSubmit { status?: string; submitted: CompressSubmitResult[]; message: string; }

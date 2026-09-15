@@ -30,6 +30,12 @@ import config_loader
 # bounds the CONNECT so a dead listener fails fast; the acquire timeout bounds waiting for a pooled
 # connection. See DEPLOYMENT.md "Concurrency, workers & timeouts".
 DB_CALL_TIMEOUT_MS = int(os.getenv("DB_CALL_TIMEOUT_MS", "60000") or 0)
+# The OCC "Top segments" read scans dba_segments + dba_tab_subpartitions (heavy data-dictionary views)
+# and can legitimately run longer than a normal query on a large schema. Give it its OWN, larger ceiling
+# so a slow-but-valid scan RETURNS data instead of being cancelled at DB_CALL_TIMEOUT_MS (which surfaces
+# as "no data returned"). 0 = no limit. The durable fix for slowness is gathering data-dictionary +
+# fixed-object stats on the DB (see fetch_top_segments docstring) — this only stops the premature cancel.
+TOPSEG_CALL_TIMEOUT_MS = int(os.getenv("OCC_TOPSEG_TIMEOUT_MS", "180000") or 0)
 DB_TCP_CONNECT_TIMEOUT_S = int(os.getenv("DB_TCP_CONNECT_TIMEOUT_S", "5") or 0)
 DB_ACQUIRE_TIMEOUT_S = int(os.getenv("DB_ACQUIRE_TIMEOUT_S", "5") or 0)
 
@@ -217,11 +223,19 @@ def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int)
     """Four queries on one connection → {tables, stats, partitions, subpartitions}, all scoped to the
     top-N table names so the scans never touch the whole schema. The API assembles the 3-level tree
     (Table → Partition → Subpartition). Composite tables keep no bytes at the partition level, so a
-    partition's size is rolled up from its subpartition segments (via dba_tab_subpartitions)."""
+    partition's size is rolled up from its subpartition segments (via dba_tab_subpartitions).
+
+    PERFORMANCE: these read data-dictionary views (dba_segments / dba_tab_subpartitions). If this is
+    slow / times out, the usual root cause is STALE dictionary + fixed-object statistics — gather them
+    on the DB (one-off, huge impact):
+        EXEC DBMS_STATS.GATHER_DICTIONARY_STATS;
+        EXEC DBMS_STATS.GATHER_FIXED_OBJECTS_STATS;
+    This read also uses its own longer timeout (TOPSEG_CALL_TIMEOUT_MS / OCC_TOPSEG_TIMEOUT_MS) so a
+    heavy-but-valid scan returns instead of being cancelled at the default DB_CALL_TIMEOUT_MS."""
     connection = None
     cursor = None
     try:
-        connection = connect(db_config)
+        connection = connect(db_config, call_timeout_ms=TOPSEG_CALL_TIMEOUT_MS)
         cursor = connection.cursor()
 
         # 1) Top-N tables by total data-segment bytes.
@@ -882,6 +896,16 @@ def gather_object_stats(db_config: Any, *, owner: str, table: str, requested_by:
     return _occ_submit(db_config, "ols_util.occ_submit_gather", [owner, table, requested_by])
 
 
+def compress_object(db_config: Any, *, owner: str, table: str, partition: str,
+                    subpartition: str | None, compress_type: str, requested_by: str) -> int:
+    """**Submit** a compression (segment MOVE) of ONE partition or subpartition as a background job via
+    ``ols_util.occ_submit_compress`` and return the ``action_id`` (does NOT wait — a partition move can
+    run for a long time; the UI polls its status). ``subpartition`` is None for a partition-level move.
+    The proc maps ``compress_type`` to the storage clause and runs the DDL. PRIVILEGED conn."""
+    return _occ_submit(db_config, "ols_util.occ_submit_compress",
+                       [owner, table, partition, subpartition, compress_type, requested_by])
+
+
 def _occ_submit(db_config: Any, proc: str, args: list) -> int:
     """Call one of the occ_submit_* procs (positional binds + a trailing NUMBER OUT action_id) and
     return the generated action_id. The proc inserts a RUNNING row and creates the background job."""
@@ -910,7 +934,8 @@ def _occ_submit(db_config: Any, proc: str, args: list) -> int:
 
 
 _OCC_ACTION_SELECT = """
-    SELECT action_id, action_type, object_owner, object_name, method, requested_by, status,
+    SELECT action_id, action_type, object_owner, object_name, partition_name, subpartition_name,
+           method, requested_by, status,
            TO_CHAR(submitted_on, 'DD-Mon HH24:MI:SS') AS submitted_on,
            TO_CHAR(finished_on, 'DD-Mon HH24:MI:SS')  AS finished_on,
            duration_secs, error_text
@@ -945,6 +970,117 @@ def fetch_occ_actions(db_config: Any, limit: int = 50) -> list[dict]:
         cursor = connection.cursor()
         cursor.execute(_OCC_ACTION_SELECT + " ORDER BY submitted_on DESC FETCH FIRST :n ROWS ONLY",
                        {"n": int(limit)})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+# =============================================================================
+# Object Compress Activity — partition / subpartition lookup for the compress UI
+# (reads dba_part_tables / dba_tab_partitions / dba_tab_subpartitions). The MOVE
+# itself is a privileged async action (compress_object → ols_util.occ_submit_compress).
+# =============================================================================
+
+def fetch_object_partitioning(db_config: Any, owner: str, table: str) -> dict:
+    """Whether ``owner.table`` exists and how it's partitioned → drives which dropdowns the UI shows:
+    {found, partitioned, composite, partitioning_type, subpartitioning_type}."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("SELECT partitioned FROM dba_tables WHERE owner = :o AND table_name = :t",
+                       {"o": owner, "t": table})
+        row = cursor.fetchone()
+        if not row:
+            return {"found": False, "partitioned": False, "composite": False,
+                    "partitioning_type": None, "subpartitioning_type": None}
+        if (row[0] or "NO") != "YES":
+            return {"found": True, "partitioned": False, "composite": False,
+                    "partitioning_type": None, "subpartitioning_type": None}
+        cursor.execute("""SELECT partitioning_type, subpartitioning_type
+                            FROM dba_part_tables WHERE owner = :o AND table_name = :t""",
+                       {"o": owner, "t": table})
+        p = cursor.fetchone()
+        ptype = p[0] if p else None
+        stype = p[1] if p else None
+        composite = bool(stype and stype != "NONE")
+        return {"found": True, "partitioned": True, "composite": composite,
+                "partitioning_type": ptype, "subpartitioning_type": stype}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def _name_filter(search: str | None) -> tuple[str, dict]:
+    """A LIKE clause for a partition/subpartition name search. A search with a wildcard (``%``) is used
+    verbatim (e.g. ``%2025%``); otherwise it's a case-insensitive 'contains' match. Returns ('', {}) when
+    empty. The clause references the alias-free column ``name_col`` the caller substitutes."""
+    s = (search or "").strip()
+    if not s:
+        return "", {}
+    pat = s if "%" in s else f"%{s}%"
+    return " AND UPPER({col}) LIKE UPPER(:pat) ", {"pat": pat}
+
+
+def fetch_partitions(db_config: Any, owner: str, table: str, search: str | None, limit: int) -> list[dict]:
+    """Partitions of ``owner.table`` for the dropdown: newest first (highest partition_position). With no
+    ``search`` → the latest ``limit``; with a search → matching names (wildcard or 'contains'), capped at
+    ``limit``. → [{partition_name, partition_position, high_value}]."""
+    clause, binds = _name_filter(search)
+    clause = clause.format(col="partition_name")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"""
+            SELECT partition_name, partition_position
+              FROM dba_tab_partitions
+             WHERE table_owner = :o AND table_name = :t {clause}
+             ORDER BY partition_position DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"o": owner, "t": table, "lim": int(limit), **binds})
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def fetch_subpartitions(db_config: Any, owner: str, table: str, partitions: list[str],
+                        search: str | None, limit: int) -> list[dict]:
+    """Subpartitions belonging to the given parent ``partitions`` of ``owner.table`` (composite tables).
+    Newest first; no ``search`` → the latest ``limit``, else matching names capped at ``limit``.
+    → [{partition_name, subpartition_name, subpartition_position}]. Empty ``partitions`` → []."""
+    parents = [p for p in (partitions or []) if p]
+    if not parents:
+        return []
+    clause, binds = _name_filter(search)
+    clause = clause.format(col="subpartition_name")
+    ph = ", ".join(f":p{i}" for i in range(len(parents)))
+    pbinds = {f"p{i}": p for i, p in enumerate(parents)}
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"""
+            SELECT partition_name, subpartition_name, subpartition_position
+              FROM dba_tab_subpartitions
+             WHERE table_owner = :o AND table_name = :t
+               AND partition_name IN ({ph}) {clause}
+             ORDER BY partition_name, subpartition_position DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"o": owner, "t": table, "lim": int(limit), **pbinds, **binds})
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
     finally:

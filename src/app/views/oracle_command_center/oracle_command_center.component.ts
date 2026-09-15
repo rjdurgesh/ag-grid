@@ -13,7 +13,9 @@ import {
   DynAction, DynColumn, DynTable, OracleTarget, SessionDetail, SessionFilter, SpaceSummary,
   SqlFix, SqlMonitor, SqlOverview, SqlPlanAnalysis, SqlPlanText, SqlPlansSummary, SqlTimeline
 } from '../../shared/oracle-models';
-import { OracleCcService } from './oracle-cc.service';
+import {
+  OracleCcService, CompressInfo, CompressPartition, CompressSubpartition, CompressSubmitResult
+} from './oracle-cc.service';
 
 /** Auto-refresh choices (minutes); default comes from environment.ts. */
 const REFRESH_INTERVALS = [5, 10, 15, 30] as const;
@@ -121,6 +123,33 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly topSegLoading = signal(false);
   readonly topSegError = signal(false);
 
+  // --- Section 2b: Object Compress Activity ---
+  readonly cmpTable = signal('');                              // table search input
+  readonly cmpInfo = signal<CompressInfo | null>(null);       // partitioning shape (dropdowns depend on it)
+  readonly cmpInfoLoading = signal(false);
+  readonly cmpInfoMsg = signal('');                           // "not found" / "not partitioned" note
+  readonly cmpType = signal('');                              // chosen compression type
+  readonly cmpPartSearch = signal('');
+  readonly cmpPartitions = signal<CompressPartition[]>([]);
+  readonly cmpPartLoading = signal(false);
+  readonly cmpSelParts = signal<Set<string>>(new Set());      // selected partition names (multi)
+  readonly cmpSubSearch = signal('');
+  readonly cmpSubparts = signal<CompressSubpartition[]>([]);
+  readonly cmpSubLoading = signal(false);
+  readonly cmpSelSubs = signal<Set<string>>(new Set());       // selected subpartition names (multi)
+  readonly cmpSubmitting = signal(false);
+  readonly cmpSubmitted = signal<CompressSubmitResult[]>([]);
+  readonly cmpModalOpen = signal(false);                      // "Show all subpartitions" picker modal
+  /** How many subpartitions to show inline before the "Show all" button (the rest live in the modal). */
+  readonly cmpSubPreview = 4;
+  readonly cmpAllSubsSelected = computed(() =>
+    this.cmpSubparts().length > 0 && this.cmpSelSubs().size >= this.cmpSubparts().length);
+  /** Compress is WRITE on the current DB (per-DB RBAC) — same gate as Kill. READ-only DBs hide the button. */
+  readonly canCompress = computed(() => this.rbac.dbWritable(this.activeKey()));
+  /** How many objects the current selection will compress (subpartitions for composite, else partitions). */
+  readonly cmpTargetCount = computed(() =>
+    this.cmpInfo()?.composite ? this.cmpSelSubs().size : this.cmpSelParts().size);
+
   // --- Section 3: top index consumers ---
   readonly topIdx = signal<DynTable | null>(null);
   readonly topIdxLoading = signal(false);
@@ -195,8 +224,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
 
   /** Collapse state per section (all expanded by default). */
   readonly collapsed = signal<Record<string, boolean>>({
-    space: false, top: false, topidx: false, idxhealth: false, locks: false, blocking: false,
-    temp: false, mviews: false, actions: false, sessions: false, sqli: false
+    space: false, top: false, compress: false, topidx: false, idxhealth: false, locks: false,
+    blocking: false, temp: false, mviews: false, actions: false, sessions: false, sqli: false
   });
 
   ngOnInit(): void {
@@ -248,6 +277,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     // because the loaders don't clear; only a DB switch resets here.)
     this.space.set(null);
     this.topSeg.set(null);
+    this.resetCompress();   // the compress search/selection belonged to the old DB
     this.topIdx.set(null);
     this.idxHealth.set(null);
     this.locks.set(null);
@@ -514,7 +544,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
    * switches DB, polling stops. Long ops that outrun the cap fall back to the history panel.
    */
   private pollAction(db: string, actionId: number | undefined, label: string, opTitle: string,
-                     dbName: string, kind: 'mv' | 'stats'): void {
+                     dbName: string, kind: 'mv' | 'stats' | 'compress'): void {
     if (actionId == null || db !== this.activeKey()) {
       return;
     }
@@ -555,6 +585,164 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
       title: `${title} failed`,
       message: `${subject} on ${dbName}: ${detail}\n\nPlease reach out to OLS Team on ${this.supportEmail}.`,
       userId: environment.username
+    });
+  }
+
+  // --- Section 2b: Object Compress Activity --------------------------------
+  /** Clear the compress search + all selections (on DB switch or a fresh table search). */
+  private resetCompress(): void {
+    this.cmpInfo.set(null); this.cmpInfoMsg.set('');
+    this.cmpPartitions.set([]); this.cmpSelParts.set(new Set());
+    this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set());
+    this.cmpPartSearch.set(''); this.cmpSubSearch.set(''); this.cmpSubmitted.set([]);
+  }
+
+  /** Look up the searched table: exists? partitioned? composite? → decides which dropdowns show. */
+  checkCompressTable(): void {
+    const db = this.activeKey();
+    const table = this.cmpTable().trim();
+    if (!db || !table) { return; }
+    this.resetCompress();
+    this.cmpInfoLoading.set(true);
+    this.svc.compressObjectInfo(db, table).subscribe({
+      next: (info) => {
+        this.cmpInfoLoading.set(false);
+        if (!info.found) {
+          this.cmpInfoMsg.set(`Table ${info.owner}.${table.toUpperCase()} was not found on this database.`);
+          return;
+        }
+        if (!info.partitioned) {
+          this.cmpInfoMsg.set(`${info.owner}.${info.table} is not partitioned — there are no partitions to compress here.`);
+          return;
+        }
+        this.cmpInfo.set(info);
+        if (info.compress_types.length && !info.compress_types.includes(this.cmpType())) {
+          this.cmpType.set(info.compress_types[0]);
+        }
+        this.loadCompressPartitions();
+      },
+      error: () => { this.cmpInfoLoading.set(false); this.cmpInfoMsg.set('Could not look up that table — try again.'); }
+    });
+  }
+
+  /** (Re)load the partition dropdown — latest 10, or names matching the partition search. */
+  loadCompressPartitions(): void {
+    const db = this.activeKey();
+    const info = this.cmpInfo();
+    if (!db || !info) { return; }
+    this.cmpPartLoading.set(true);
+    this.svc.compressPartitions(db, info.table, this.cmpPartSearch().trim(), 12, info.owner).subscribe({
+      next: (r) => { this.cmpPartitions.set(r.rows ?? []); this.cmpPartLoading.set(false); },
+      error: () => { this.cmpPartitions.set([]); this.cmpPartLoading.set(false); }
+    });
+  }
+
+  isPartSelected(name: string): boolean { return this.cmpSelParts().has(name); }
+
+  togglePartition(name: string): void {
+    const s = new Set(this.cmpSelParts());
+    if (s.has(name)) { s.delete(name); } else { s.add(name); }
+    this.cmpSelParts.set(s);
+    if (this.cmpInfo()?.composite) { this.loadCompressSubpartitions(); }   // composite → refresh the subpartition list
+  }
+
+  /** (Re)load subpartitions for the selected parent partitions (composite tables), latest or by search. */
+  loadCompressSubpartitions(): void {
+    const db = this.activeKey();
+    const info = this.cmpInfo();
+    if (!db || !info || !info.composite) { return; }
+    const parents = [...this.cmpSelParts()];
+    if (!parents.length) { this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set()); return; }
+    this.cmpSubLoading.set(true);
+    this.svc.compressSubpartitions(db, info.table, parents, this.cmpSubSearch().trim(), 200, info.owner).subscribe({
+      next: (r) => {
+        const rows = r.rows ?? [];
+        this.cmpSubparts.set(rows);
+        const present = new Set(rows.map((x) => x.subpartition_name));
+        this.cmpSelSubs.set(new Set([...this.cmpSelSubs()].filter((x) => present.has(x))));  // drop gone selections
+        this.cmpSubLoading.set(false);
+      },
+      error: () => { this.cmpSubparts.set([]); this.cmpSubLoading.set(false); }
+    });
+  }
+
+  isSubSelected(name: string): boolean { return this.cmpSelSubs().has(name); }
+
+  toggleSubpartition(name: string): void {
+    const s = new Set(this.cmpSelSubs());
+    if (s.has(name)) { s.delete(name); } else { s.add(name); }
+    this.cmpSelSubs.set(s);
+  }
+
+  /** Clear the partition selection (and, on composite tables, its now-orphaned subpartitions). */
+  clearParts(): void {
+    this.cmpSelParts.set(new Set());
+    if (this.cmpInfo()?.composite) { this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set()); }
+  }
+
+  /** Clear just the subpartition selection (keeps the loaded list). */
+  clearSubs(): void { this.cmpSelSubs.set(new Set()); }
+
+  /** Select every currently-loaded subpartition (the modal's "Select all"). */
+  selectAllSubs(): void { this.cmpSelSubs.set(new Set(this.cmpSubparts().map((x) => x.subpartition_name))); }
+
+  openSubModal(): void { this.cmpModalOpen.set(true); }
+  closeSubModal(): void { this.cmpModalOpen.set(false); }
+
+  /** The (partition, subpartition?) list the current selection will compress. */
+  private compressTargets(): { partition: string; subpartition?: string | null }[] {
+    const info = this.cmpInfo();
+    if (!info) { return []; }
+    if (info.composite) {
+      const byName = new Map(this.cmpSubparts().map((x) => [x.subpartition_name, x]));
+      const out: { partition: string; subpartition?: string | null }[] = [];
+      for (const sp of this.cmpSelSubs()) {
+        const row = byName.get(sp);
+        if (row) { out.push({ partition: row.partition_name, subpartition: row.subpartition_name }); }
+      }
+      return out;
+    }
+    return [...this.cmpSelParts()].map((p) => ({ partition: p }));
+  }
+
+  /** Confirm, then submit compression (segment MOVE) for each selected target as a background job. */
+  async runCompress(): Promise<void> {
+    const db = this.activeKey();
+    const info = this.cmpInfo();
+    if (!db || !info || !this.canCompress()) { return; }
+    const targets = this.compressTargets();
+    if (!targets.length) { this.notify(false, 'Select at least one partition or subpartition to compress.'); return; }
+    const dbName = this.activeTarget()?.instance ?? db;
+    const ok = await this.confirm.ask({
+      title: 'Compress objects',
+      message: `Compress ${targets.length} object(s) of ${info.owner}.${info.table} on ${dbName} using ${this.cmpType()}?\n\n`
+        + 'Each partition/subpartition is rebuilt (MOVE) so existing data is compressed. This is heavy, can'
+        + ' run for a long time, and runs in the background — track it in Action History.',
+      confirmLabel: 'Compress', cancelLabel: 'Cancel', tone: 'danger'
+    });
+    if (!ok) { return; }
+    this.cmpSubmitting.set(true);
+    this.cmpSubmitted.set([]);
+    this.svc.compressRun(db, info.table, this.cmpType(), targets, this.actor(), info.owner).subscribe({
+      next: (res) => {
+        this.cmpSubmitting.set(false);
+        this.cmpSubmitted.set(res.submitted ?? []);
+        this.notify(true, res.message || 'Compression submitted — running in the background.');
+        this.loadActions();
+        for (const s of res.submitted ?? []) {
+          if (s.action_id) {
+            const label = `${info.table}:${s.subpartition || s.partition}`;
+            this.pollAction(db, s.action_id, label, 'Compress', dbName, 'compress');
+          }
+        }
+        // Consume the selection so the checkboxes don't linger as if still pending (the submitted
+        // list + Action History now track them). The table/type/partition list stay, ready for another run.
+        this.cmpSelParts.set(new Set());
+        this.cmpSelSubs.set(new Set());
+        this.cmpSubparts.set([]);
+        this.cmpModalOpen.set(false);
+      },
+      error: (err) => { this.cmpSubmitting.set(false); this.showActionError('Compress', info.table, dbName, err); }
     });
   }
 

@@ -230,11 +230,13 @@ _DUMMY_SEQ = [1000]
 _DUMMY_RUN_SECS = 6.0
 
 
-def _dummy_submit(t: OracleTarget, action_type: str, owner: str, obj: str, method: str | None, by: str) -> int:
+def _dummy_submit(t: OracleTarget, action_type: str, owner: str, obj: str, method: str | None, by: str,
+                  partition: str | None = None, subpartition: str | None = None) -> int:
     _DUMMY_SEQ[0] += 1
     aid = _DUMMY_SEQ[0]
     _DUMMY_ACTIONS[f"{t.key}|{aid}"] = {
         "action_id": aid, "action_type": action_type, "object_owner": owner, "object_name": obj,
+        "partition_name": partition, "subpartition_name": subpartition,
         "method": method, "requested_by": by or "dev.user", "submitted": time.time(),
     }
     return aid
@@ -251,8 +253,10 @@ def _dummy_action_row(a: dict) -> dict:
         status, dur, err = "SUCCESS", int(elapsed), None
     ts = time.strftime("%d-%b %H:%M:%S", time.localtime(a["submitted"]))
     return {"action_id": a["action_id"], "action_type": a["action_type"], "object_owner": a["object_owner"],
-            "object_name": a["object_name"], "method": a["method"], "requested_by": a["requested_by"],
-            "status": status, "submitted_on": ts, "finished_on": None, "duration_secs": dur, "error_text": err}
+            "object_name": a["object_name"], "partition_name": a.get("partition_name"),
+            "subpartition_name": a.get("subpartition_name"), "method": a["method"],
+            "requested_by": a["requested_by"], "status": status, "submitted_on": ts, "finished_on": None,
+            "duration_secs": dur, "error_text": err}
 
 
 def mview_refresh_dummy(t: OracleTarget, body: MviewRefreshRequest, code: str) -> dict:
@@ -274,6 +278,74 @@ def action_status_dummy(t: OracleTarget, action_id: int) -> dict:
     if not a:
         return {"status": "success", "state": "UNKNOWN", "action_id": action_id}
     return {"status": "success", **_action_view(_dummy_action_row(a))}
+
+
+# --- Object Compress Activity (dummy) ----------------------------------------
+def _dummy_like(name: str, search: str | None) -> bool:
+    """Mirror the backend name filter: a search with '%' is a wildcard pattern (%2025% → contains 2025);
+    otherwise a plain case-insensitive 'contains' match."""
+    s = (search or "").strip()
+    if not s:
+        return True
+    if "%" in s:
+        import re
+        rx = "^" + "".join(".*" if ch == "%" else re.escape(ch) for ch in s) + "$"
+        return re.match(rx, name, re.IGNORECASE) is not None
+    return s.upper() in name.upper()
+
+
+def _dummy_partition_names(table: str) -> list[str]:
+    """60 monthly partitions, newest first (e.g. SALES_P202612 … back 5 years) — so search/latest-10 is demoable."""
+    names, y, m = [], 2026, 12
+    for _ in range(60):
+        names.append(f"{table}_P{y}{m:02d}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return names
+
+
+def compress_object_info_dummy(owner: str, table: str) -> dict:
+    """Canned partitioning shape. A table name ending in _NP → range/list (no subpartitions) so the
+    partition-only path is demoable; otherwise composite (both dropdowns)."""
+    composite = not table.upper().endswith("_NP")
+    return {"found": True, "partitioned": True, "composite": composite,
+            "partitioning_type": "RANGE", "subpartitioning_type": ("HASH" if composite else "NONE")}
+
+
+def compress_partitions_dummy(table: str, search: str | None, limit: int) -> list[dict]:
+    names = [n for n in _dummy_partition_names(table) if _dummy_like(n, search)]
+    pos = len(names)
+    rows = []
+    for n in names[:limit]:
+        rows.append({"partition_name": n, "partition_position": pos})
+        pos -= 1
+    return rows
+
+
+def compress_subpartitions_dummy(table: str, partitions: list[str], search: str | None, limit: int) -> list[dict]:
+    rows = []
+    for part in (partitions or []):
+        for i, region in enumerate(("APAC", "EMEA", "AMER", "OTHER"), start=1):
+            sp = f"{part}_SP_{region}"
+            if _dummy_like(sp, search):
+                rows.append({"partition_name": part, "subpartition_name": sp, "subpartition_position": i})
+    return rows[:limit]
+
+
+def compress_run_dummy(t: OracleTarget, owner: str, table: str, ctype: str,
+                       targets: list[dict], caller: str) -> dict:
+    submitted = []
+    for tg in targets:
+        part = (tg.get("partition") or "").strip()
+        sub = (tg.get("subpartition") or "").strip() or None
+        if not part:
+            continue
+        aid = _dummy_submit(t, "COMPRESS", owner, table, ctype, caller, partition=part, subpartition=sub)
+        submitted.append({"partition": part, "subpartition": sub, "action_id": aid, "state": "RUNNING"})
+    logger.info("DUMMY compress submit %s on %s.%s (%s) → %s job(s)", ctype, owner, table, t.key, len(submitted))
+    return {"status": "success", "submitted": submitted,
+            "message": f"{len(submitted)} compression job(s) submitted on {t.instance} — running in the background."}
 
 
 def actions_dummy(t: OracleTarget) -> dict:
