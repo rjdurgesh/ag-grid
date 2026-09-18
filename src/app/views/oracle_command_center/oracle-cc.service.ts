@@ -245,6 +245,7 @@ export interface CompressInfo {
   composite: boolean;
   partitioning_type?: string | null;
   subpartitioning_type?: string | null;
+  size_gb?: number;
   compress_types: string[];
 }
 

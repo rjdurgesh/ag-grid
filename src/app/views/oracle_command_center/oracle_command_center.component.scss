@@ -595,6 +595,13 @@ select.occ-cmp__in { flex-basis: 220px; width: 220px; }
 .occ-cmp__mhead .occ-cmp__x { margin-left: auto; border: 0; background: none; cursor: pointer; font-size: 20px; line-height: 1; color: var(--cui-secondary-color); }
 .occ-cmp__mtools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--occ-line); }
 .occ-cmp__mtools .occ-cmp__count { margin-left: auto; }
-.occ-cmp__mbody { padding: 8px 16px; overflow-y: auto; }
+/* Both scrollbars so a partition with 50+ (or very wide) subpartitions never breaks the layout:
+   the body flexes to the space left by head/tools/foot and scrolls vertically AND horizontally. */
+.occ-cmp__mbody { padding: 8px 16px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .occ-cmp__mbody .occ-cmp__list { max-height: none; border: 0; padding: 0; }
 .occ-cmp__mfoot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--occ-line); }
+
+/* Segment-size tag + per-partition subpartition blocks */
+.occ-cmp__tag--sz { background: color-mix(in srgb, var(--occ-ok) 15%, transparent); color: var(--occ-ok); }
+.occ-cmp__pick--sub { border-style: dashed; margin-left: 10px; }
+.occ-cmp__pick--sub .occ-cmp__pickhead code { font-family: var(--occ-mono); background: var(--occ-accent-soft); padding: 0 5px; border-radius: 4px; }

@@ -1122,3 +1122,6 @@
   color: var(--cui-secondary-color, #6c757d);
   margin: 0;
 }
+
+/* Lock page scroll while the OCC subpartition picker modal is open (portaled to <body>). */
+body.occ-modal-lock { overflow: hidden; }

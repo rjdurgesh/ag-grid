@@ -220,18 +220,23 @@ def fetch_space(db_config: Any) -> list[dict]:
 # =============================================================================
 
 def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int) -> dict:
-    """Four queries on one connection → {tables, stats, partitions, subpartitions}, all scoped to the
-    top-N table names so the scans never touch the whole schema. The API assembles the 3-level tree
-    (Table → Partition → Subpartition). Composite tables keep no bytes at the partition level, so a
-    partition's size is rolled up from its subpartition segments (via dba_tab_subpartitions).
+    """Return {tables, stats, partitions, subpartitions} for the 3-level tree (Table → Partition →
+    Subpartition), all scoped to the top-N table names so the scans never touch the whole schema.
+    Composite tables keep no bytes at the partition level, so a partition's size is rolled up from its
+    subpartition segments (mapped to their parent via dba_tab_subpartitions).
 
-    PERFORMANCE: these read data-dictionary views (dba_segments / dba_tab_subpartitions). If this is
-    slow / times out, the usual root cause is STALE dictionary + fixed-object statistics — gather them
-    on the DB (one-off, huge impact):
+    PERFORMANCE (tuned 2026-09-18): the partition/subpartition sizes no longer JOIN dba_tab_subpartitions
+    to dba_segments (two heavy dictionary views) nor use window functions — that join was the slow part.
+    It now runs TWO cheap scoped scans (a scoped dba_segments GROUP BY + a scoped dba_tab_subpartitions
+    scan) and rolls up / picks the top-N children in Python. The only remaining full scan is query 1
+    (top-N tables = an owner-wide dba_segments aggregation, unavoidable for an exact size ranking).
+
+    If it is STILL slow, the root cause is almost always STALE data-dictionary + fixed-object stats —
+    gather them on the DB (one-off, dramatic impact on ALL dba_segments/dba_tab_subpartitions queries):
         EXEC DBMS_STATS.GATHER_DICTIONARY_STATS;
         EXEC DBMS_STATS.GATHER_FIXED_OBJECTS_STATS;
-    This read also uses its own longer timeout (TOPSEG_CALL_TIMEOUT_MS / OCC_TOPSEG_TIMEOUT_MS) so a
-    heavy-but-valid scan returns instead of being cancelled at the default DB_CALL_TIMEOUT_MS."""
+    A longer timeout (TOPSEG_CALL_TIMEOUT_MS / OCC_TOPSEG_TIMEOUT_MS) is the safety net so a heavy-but-
+    valid scan returns instead of being cancelled at the default DB_CALL_TIMEOUT_MS."""
     connection = None
     cursor = None
     try:
@@ -272,56 +277,68 @@ def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int)
         cols = [c[0].lower() for c in cursor.description]
         stats = [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-        # 3) Top-N partitions per table. A partition's bytes = its own TABLE PARTITION segment
-        #    (range/list tables) OR the roll-up of its TABLE SUBPARTITION segments (composite tables,
-        #    where the partition itself has no segment) — hence the UNION ALL. dba_tab_subpartitions
-        #    maps each subpartition to its parent partition (dba_segments has no parent-partition col).
+        # 3) + 4) Partition / subpartition sizes for the top-N tables — TUNED: no
+        #    dba_tab_subpartitions↔dba_segments JOIN and no window functions (those two joined
+        #    dictionary views were the slow part). Instead: TWO cheap scoped scans, rolled up in Python.
+        #
+        #    A) One scoped GROUP-BY on dba_segments → per-segment sizes for the top-N tables. For a
+        #       'TABLE PARTITION' segment partition_name IS the partition (range/list); for a
+        #       'TABLE SUBPARTITION' segment partition_name IS the *subpartition* name (Oracle quirk).
         cursor.execute(f"""
-            SELECT table_name, partition_name, size_gb FROM (
-                SELECT table_name, partition_name,
-                       ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb,
-                       ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY SUM(bytes) DESC) AS rn
-                  FROM (
-                    SELECT segment_name AS table_name, partition_name, bytes
-                      FROM dba_segments
-                     WHERE owner = :owner AND segment_type = 'TABLE PARTITION'
-                       AND segment_name IN ({ph})
-                    UNION ALL
-                    SELECT sp.table_name, sp.partition_name, seg.bytes
-                      FROM dba_tab_subpartitions sp
-                      JOIN dba_segments seg
-                        ON seg.owner = sp.table_owner AND seg.segment_name = sp.table_name
-                       AND seg.partition_name = sp.subpartition_name
-                       AND seg.segment_type = 'TABLE SUBPARTITION'
-                     WHERE sp.table_owner = :owner AND sp.table_name IN ({ph})
-                  )
-                 GROUP BY table_name, partition_name
-            ) WHERE rn <= :lim
-            ORDER BY table_name, size_gb DESC
-        """, {"owner": owner, "lim": child_limit, **name_binds})
-        cols = [c[0].lower() for c in cursor.description]
-        partitions = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            SELECT segment_name AS table_name, partition_name, segment_type, SUM(bytes) AS bytes
+              FROM dba_segments
+             WHERE owner = :owner
+               AND segment_type IN ('TABLE PARTITION','TABLE SUBPARTITION')
+               AND segment_name IN ({ph})
+             GROUP BY segment_name, partition_name, segment_type
+        """, {"owner": owner, **name_binds})
+        seg_rows = cursor.fetchall()
 
-        # 4) Top-N subpartitions per partition (composite tables only). dba_segments' partition_name
-        #    on a TABLE SUBPARTITION segment IS the subpartition name; the join gives the parent.
+        #    B) One scoped scan of dba_tab_subpartitions → subpartition→parent-partition map (the only
+        #       place that mapping lives; dba_segments has no parent-partition column). No join.
         cursor.execute(f"""
-            SELECT table_name, partition_name, subpartition_name, size_gb FROM (
-                SELECT sp.table_name, sp.partition_name, sp.subpartition_name,
-                       ROUND(SUM(seg.bytes)/1024/1024/1024, 2) AS size_gb,
-                       ROW_NUMBER() OVER (PARTITION BY sp.table_name, sp.partition_name
-                                          ORDER BY SUM(seg.bytes) DESC) AS rn
-                  FROM dba_tab_subpartitions sp
-                  JOIN dba_segments seg
-                    ON seg.owner = sp.table_owner AND seg.segment_name = sp.table_name
-                   AND seg.partition_name = sp.subpartition_name
-                   AND seg.segment_type = 'TABLE SUBPARTITION'
-                 WHERE sp.table_owner = :owner AND sp.table_name IN ({ph})
-                 GROUP BY sp.table_name, sp.partition_name, sp.subpartition_name
-            ) WHERE rn <= :lim
-            ORDER BY table_name, partition_name, size_gb DESC
-        """, {"owner": owner, "lim": child_limit, **name_binds})
-        cols = [c[0].lower() for c in cursor.description]
-        subpartitions = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            SELECT table_name, subpartition_name, partition_name
+              FROM dba_tab_subpartitions
+             WHERE table_owner = :owner AND table_name IN ({ph})
+        """, {"owner": owner, **name_binds})
+        parent_of = {(r[0], r[1]): r[2] for r in cursor.fetchall()}   # (table, subpartition) -> parent partition
+
+        #    Roll up in Python: partition bytes = own TABLE PARTITION segment (range/list) OR the sum of
+        #    its TABLE SUBPARTITION segments (composite); subpartition bytes per (table, parent, subpart).
+        _GB = 1024.0 * 1024.0 * 1024.0
+        part_bytes: dict = {}   # (table, partition) -> bytes
+        sub_bytes: dict = {}    # (table, partition, subpartition) -> bytes
+        for seg_table, seg_partname, seg_type, seg_b in seg_rows:
+            b = float(seg_b or 0)
+            if seg_type == "TABLE SUBPARTITION":
+                parent = parent_of.get((seg_table, seg_partname))
+                if parent is None:
+                    continue   # subpartition with no dictionary parent (shouldn't happen) — skip
+                sub_bytes[(seg_table, parent, seg_partname)] = sub_bytes.get((seg_table, parent, seg_partname), 0.0) + b
+                part_bytes[(seg_table, parent)] = part_bytes.get((seg_table, parent), 0.0) + b
+            else:  # TABLE PARTITION — the partition's own segment (range/list tables)
+                part_bytes[(seg_table, seg_partname)] = part_bytes.get((seg_table, seg_partname), 0.0) + b
+
+        # Keep the top `child_limit` partitions per table (by size), rounded to GB — same shape as before.
+        _pt: dict = {}
+        for (tbl, pname), b in part_bytes.items():
+            _pt.setdefault(tbl, []).append((pname, b))
+        partitions = []
+        for tbl, lst in _pt.items():
+            lst.sort(key=lambda x: x[1], reverse=True)
+            for pname, b in lst[:child_limit]:
+                partitions.append({"table_name": tbl, "partition_name": pname, "size_gb": round(b / _GB, 2)})
+
+        # Top `child_limit` subpartitions per partition (composite tables only).
+        _sp: dict = {}
+        for (tbl, pname, spname), b in sub_bytes.items():
+            _sp.setdefault((tbl, pname), []).append((spname, b))
+        subpartitions = []
+        for (tbl, pname), lst in _sp.items():
+            lst.sort(key=lambda x: x[1], reverse=True)
+            for spname, b in lst[:child_limit]:
+                subpartitions.append({"table_name": tbl, "partition_name": pname,
+                                      "subpartition_name": spname, "size_gb": round(b / _GB, 2)})
 
         return {"tables": tables, "stats": stats, "partitions": partitions, "subpartitions": subpartitions}
     finally:
@@ -998,10 +1015,16 @@ def fetch_object_partitioning(db_config: Any, owner: str, table: str) -> dict:
         row = cursor.fetchone()
         if not row:
             return {"found": False, "partitioned": False, "composite": False,
-                    "partitioning_type": None, "subpartitioning_type": None}
+                    "partitioning_type": None, "subpartitioning_type": None, "size_gb": 0.0}
+        # Total segment size of the table (all its TABLE/partition/subpartition segments).
+        cursor.execute("""SELECT ROUND(SUM(bytes)/1024/1024/1024, 2)
+                            FROM dba_segments WHERE owner = :o AND segment_name = :t""",
+                       {"o": owner, "t": table})
+        srow = cursor.fetchone()
+        size_gb = float(srow[0]) if srow and srow[0] is not None else 0.0
         if (row[0] or "NO") != "YES":
             return {"found": True, "partitioned": False, "composite": False,
-                    "partitioning_type": None, "subpartitioning_type": None}
+                    "partitioning_type": None, "subpartitioning_type": None, "size_gb": size_gb}
         cursor.execute("""SELECT partitioning_type, subpartitioning_type
                             FROM dba_part_tables WHERE owner = :o AND table_name = :t""",
                        {"o": owner, "t": table})
@@ -1010,7 +1033,7 @@ def fetch_object_partitioning(db_config: Any, owner: str, table: str) -> dict:
         stype = p[1] if p else None
         composite = bool(stype and stype != "NONE")
         return {"found": True, "partitioned": True, "composite": composite,
-                "partitioning_type": ptype, "subpartitioning_type": stype}
+                "partitioning_type": ptype, "subpartitioning_type": stype, "size_gb": size_gb}
     finally:
         if cursor:
             cursor.close()

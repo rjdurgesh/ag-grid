@@ -171,6 +171,7 @@
               <b>{{ info.owner }}.{{ info.table }}</b>
               <span class="occ-cmp__tag">{{ info.partitioning_type }} partitioned</span>
               @if (info.composite) { <span class="occ-cmp__tag occ-cmp__tag--c">composite · {{ info.subpartitioning_type }} subpartitions</span> }
+              <span class="occ-cmp__tag occ-cmp__tag--sz">Segment Size · {{ info.size_gb }} GB</span>
             </div>
 
             <!-- 2. Compression type -->
@@ -210,40 +211,36 @@
               }
             </div>
 
-            <!-- 4. Subpartitions (composite only; populated from the selected partitions) -->
+            <!-- 4. Subpartitions (composite only) — ONE block per selected partition -->
             @if (info.composite) {
-              <div class="occ-cmp__pick">
-                <div class="occ-cmp__pickhead">
-                  <span>Subpartitions <small>of the selected partition(s)</small></span>
-                  <span class="occ-cmp__headbtns">
-                    <span class="occ-cmp__count">{{ cmpSelSubs().size }} selected</span>
-                    @if (cmpSelSubs().size) { <button type="button" class="occ-cmp__linkbtn" (click)="clearSubs()">Clear</button> }
-                  </span>
-                </div>
-                @if (!cmpSelParts().size) { <div class="occ-empty">Select a partition above to load its subpartitions.</div> }
-                @else {
-                  <div class="occ-cmp__row">
-                    <input class="occ-cmp__in" type="text" placeholder="Search subpartitions"
-                           [value]="cmpSubSearch()" (input)="cmpSubSearch.set($any($event.target).value)"
-                           (keyup.enter)="loadCompressSubpartitions()" autocomplete="off" />
-                    <button type="button" class="occ-cmp__btn" (click)="loadCompressSubpartitions()">Search</button>
+              @if (!cmpSelParts().size) {
+                <div class="occ-cmp__pick"><div class="occ-empty">Select a partition above to load its subpartitions.</div></div>
+              }
+              @for (part of selectedPartitions(); track part) {
+                <div class="occ-cmp__pick occ-cmp__pick--sub">
+                  <div class="occ-cmp__pickhead">
+                    <span>Subpartitions of <code>{{ part }}</code></span>
+                    <span class="occ-cmp__headbtns">
+                      <span class="occ-cmp__count">{{ subsSelectedFor(part) }} selected</span>
+                      @if (subsSelectedFor(part)) { <button type="button" class="occ-cmp__linkbtn" (click)="clearSubsFor(part)">Clear</button> }
+                    </span>
                   </div>
-                  @if (cmpSubLoading()) { <app-loader variant="skeleton" [rows]="2" message="Loading subpartitions…" /> }
-                  @else if (!cmpSubparts().length) { <div class="occ-empty">No subpartitions match.</div> }
+                  @if (isSubLoading(part)) { <app-loader variant="skeleton" [rows]="1" message="Loading subpartitions…" /> }
+                  @else if (!subsFor(part).length) { <div class="occ-empty">No subpartitions.</div> }
                   @else {
-                    <!-- Inline preview: a few that fit; the full list (30-40+) lives in the modal. -->
+                    <!-- Inline preview: a few that fit; the full list lives in this partition's own modal. -->
                     <ul class="occ-cmp__list">
-                      @for (sp of cmpSubparts().slice(0, cmpSubPreview); track sp.subpartition_name) {
-                        <li><label><input type="checkbox" [checked]="isSubSelected(sp.subpartition_name)" (change)="toggleSubpartition(sp.subpartition_name)" />
-                          <span class="occ-cmp__name">{{ sp.subpartition_name }}</span><span class="occ-cmp__pos">{{ sp.partition_name }}</span></label></li>
+                      @for (sp of subsFor(part).slice(0, cmpSubPreview); track sp.subpartition_name) {
+                        <li><label><input type="checkbox" [checked]="isSubSelected(part, sp.subpartition_name)" (change)="toggleSubpartition(part, sp.subpartition_name)" />
+                          <span class="occ-cmp__name">{{ sp.subpartition_name }}</span></label></li>
                       }
                     </ul>
-                    <button type="button" class="occ-cmp__more" (click)="openSubModal()">
-                      {{ cmpSubparts().length > cmpSubPreview ? 'Show all ' + cmpSubparts().length + ' subpartitions →' : 'Open picker (select all / multi-select) →' }}
+                    <button type="button" class="occ-cmp__more" (click)="openSubModal(part)">
+                      {{ subsFor(part).length > cmpSubPreview ? 'Show all ' + subsFor(part).length + ' subpartitions →' : 'Open picker (select all / multi-select) →' }}
                     </button>
                   }
-                }
-              </div>
+                </div>
+              }
             }
 
             <!-- 5. Run -->
@@ -270,38 +267,38 @@
               <p class="occ-note">Each job rebuilds the segment (MOVE) — track progress in <b>Action History</b> below.</p>
             }
 
-            <!-- Subpartition picker modal — the full list (30-40+) with select-all / multi-select -->
-            @if (cmpModalOpen()) {
+            <!-- Subpartition picker modal — scoped to ONE partition (full list + select-all / multi-select) -->
+            @if (cmpModalPart(); as mpart) {
               <div class="occ-cmp__mbackdrop" (click)="closeSubModal()">
                 <div class="occ-cmp__modal" (click)="$event.stopPropagation()" role="dialog" aria-label="Select subpartitions">
                   <div class="occ-cmp__mhead">
-                    <h3>Subpartitions · {{ info.table }}</h3>
-                    <span class="occ-cmp__count">{{ cmpSubparts().length }} available</span>
+                    <h3>Subpartitions · {{ mpart }}</h3>
+                    <span class="occ-cmp__count">{{ subsFor(mpart).length }} available</span>
                     <button type="button" class="occ-cmp__x" (click)="closeSubModal()" aria-label="Close">×</button>
                   </div>
                   <div class="occ-cmp__mtools">
                     <input class="occ-cmp__in" type="text" placeholder="Search subpartitions"
-                           [value]="cmpSubSearch()" (input)="cmpSubSearch.set($any($event.target).value)"
-                           (keyup.enter)="loadCompressSubpartitions()" autocomplete="off" />
-                    <button type="button" class="occ-cmp__btn" (click)="loadCompressSubpartitions()">Search</button>
-                    <button type="button" class="occ-cmp__linkbtn" (click)="selectAllSubs()" [disabled]="cmpAllSubsSelected()">Select all</button>
-                    <button type="button" class="occ-cmp__linkbtn" (click)="clearSubs()" [disabled]="!cmpSelSubs().size">Clear</button>
-                    <span class="occ-cmp__count">{{ cmpSelSubs().size }} selected</span>
+                           [value]="cmpModalSearch()" (input)="cmpModalSearch.set($any($event.target).value)"
+                           (keyup.enter)="searchModalSubs()" autocomplete="off" />
+                    <button type="button" class="occ-cmp__btn" (click)="searchModalSubs()">Search</button>
+                    <button type="button" class="occ-cmp__linkbtn" (click)="selectAllSubsFor(mpart)" [disabled]="allSubsSelectedFor(mpart)">Select all</button>
+                    <button type="button" class="occ-cmp__linkbtn" (click)="clearSubsFor(mpart)" [disabled]="!subsSelectedFor(mpart)">Clear</button>
+                    <span class="occ-cmp__count">{{ subsSelectedFor(mpart) }} selected</span>
                   </div>
                   <div class="occ-cmp__mbody">
-                    @if (cmpSubLoading()) { <app-loader variant="skeleton" [rows]="3" message="Loading subpartitions…" /> }
-                    @else if (!cmpSubparts().length) { <div class="occ-empty">No subpartitions match.</div> }
+                    @if (isSubLoading(mpart)) { <app-loader variant="skeleton" [rows]="3" message="Loading subpartitions…" /> }
+                    @else if (!subsFor(mpart).length) { <div class="occ-empty">No subpartitions match.</div> }
                     @else {
                       <ul class="occ-cmp__list">
-                        @for (sp of cmpSubparts(); track sp.subpartition_name) {
-                          <li><label><input type="checkbox" [checked]="isSubSelected(sp.subpartition_name)" (change)="toggleSubpartition(sp.subpartition_name)" />
-                            <span class="occ-cmp__name">{{ sp.subpartition_name }}</span><span class="occ-cmp__pos">{{ sp.partition_name }}</span></label></li>
+                        @for (sp of subsFor(mpart); track sp.subpartition_name) {
+                          <li><label><input type="checkbox" [checked]="isSubSelected(mpart, sp.subpartition_name)" (change)="toggleSubpartition(mpart, sp.subpartition_name)" />
+                            <span class="occ-cmp__name">{{ sp.subpartition_name }}</span></label></li>
                         }
                       </ul>
                     }
                   </div>
                   <div class="occ-cmp__mfoot">
-                    <button type="button" class="occ-cmp__go" (click)="closeSubModal()">Done ({{ cmpSelSubs().size }} selected)</button>
+                    <button type="button" class="occ-cmp__go" (click)="closeSubModal()">Done ({{ subsSelectedFor(mpart) }} selected)</button>
                   </div>
                 </div>
               </div>

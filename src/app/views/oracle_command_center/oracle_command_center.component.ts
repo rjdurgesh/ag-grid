@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 
 import { DynTableComponent } from '../../components/dyn-table/dyn-table.component';
@@ -41,6 +41,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   private readonly confirm = inject(ConfirmService);
   private readonly errorReport = inject(ErrorReportService);
   private readonly rbac = inject(RbacService);
+  private readonly host = inject(ElementRef<HTMLElement>);
 
   /** Support contact shown on a failed kill (matches Service Console). */
   readonly supportEmail = environment.supportEmail;
@@ -133,17 +134,17 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   readonly cmpPartitions = signal<CompressPartition[]>([]);
   readonly cmpPartLoading = signal(false);
   readonly cmpSelParts = signal<Set<string>>(new Set());      // selected partition names (multi)
-  readonly cmpSubSearch = signal('');
-  readonly cmpSubparts = signal<CompressSubpartition[]>([]);
-  readonly cmpSubLoading = signal(false);
-  readonly cmpSelSubs = signal<Set<string>>(new Set());       // selected subpartition names (multi)
+  /** Subpartitions loaded PER selected partition — each partition gets its OWN inline list + modal. */
+  readonly cmpSubByPart = signal<Record<string, CompressSubpartition[]>>({});
+  readonly cmpSubLoadingParts = signal<Set<string>>(new Set());   // partitions whose subs are loading
+  /** Selected subpartitions, keyed `partitionsubpartition` so per-partition select/clear is exact. */
+  readonly cmpSelSubs = signal<Set<string>>(new Set());
+  readonly cmpModalPart = signal<string>('');                 // the partition whose "Show all" modal is open ('' = closed)
+  readonly cmpModalSearch = signal('');                       // search inside the modal (that partition only)
   readonly cmpSubmitting = signal(false);
   readonly cmpSubmitted = signal<CompressSubmitResult[]>([]);
-  readonly cmpModalOpen = signal(false);                      // "Show all subpartitions" picker modal
-  /** How many subpartitions to show inline before the "Show all" button (the rest live in the modal). */
+  /** Inline subpartitions shown per partition before the "Show all" button (the rest live in the modal). */
   readonly cmpSubPreview = 4;
-  readonly cmpAllSubsSelected = computed(() =>
-    this.cmpSubparts().length > 0 && this.cmpSelSubs().size >= this.cmpSubparts().length);
   /** Compress is WRITE on the current DB (per-DB RBAC) — same gate as Kill. READ-only DBs hide the button. */
   readonly canCompress = computed(() => this.rbac.dbWritable(this.activeKey()));
   /** How many objects the current selection will compress (subpartitions for composite, else partitions). */
@@ -246,6 +247,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
       clearInterval(this.clockTimer);
     }
     this.onDrawerResizeEnd();   // drop any in-flight drawer-resize listeners
+    document.body.classList.remove('occ-modal-lock');   // never leave page scroll locked
   }
 
   // --- DB tabs --------------------------------------------------------------
@@ -589,12 +591,16 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
   }
 
   // --- Section 2b: Object Compress Activity --------------------------------
+  /** Separator for the `partitionsubpartition` selection keys (never occurs in an Oracle name). */
+  private subKey(part: string, sub: string): string { return `${part}${sub}`; }
+
   /** Clear the compress search + all selections (on DB switch or a fresh table search). */
   private resetCompress(): void {
     this.cmpInfo.set(null); this.cmpInfoMsg.set('');
     this.cmpPartitions.set([]); this.cmpSelParts.set(new Set());
-    this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set());
-    this.cmpPartSearch.set(''); this.cmpSubSearch.set(''); this.cmpSubmitted.set([]);
+    this.cmpSubByPart.set({}); this.cmpSubLoadingParts.set(new Set()); this.cmpSelSubs.set(new Set());
+    this.cmpModalPart.set(''); this.cmpModalSearch.set(''); document.body.classList.remove('occ-modal-lock');
+    this.cmpPartSearch.set(''); this.cmpSubmitted.set([]);
   }
 
   /** Look up the searched table: exists? partitioned? composite? → decides which dropdowns show. */
@@ -625,7 +631,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** (Re)load the partition dropdown — latest 10, or names matching the partition search. */
+  /** (Re)load the partition dropdown — latest 12, or names matching the partition search. */
   loadCompressPartitions(): void {
     const db = this.activeKey();
     const info = this.cmpInfo();
@@ -641,64 +647,106 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
 
   togglePartition(name: string): void {
     const s = new Set(this.cmpSelParts());
-    if (s.has(name)) { s.delete(name); } else { s.add(name); }
+    if (s.has(name)) { s.delete(name); this.dropPartitionSubs(name); }
+    else { s.add(name); if (this.cmpInfo()?.composite) { this.loadSubsForPartition(name); } }
     this.cmpSelParts.set(s);
-    if (this.cmpInfo()?.composite) { this.loadCompressSubpartitions(); }   // composite → refresh the subpartition list
   }
 
-  /** (Re)load subpartitions for the selected parent partitions (composite tables), latest or by search. */
-  loadCompressSubpartitions(): void {
+  /** Selected partitions in insertion order — ONE subpartition block renders per entry (composite). */
+  selectedPartitions(): string[] { return [...this.cmpSelParts()]; }
+
+  /** Subpartitions loaded for ONE partition (empty until fetched). */
+  subsFor(part: string): CompressSubpartition[] { return this.cmpSubByPart()[part] ?? []; }
+  isSubLoading(part: string): boolean { return this.cmpSubLoadingParts().has(part); }
+
+  /** Load (or re-search) the subpartitions for ONE partition — each partition keeps its own list. */
+  loadSubsForPartition(part: string, search = ''): void {
     const db = this.activeKey();
     const info = this.cmpInfo();
     if (!db || !info || !info.composite) { return; }
-    const parents = [...this.cmpSelParts()];
-    if (!parents.length) { this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set()); return; }
-    this.cmpSubLoading.set(true);
-    this.svc.compressSubpartitions(db, info.table, parents, this.cmpSubSearch().trim(), 200, info.owner).subscribe({
-      next: (r) => {
-        const rows = r.rows ?? [];
-        this.cmpSubparts.set(rows);
-        const present = new Set(rows.map((x) => x.subpartition_name));
-        this.cmpSelSubs.set(new Set([...this.cmpSelSubs()].filter((x) => present.has(x))));  // drop gone selections
-        this.cmpSubLoading.set(false);
-      },
-      error: () => { this.cmpSubparts.set([]); this.cmpSubLoading.set(false); }
+    const ld = new Set(this.cmpSubLoadingParts()); ld.add(part); this.cmpSubLoadingParts.set(ld);
+    this.svc.compressSubpartitions(db, info.table, [part], search.trim(), 500, info.owner).subscribe({
+      next: (r) => { this.cmpSubByPart.update((m) => ({ ...m, [part]: r.rows ?? [] })); this.stopSubLoading(part); },
+      error: () => { this.cmpSubByPart.update((m) => ({ ...m, [part]: [] })); this.stopSubLoading(part); }
     });
   }
+  private stopSubLoading(part: string): void {
+    const ld = new Set(this.cmpSubLoadingParts()); ld.delete(part); this.cmpSubLoadingParts.set(ld);
+  }
 
-  isSubSelected(name: string): boolean { return this.cmpSelSubs().has(name); }
+  /** Forget a deselected partition's subpartitions (its loaded list + any selections + its open modal). */
+  private dropPartitionSubs(part: string): void {
+    this.cmpSubByPart.update((m) => { const c = { ...m }; delete c[part]; return c; });
+    const pref = this.subKey(part, '');
+    this.cmpSelSubs.update((sel) => new Set([...sel].filter((k) => !k.startsWith(pref))));
+    if (this.cmpModalPart() === part) { this.cmpModalPart.set(''); }
+  }
 
-  toggleSubpartition(name: string): void {
+  isSubSelected(part: string, sub: string): boolean { return this.cmpSelSubs().has(this.subKey(part, sub)); }
+
+  toggleSubpartition(part: string, sub: string): void {
+    const k = this.subKey(part, sub);
     const s = new Set(this.cmpSelSubs());
-    if (s.has(name)) { s.delete(name); } else { s.add(name); }
+    if (s.has(k)) { s.delete(k); } else { s.add(k); }
     this.cmpSelSubs.set(s);
   }
 
-  /** Clear the partition selection (and, on composite tables, its now-orphaned subpartitions). */
-  clearParts(): void {
-    this.cmpSelParts.set(new Set());
-    if (this.cmpInfo()?.composite) { this.cmpSubparts.set([]); this.cmpSelSubs.set(new Set()); }
+  /** How many subpartitions are selected within ONE partition (for its own header count). */
+  subsSelectedFor(part: string): number {
+    const pref = this.subKey(part, '');
+    let n = 0;
+    for (const k of this.cmpSelSubs()) { if (k.startsWith(pref)) { n++; } }
+    return n;
   }
 
-  /** Clear just the subpartition selection (keeps the loaded list). */
-  clearSubs(): void { this.cmpSelSubs.set(new Set()); }
+  /** Clear ALL partition + subpartition selections. */
+  clearParts(): void {
+    this.cmpSelParts.set(new Set());
+    this.cmpSubByPart.set({}); this.cmpSelSubs.set(new Set()); this.cmpModalPart.set('');
+  }
 
-  /** Select every currently-loaded subpartition (the modal's "Select all"). */
-  selectAllSubs(): void { this.cmpSelSubs.set(new Set(this.cmpSubparts().map((x) => x.subpartition_name))); }
+  /** Clear ONE partition's subpartition selection. */
+  clearSubsFor(part: string): void {
+    const pref = this.subKey(part, '');
+    this.cmpSelSubs.update((sel) => new Set([...sel].filter((k) => !k.startsWith(pref))));
+  }
 
-  openSubModal(): void { this.cmpModalOpen.set(true); }
-  closeSubModal(): void { this.cmpModalOpen.set(false); }
+  /** Select every loaded subpartition of ONE partition (its modal's "Select all"). */
+  selectAllSubsFor(part: string): void {
+    const s = new Set(this.cmpSelSubs());
+    for (const sp of this.subsFor(part)) { s.add(this.subKey(part, sp.subpartition_name)); }
+    this.cmpSelSubs.set(s);
+  }
+  allSubsSelectedFor(part: string): boolean {
+    const list = this.subsFor(part);
+    return list.length > 0 && list.every((sp) => this.isSubSelected(part, sp.subpartition_name));
+  }
+
+  openSubModal(part: string): void {
+    this.cmpModalPart.set(part);
+    this.cmpModalSearch.set('');
+    // Portal the modal to <body> so no ancestor stacking/transform context can trap or clip it
+    // (otherwise its top/footer can fall outside the viewport and sections bleed through). @if still
+    // owns the nodes; on close Ivy removes them from their current parent (body). Also lock page scroll.
+    document.body.classList.add('occ-modal-lock');
+    setTimeout(() => {
+      const bd = this.host.nativeElement.querySelector('.occ-cmp__mbackdrop');
+      if (bd) { document.body.appendChild(bd); }
+    });
+  }
+  closeSubModal(): void { this.cmpModalPart.set(''); document.body.classList.remove('occ-modal-lock'); }
+  /** Re-search subpartitions for the partition whose modal is currently open. */
+  searchModalSubs(): void { const p = this.cmpModalPart(); if (p) { this.loadSubsForPartition(p, this.cmpModalSearch()); } }
 
   /** The (partition, subpartition?) list the current selection will compress. */
   private compressTargets(): { partition: string; subpartition?: string | null }[] {
     const info = this.cmpInfo();
     if (!info) { return []; }
     if (info.composite) {
-      const byName = new Map(this.cmpSubparts().map((x) => [x.subpartition_name, x]));
       const out: { partition: string; subpartition?: string | null }[] = [];
-      for (const sp of this.cmpSelSubs()) {
-        const row = byName.get(sp);
-        if (row) { out.push({ partition: row.partition_name, subpartition: row.subpartition_name }); }
+      for (const k of this.cmpSelSubs()) {
+        const i = k.indexOf('');
+        if (i > 0) { out.push({ partition: k.slice(0, i), subpartition: k.slice(i + 1) }); }
       }
       return out;
     }
@@ -739,8 +787,8 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
         // list + Action History now track them). The table/type/partition list stay, ready for another run.
         this.cmpSelParts.set(new Set());
         this.cmpSelSubs.set(new Set());
-        this.cmpSubparts.set([]);
-        this.cmpModalOpen.set(false);
+        this.cmpSubByPart.set({});
+        this.cmpModalPart.set(''); document.body.classList.remove('occ-modal-lock');
       },
       error: (err) => { this.cmpSubmitting.set(false); this.showActionError('Compress', info.table, dbName, err); }
     });

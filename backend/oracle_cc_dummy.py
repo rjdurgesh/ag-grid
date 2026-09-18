@@ -310,7 +310,8 @@ def compress_object_info_dummy(owner: str, table: str) -> dict:
     partition-only path is demoable; otherwise composite (both dropdowns)."""
     composite = not table.upper().endswith("_NP")
     return {"found": True, "partitioned": True, "composite": composite,
-            "partitioning_type": "RANGE", "subpartitioning_type": ("HASH" if composite else "NONE")}
+            "partitioning_type": "RANGE", "subpartitioning_type": ("HASH" if composite else "NONE"),
+            "size_gb": 128.45}
 
 
 def compress_partitions_dummy(table: str, search: str | None, limit: int) -> list[dict]:
@@ -324,10 +325,11 @@ def compress_partitions_dummy(table: str, search: str | None, limit: int) -> lis
 
 
 def compress_subpartitions_dummy(table: str, partitions: list[str], search: str | None, limit: int) -> list[dict]:
+    # ~60 hash subpartitions per partition, so the per-partition "Show all N" + scrolling modal is demoable.
     rows = []
     for part in (partitions or []):
-        for i, region in enumerate(("APAC", "EMEA", "AMER", "OTHER"), start=1):
-            sp = f"{part}_SP_{region}"
+        for i in range(1, 61):
+            sp = f"{part}_SP{i:02d}"
             if _dummy_like(sp, search):
                 rows.append({"partition_name": part, "subpartition_name": sp, "subpartition_position": i})
     return rows[:limit]
