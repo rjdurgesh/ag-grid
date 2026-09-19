@@ -148,6 +148,30 @@ def _bearer(request: Request) -> str | None:
     return auth[7:].strip() if auth.lower().startswith("bearer ") else None
 
 
+def _token_error_detail(exc: Exception) -> str:
+    """Turn a PyJWT/JWKS validation failure into an actionable 401 message. These categories are
+    standard OAuth feedback (no token bytes leaked), and they save hours of guessing — e.g. the very
+    common "opaque access_token instead of the id_token" case. Matched by class name + message so this
+    module still imports cleanly without PyJWT."""
+    name = exc.__class__.__name__
+    msg = str(exc).lower()
+    if name == "ExpiredSignatureError" or "expired" in msg:
+        return "Token has expired — sign in again."
+    if name == "InvalidAudienceError" or "audience" in msg:
+        return ("Token audience mismatch — the SPA sends the id_token (aud = client_id), so set the OIDC "
+                "audience to your client_id, or clear it to skip the check.")
+    if name == "InvalidIssuerError" or "issuer" in msg:
+        return "Token issuer mismatch — check the OIDC issuer value (watch for a trailing slash)."
+    if "not enough segments" in msg or "not a valid jwt" in msg:
+        return ("Token is not a JWT (it looks opaque) — the SPA must send the id_token, not an opaque "
+                "access_token.")
+    if name == "InvalidSignatureError" or "signature" in msg:
+        return "Token signature could not be verified (JWKS / signing-key mismatch)."
+    if "unable to find" in msg and "key" in msg:
+        return "No matching signing key in the JWKS (check the JWKS URL and the token's 'kid')."
+    return "Invalid or expired token."
+
+
 def current_username(request: Request) -> str:
     """FastAPI dependency → the caller username, per the AUTH_VALIDATE_TOKEN switch.
 
@@ -175,9 +199,10 @@ def current_username(request: Request) -> str:
         )
     except HTTPException:
         raise
-    except Exception as exc:  # signature / exp / aud / iss failure
-        logger.warning("token validation failed: %s", exc)
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except Exception as exc:  # signature / exp / aud / iss / malformed failure
+        detail = _token_error_detail(exc)
+        logger.warning("token validation failed: %s: %s", exc.__class__.__name__, exc)
+        raise HTTPException(status_code=401, detail=detail)
     uname = str(claims.get(OIDC_USERNAME_CLAIM) or claims.get("sub") or "").strip()
     if not uname:
         raise HTTPException(status_code=401, detail="Token has no username claim")

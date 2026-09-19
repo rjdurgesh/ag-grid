@@ -79,7 +79,7 @@ export const API = {
       grant: `${API_BASE_URL}/api/access/admin/grant`,
       /** `{ caller, username, resource_type, resource_scope, resource_key, app_env }` → revoke (hard delete). */
       grantDelete: `${API_BASE_URL}/api/access/admin/grant/delete`,
-      /** `{ caller, action: 'list'|'add'|'disable'|'enable'|'sql_on'|'sql_off'|'remove', uid? }` → manage the ops-admin gate table. */
+      /** `{ caller, action: 'list'|'add'|'disable'|'enable'|'users_on'|'users_off'|'sql_scope_on'|'sql_scope_off'|'remove', uid?, scope? }` → manage the ops-admin gate table (S-Studio is per-scope). */
       ops: `${API_BASE_URL}/api/access/admin/ops`
     }
   },

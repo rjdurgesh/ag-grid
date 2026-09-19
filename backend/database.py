@@ -1880,6 +1880,7 @@ def fetch_ops_admins(db_config: Any) -> list[dict]:
         cursor = connection.cursor()
         cursor.execute("""
             SELECT o.username, o.is_active, o.can_users, o.can_sql,
+                   o.sql_group, o.sql_cib, o.sql_retail,
                    u.firstname, u.surname, u.email, u.guid
               FROM ols_ops_access o
               LEFT JOIN ols_users u ON UPPER(u.username) = UPPER(o.username)
@@ -1894,23 +1895,44 @@ def fetch_ops_admins(db_config: Any) -> list[dict]:
             connection.close()
 
 
-def fetch_can_sql(db_config: Any, username: str) -> bool:
-    """True iff `username` is an ACTIVE ops-admin WITH `can_sql='Y'` — the S-Studio gate."""
+# S-Studio config scopes ↔ their per-scope ols_ops_access column. Whitelist — the scope selects a
+# fixed column name (never bound), so it is injection-safe.
+_SQL_SCOPE_COLUMNS = {"group": "sql_group", "cib": "sql_cib", "retail": "sql_retail"}
+
+
+def fetch_sql_scopes(db_config: Any, username: str) -> set[str]:
+    """The config scopes where `username` may use S-Studio. S-Studio is exclusive to FULL super
+    admins, so the per-scope flags only take effect when the row is ACTIVE and can_users='Y'."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT 1 FROM ols_ops_access
-             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y' AND can_sql = 'Y'
+            SELECT sql_group, sql_cib, sql_retail FROM ols_ops_access
+             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y' AND can_users = 'Y'
         """, {"u": username})
-        return cursor.fetchone() is not None
+        row = cursor.fetchone()
+        if not row:
+            return set()
+        flags = {"group": row[0], "cib": row[1], "retail": row[2]}
+        return {sc for sc, v in flags.items() if str(v or "").strip().upper() == "Y"}
     finally:
         if cursor:
             cursor.close()
         if connection is not None and connection is not db_config:
             connection.close()
+
+
+def fetch_sql_scope(db_config: Any, username: str, scope: str) -> bool:
+    """True iff `username` may use S-Studio in one config scope — the per-scope S-Studio endpoint gate."""
+    return (scope or "").strip().lower() in fetch_sql_scopes(db_config, username)
+
+
+def fetch_can_sql(db_config: Any, username: str) -> bool:
+    """DEPRECATED (back-compat): True iff `username` has S-Studio in ANY scope. New code uses
+    fetch_sql_scopes / fetch_sql_scope for per-scope gating."""
+    return bool(fetch_sql_scopes(db_config, username))
 
 
 def ops_admin_set_users(db_config: Any, username: str, allowed: bool) -> int:
@@ -1945,6 +1967,31 @@ def ops_admin_set_sql(db_config: Any, username: str, allowed: bool) -> int:
         cursor.execute("""
             UPDATE ols_ops_access SET can_sql = :flag WHERE UPPER(username) = UPPER(:u)
         """, {"flag": "Y" if allowed else "N", "u": username})
+        n = cursor.rowcount
+        connection.commit()
+        return n
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def ops_admin_set_sql_scope(db_config: Any, username: str, scope: str, allowed: bool) -> int:
+    """Grant/revoke S-Studio for ONE config scope (sql_group/sql_cib/sql_retail) on an existing
+    operator. Returns rows changed. Commits. WRITE — ops-admin only."""
+    col = _SQL_SCOPE_COLUMNS.get((scope or "").strip().lower())
+    if not col:
+        raise ValueError(f"Unknown S-Studio scope '{scope}'")
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        # `col` is a whitelisted column name (never user text); the flag + uid bind as values.
+        cursor.execute(
+            f"UPDATE ols_ops_access SET {col} = :flag WHERE UPPER(username) = UPPER(:u)",
+            {"flag": "Y" if allowed else "N", "u": username})
         n = cursor.rowcount
         connection.commit()
         return n

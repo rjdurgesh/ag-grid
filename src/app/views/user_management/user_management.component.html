@@ -205,6 +205,16 @@
                 </div>
               </div>
 
+              @if (kind() === 'full') {
+                <div class="um__field um__field--wide">
+                  <label class="um__check">
+                    <input type="checkbox" [ngModel]="fullIncludeUsers()" (ngModelChange)="fullIncludeUsers.set($event)" />
+                    Include User Management
+                  </label>
+                  <p class="um__hint">Full access covers every screen except User Management and S-Studio. Tick this to also grant the User Management screen (the “User access” side). S-Studio is never included — it’s assigned per scope in Manage access.</p>
+                </div>
+              }
+
               <div class="um__field um__field--btn">
                 <button type="button" class="um__btn" (click)="addToList()">
                   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -430,11 +440,14 @@
                           [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_users === 'Y' ? 'User Management granted — click to revoke' : 'Grant User Management (super admin)')">
                     User Mgmt {{ o.can_users === 'Y' ? '✓' : '✕' }}
                   </button>
-                  <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="o.can_sql === 'Y'" (click)="toggleSql(o)"
-                          [disabled]="o.is_active !== 'Y'"
-                          [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_sql === 'Y' ? 'S-Studio granted — click to revoke' : 'Grant S-Studio (SQL console)')">
-                    S-Studio {{ o.can_sql === 'Y' ? '✓' : '✕' }}
-                  </button>
+                  @for (sc of sqlScopeOptions; track sc.key) {
+                    <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="hasSqlScope(o, sc.key)"
+                            (click)="toggleSqlScope(o, sc.key)"
+                            [disabled]="o.is_active !== 'Y' || o.can_users !== 'Y'"
+                            [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_users !== 'Y' ? 'S-Studio needs User Management (full super admin) first' : (hasSqlScope(o, sc.key) ? 'S-Studio granted for ' + sc.label + ' — click to revoke' : 'Grant S-Studio (SQL console) for ' + sc.label))">
+                      S-Studio · {{ sc.label }} {{ hasSqlScope(o, sc.key) ? '✓' : '✕' }}
+                    </button>
+                  }
                   <button type="button" class="um__ops-btn" (click)="editOps(o)"
                           [title]="o.is_active === 'Y' ? 'Disable (keep the row)' : 'Enable'">
                     {{ o.is_active === 'Y' ? 'Disable' : 'Enable' }}

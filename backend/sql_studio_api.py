@@ -57,10 +57,16 @@ def _dbs_for_scope(scope: str, db_keys: list[str]) -> list[str]:
     return [k for k in db_keys if k == s or k.startswith(s + "_")]
 
 
-def _require_sql_admin(request: Request, body: DbQuery | ExecBody):
+def _scope_of_db(db: str) -> str:
+    """The config scope a db_configs key belongs to (the inverse of `_dbs_for_scope`): the prefix
+    before the first '_'. group→group, cib_batch→cib, retail_reporting→retail."""
+    return (db or "").strip().lower().split("_", 1)[0]
+
+
+def _require_sql_admin(request: Request, body: DbQuery | ExecBody, scope: str):
     """Resolve the caller from the OIDC token (else AUTH_DEV_USER / body per AUTH_VALIDATE_TOKEN), stamp
-    it onto ``body.caller``, then confirm the caller may use S-Studio (`can_sql`) — else 403. With OIDC
-    on, a missing/invalid token → 401 here. Returns the app DB config (None in dummy)."""
+    it onto ``body.caller``, then confirm the caller may use S-Studio **in this config scope** — else
+    403. With OIDC on, a missing/invalid token → 401 here. Returns the app DB config (None in dummy)."""
     body.caller = resolve_caller(request, body.caller)
     caller = body.caller
     if SQL_USE_DUMMY:
@@ -68,15 +74,16 @@ def _require_sql_admin(request: Request, body: DbQuery | ExecBody):
             raise HTTPException(status_code=403, detail="S-Studio is restricted to authorised operators")
         return None
     cfg = getattr(request.app.state, "app_db_config", None)
-    if not database.fetch_can_sql(cfg, caller):
-        raise HTTPException(status_code=403, detail="S-Studio is restricted to authorised operators")
+    if not database.fetch_sql_scope(cfg, caller, scope):
+        raise HTTPException(status_code=403,
+                            detail=f"S-Studio is restricted to authorised operators for {scope.upper()}")
     return cfg
 
 
 @router.post("/databases")
 def sql_databases(request: Request, body: DbQuery) -> dict:
-    """The databases available to run against for one config scope (ops-admin + can_sql only)."""
-    _require_sql_admin(request, body)
+    """The databases available to run against for one config scope (ops-admin + S-Studio for that scope)."""
+    _require_sql_admin(request, body, (body.scope or "").strip().lower())
     db_keys = list(getattr(request.app.state, "db_configs", {}) or access_api.OCC_DB_LABELS)
     keys = _dbs_for_scope(body.scope, db_keys)
     return {"status": "success", "databases": [
@@ -98,7 +105,7 @@ def sql_execute(request: Request, body: ExecBody) -> dict:
     appropriate and needed to debug): a statement/connection failure comes back as a `kind:'error'`
     result with the ORA-xxxxx text; a DB that never connected at startup returns a 503 carrying the
     captured reason (see `app.state.db_config_errors`)."""
-    _require_sql_admin(request, body)
+    _require_sql_admin(request, body, _scope_of_db(body.db))
     if SQL_USE_DUMMY:
         return {"status": "success", "result": _dummy_execute(body.db, body.sql)}
     # Prefer the privileged S-Studio connections; fall back to the monitor configs with a warning.

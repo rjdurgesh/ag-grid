@@ -171,8 +171,9 @@ class GrantDeleteBody(BaseModel):
 
 class OpsAdminBody(BaseModel):
     caller: str
-    action: str            # "list" | "add" | "remove"
+    action: str            # list|add|disable|enable|users_on|users_off|sql_scope_on|sql_scope_off|remove
     uid: str | None = None
+    scope: str | None = None   # for sql_scope_on/off — 'group' | 'cib' | 'retail'
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +222,15 @@ def _identity_fields(identity: dict) -> dict:
 def _ops_rows(rows: list[dict]) -> list[dict]:
     """Map raw ols_ops_access(+ols_users) rows to the UI OpsAdmin contract so the Manage-access list
     shows the operator's real name / email / GUID (first_name / display_name / …)."""
+    def _scopes(r: dict) -> list[str]:
+        flags = {"group": r.get("sql_group"), "cib": r.get("sql_cib"), "retail": r.get("sql_retail")}
+        return [sc for sc in CONFIG_SCOPES if str(flags.get(sc) or "").strip().upper() == "Y"]
     return [{
         "username": r.get("username"),
         "is_active": r.get("is_active"),
         "can_users": r.get("can_users"),
-        "can_sql": r.get("can_sql"),
+        "can_sql": r.get("can_sql"),           # DEPRECATED legacy flag (kept for back-compat)
+        "sql_scopes": _scopes(r),              # per-scope S-Studio (group/cib/retail)
         **_identity_fields(r),
     } for r in rows]
 
@@ -307,11 +312,16 @@ def _scope_of(resource_scope: str | None) -> str | None:
 
 
 def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
-                   is_ops_admin: bool = False, can_sql: bool = False) -> dict:
+                   is_ops_admin: bool = False, sql_scopes: list[str] | None = None) -> dict:
     """Resolve identity + grants into the UI access snapshot. Pure — no I/O — so the dummy path
     and the real path share it. `is_ops_admin` (from the SEPARATE `ols_ops_access` gate) drives the
-    User Management screen; `can_sql` (same table, assigned per user) drives S-Studio. Both are
-    independent of the base role. See RBAC_DESIGN.md."""
+    User Management screen; `sql_scopes` (same table, per config scope) drives S-Studio per scope.
+    Both are independent of the base role.
+
+    Base ADMIN = every normal screen EXCEPT User Management and S-Studio. User Management is added only
+    when the user is an ops-admin OR holds a `SCREEN/user_management` grant. A `SCREEN/<screen>/*/DENY`
+    grant is ABSOLUTE — it removes that screen even for an ADMIN or a full-access wildcard. See
+    RBAC_DESIGN.md."""
     role = _role_of(identity)
     active = _is_active(identity) and role != "NONE"
 
@@ -326,23 +336,47 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "infra": {"all_apps": False, "apps": [], "denied_apps": []},
             "service": {"all_apps": False, "apps": [], "denied_apps": []},
             "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}, "denied_dbs": []},
-            "denied_sections": [], "is_ops_admin": False, "can_sql": False,
+            "denied_sections": [], "denied_screens": [], "is_ops_admin": False,
+            "can_sql": False, "sql_scopes": [],
         }
 
     username = identity.get("username", "")
+    sql_scope_set = {str(s).strip().lower() for s in (sql_scopes or []) if str(s).strip()}
     base = {
         "status": "success", "active": True, "role": role, "app_env": app_env,
         "username": username, **_identity_fields(identity),
         "is_ops_admin": bool(is_ops_admin),
-        "can_sql": bool(can_sql),          # independent of is_ops_admin — S-Studio can be granted alone
+        "can_sql": bool(sql_scope_set),    # back-compat: true if S-Studio in any scope
+        "sql_scopes": sorted(sql_scope_set),   # S-Studio per config scope (independent of role)
     }
 
-    # ADMIN: everything, grants ignored.
+    # Screen-level DENY + an explicit User-Management allow apply to EVERY role (incl. ADMIN), so scan
+    # for them up front. A `SCREEN/<screen>/*/DENY` grant is ABSOLUTE — it beats ADMIN, the full-access
+    # wildcard and can_users. `SCREEN/user_management/*` (non-DENY) is what the ADMIN "include User
+    # Management" toggle writes.
+    denied_screens: set[str] = set()
+    um_allow = False
+    for g in grants:
+        if (g.get("resource_type") or "").strip().upper() != "SCREEN":
+            continue
+        rs = (g.get("resource_scope") or "").strip().lower()
+        lvl = (g.get("access_level") or "").strip().upper()
+        if rs in SCREEN_KEYS:
+            if lvl == "DENY":
+                denied_screens.add(rs)
+            elif rs == "user_management":
+                um_allow = True
+
+    # ADMIN: every normal screen EXCEPT User Management + S-Studio. User Management is added back only
+    # for an ops-admin or an explicit grant; DENY then subtracts. S-Studio is never implicit (sql_scopes).
     if role == "ADMIN":
+        admin_screens = ["home", "log_analytics", "config_ops_console", "infra_health",
+                         "service_console", "oracle_command_center", "docs", "docs_technical"]
+        if is_ops_admin or um_allow:
+            admin_screens.append("user_management")
+        admin_screens = [s for s in admin_screens if s not in denied_screens]
         base.update({
-            "screens": ["home", "log_analytics", "config_ops_console", "infra_health",
-                        "service_console", "oracle_command_center", "user_management",
-                        "docs", "docs_technical"],
+            "screens": admin_screens,
             "write_screens": WRITE_CAPABLE_SCREENS,
             "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
                        "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES),
@@ -351,7 +385,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "infra": {"all_apps": True, "apps": [], "denied_apps": []},
             "service": {"all_apps": True, "apps": [], "denied_apps": []},
             "oracle": {"all_dbs": True, "all_level": "WRITE", "dbs": {}, "denied_dbs": []},
-            "denied_sections": [],
+            "denied_sections": [], "denied_screens": sorted(denied_screens),
         })
         return base
 
@@ -498,9 +532,10 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     if service_screen_grant and not service_apps:
         all_service_apps = True
 
-    # Full-access wildcard populates everything (grants above still merge on top).
+    # Full-access wildcard populates everything EXCEPT User Management (which stays explicit — an
+    # ops-admin, or a SCREEN/user_management grant) and S-Studio (per-scope, ops_access only).
     if full_read:
-        granted_screens.update(SCREEN_KEYS)
+        granted_screens.update(k for k in SCREEN_KEYS if k != "user_management")
         all_servers = all_infra_apps = all_service_apps = all_dbs = True
         config_all = True
         config_scopes.update(CONFIG_SCOPES)
@@ -543,6 +578,9 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     screens = sorted(granted_screens)
     if config_scopes or config_all:
         screens.append("config_ops_console")
+    # A SCREEN/<screen>/*/DENY is absolute — subtract it from the visible set (defence in depth; the
+    # frontend also honours denied_screens).
+    screens = [s for s in screens if s not in denied_screens]
     if screens:                          # has ≥1 feature → give them Home (the landing) too
         screens = ["home"] + screens
 
@@ -568,6 +606,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         "oracle": {"all_dbs": all_dbs, "all_level": all_db_level, "dbs": oracle_dbs,
                    "denied_dbs": sorted(denied_dbs)},
         "denied_sections": denied_sections,
+        "denied_screens": sorted(denied_screens),
     })
     return base
 
@@ -592,9 +631,9 @@ def access_me(request: Request, body: AccessQuery, token_user: str = Depends(cur
         active = _is_active(identity)
         grants = database.fetch_user_grants(cfg, username) if active else []
         is_ops = database.fetch_is_ops_admin(cfg, username) if active else False
-        # can_sql (S-Studio) is independent of is_ops_admin (User Management) — fetch it on its own.
-        can_sql = database.fetch_can_sql(cfg, username) if active else False
-        return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, can_sql=can_sql)
+        # S-Studio scopes (per config scope) are independent of is_ops_admin — fetch on their own.
+        sql_scopes = sorted(database.fetch_sql_scopes(cfg, username)) if active else []
+        return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, sql_scopes=sql_scopes)
     except Exception:
         logger.exception("access/me failed for %s", username)
         raise db_errors.http_error()
@@ -621,7 +660,9 @@ def access_effective(request: Request, body: EffectiveQuery, token_user: str = D
             "status": "success",
             "identity": identity or {"username": body.username, "note": "not found"},
             "raw_grants": grants,
-            "snapshot": build_snapshot(identity, grants, body.app_env),
+            "snapshot": build_snapshot(identity, grants, body.app_env,
+                                       is_ops_admin=database.fetch_is_ops_admin(cfg, body.username),
+                                       sql_scopes=sorted(database.fetch_sql_scopes(cfg, body.username))),
         }
     except HTTPException:
         raise
@@ -660,8 +701,11 @@ def _require_ops_admin(request: Request, caller: str):
 
 def _require_user_admin(request: Request, caller: str):
     """Confirm `caller` may use the "User access" surface (/admin/catalogue|user|grant|grant/delete):
-    an ops-admin, an ADMIN, OR a user holding a SCREEN/user_management grant. 403 otherwise. This is the
-    grant-driven gate (the Manage-access tab uses the stricter _require_ops_admin). Returns the DB config."""
+    an ops-admin, OR a user holding a (non-DENY) SCREEN/user_management grant. The base ADMIN role no
+    longer implies this — User Management must be granted explicitly (the ADMIN "include User
+    Management" toggle writes that grant). A SCREEN/user_management/*/DENY grant is absolute and blocks
+    even an otherwise-granted user. 403 otherwise. The Manage-access tab uses the stricter
+    _require_ops_admin. Returns the DB config."""
     if ACCESS_USE_DUMMY:
         if _dummy_is_ops_admin(caller) or "ADMIN" in (caller or "").upper():
             return None
@@ -671,13 +715,12 @@ def _require_user_admin(request: Request, caller: str):
         return cfg
     identity = database.fetch_user_identity(cfg, caller)
     if _is_active(identity):
-        if _role_of(identity) == "ADMIN":
-            return cfg
-        grants = database.fetch_all_grants(cfg, caller)
-        if any((g.get("resource_type") or "").upper() == "SCREEN"
-               and (g.get("resource_scope") or "") == "user_management"
-               and (g.get("access_level") or "").upper() != "DENY"
-               for g in grants):
+        um_grants = [g for g in database.fetch_all_grants(cfg, caller)
+                     if (g.get("resource_type") or "").upper() == "SCREEN"
+                     and (g.get("resource_scope") or "") == "user_management"]
+        denied = any((g.get("access_level") or "").upper() == "DENY" for g in um_grants)
+        allowed = any((g.get("access_level") or "").upper() != "DENY" for g in um_grants)
+        if allowed and not denied:
             return cfg
     raise HTTPException(status_code=403, detail="User access is restricted to granted users")
 
@@ -720,7 +763,9 @@ def admin_user(request: Request, body: AdminUserQuery, token_user: str = Depends
     if ACCESS_USE_DUMMY:
         ident = _dummy_identity(body.uid)
         grants = _dummy_grants(body.uid)
-        snap = build_snapshot(ident, grants, body.app_env, is_ops_admin=_dummy_is_ops_admin(body.uid))
+        is_ops = _dummy_is_ops_admin(body.uid)
+        snap = build_snapshot(ident, grants, body.app_env, is_ops_admin=is_ops,
+                              sql_scopes=list(CONFIG_SCOPES) if is_ops else [])
         return {"status": "success",
                 "lookup": {"exists": True, "active": True, "username": body.uid, **_identity_fields(ident)},
                 "grants": grants, "snapshot": snap}
@@ -731,7 +776,8 @@ def admin_user(request: Request, body: AdminUserQuery, token_user: str = Depends
         ident = database.fetch_user_identity(cfg, body.uid)
         grants = database.fetch_all_grants(cfg, body.uid)
         snap = build_snapshot(ident, grants, body.app_env,
-                              is_ops_admin=database.fetch_is_ops_admin(cfg, body.uid))
+                              is_ops_admin=database.fetch_is_ops_admin(cfg, body.uid),
+                              sql_scopes=sorted(database.fetch_sql_scopes(cfg, body.uid)))
         return {"status": "success", "lookup": lk, "grants": grants, "snapshot": snap}
     except HTTPException:
         raise
@@ -806,14 +852,16 @@ def admin_grant_delete(request: Request, body: GrantDeleteBody, token_user: str 
 @router.post("/admin/ops")
 def admin_ops(request: Request, body: OpsAdminBody, token_user: str = Depends(current_username)) -> dict:
     """Manage the privileged-operators table (`ols_ops_access`): action = list | add | disable |
-    enable | users_on | users_off | sql_on | sql_off | remove. `add` requires an active OLS user;
-    `disable`/`enable` flip is_active; `users_on`/`users_off` grant/revoke User Management (`can_users`);
-    `sql_on`/`sql_off` grant/revoke S-Studio (`can_sql`); `remove` hard-deletes. No self-lockout guard."""
+    enable | users_on | users_off | sql_scope_on | sql_scope_off | remove. `add` requires an active OLS
+    user; `disable`/`enable` flip is_active; `users_on`/`users_off` grant/revoke User Management
+    (`can_users`); `sql_scope_on`/`sql_scope_off` grant/revoke S-Studio for ONE config scope (`scope` =
+    group|cib|retail); `remove` hard-deletes. No self-lockout guard."""
     caller = caller_or_body(token_user, body.caller)
     cfg = _require_ops_admin(request, caller)
     action = (body.action or "").strip().lower()
     if ACCESS_USE_DUMMY:
-        row = {"username": caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y"}
+        row = {"username": caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y",
+               "sql_scopes": list(CONFIG_SCOPES)}
         return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
     try:
         if action == "list":
@@ -829,10 +877,11 @@ def admin_ops(request: Request, body: OpsAdminBody, token_user: str = Depends(cu
             database.ops_admin_set_active(cfg, body.uid, False)
         elif action == "enable":
             database.ops_admin_set_active(cfg, body.uid, True)
-        elif action == "sql_on":
-            database.ops_admin_set_sql(cfg, body.uid, True)
-        elif action == "sql_off":
-            database.ops_admin_set_sql(cfg, body.uid, False)
+        elif action in ("sql_scope_on", "sql_scope_off"):
+            scope = (body.scope or "").strip().lower()
+            if scope not in CONFIG_SCOPES:
+                raise HTTPException(status_code=400, detail=f"scope must be one of {CONFIG_SCOPES}")
+            database.ops_admin_set_sql_scope(cfg, body.uid, scope, action == "sql_scope_on")
         elif action == "users_on":
             database.ops_admin_set_users(cfg, body.uid, True)
         elif action == "users_off":
@@ -916,6 +965,9 @@ def _access_dummy(username: str, app_env: str) -> dict:
     identity = _dummy_identity(username)
     grants = _dummy_grants(username)
     is_ops = _dummy_is_ops_admin(username)
-    snap = build_snapshot(identity, grants, app_env, is_ops_admin=is_ops, can_sql=is_ops)
+    # Dev stand-in: an ops-ish dummy user gets S-Studio on every scope (dev/mock is out of scope for
+    # per-flag fidelity — see the plan). Real per-scope gating comes from ols_ops_access.
+    snap = build_snapshot(identity, grants, app_env, is_ops_admin=is_ops,
+                          sql_scopes=list(CONFIG_SCOPES) if is_ops else [])
     snap["_raw_grants"] = grants
     return snap

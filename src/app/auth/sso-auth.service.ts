@@ -166,7 +166,11 @@ export class SsoAuthService {
   }
 
   private storeTokens(tok: TokenResponse): void {
-    localStorage.setItem(TOKEN_KEY, tok.access_token);
+    // The BACKEND validates a JWT (see auth_token.py), so the bearer we send it MUST be the id_token
+    // — always a JWT per OIDC. The access_token is often an OPAQUE/reference token (Okta, Azure AD v1,
+    // Ping…), which the backend can't decode ("not enough segments"). On silent-renew some IdPs omit a
+    // fresh id_token, so keep the previous one; fall back to access_token only as a last resort.
+    localStorage.setItem(TOKEN_KEY, tok.id_token ?? localStorage.getItem(TOKEN_KEY) ?? tok.access_token);
     if (tok.refresh_token) {
       localStorage.setItem(REFRESH_KEY, tok.refresh_token);
     }

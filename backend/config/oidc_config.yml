@@ -21,7 +21,10 @@
 #   dev_user        (only when validate_token=false) fixed UID to authenticate AS
 #                   while debugging; blank → fall back to the request body username.
 #   issuer          provider issuer URL (validated against the token `iss`).
-#   audience        expected `aud` (list; empty = skip the aud check).
+#   audience        expected `aud` (list; empty = skip the aud check). NOTE: the SPA sends the
+#                   backend the **id_token**, whose `aud` is the **client_id** — so set this to your
+#                   OIDC client_id (SSO_CONFIG.clientId), or leave it [] to skip the check. Setting it
+#                   to an API identifier the id_token doesn't carry → "Token audience mismatch" (401).
 #   jwks_url        provider JWKS endpoint; blank → <issuer>/.well-known/jwks.json.
 #   username_claim  claim carrying the corporate UID (default preferred_username; → sub).
 #   algorithms      allowed signing algs (list; default [RS256]).

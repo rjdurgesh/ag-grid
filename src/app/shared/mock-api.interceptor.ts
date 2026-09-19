@@ -175,24 +175,26 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     const uid = String(b.uid ?? '').trim();
     const key = uid.toUpperCase();
     const rec = umStore.ops.get(key);
+    const scope = String((b as { scope?: string }).scope ?? '').trim().toLowerCase();
     if (action === 'add') {
       if (!uid || key.includes('GHOST')) {
         return respondError(422, umNoUser(uid || 'that'));
       }
-      umStore.ops.set(key, { active: true, users: true, sql: rec?.sql ?? false });
+      umStore.ops.set(key, { active: true, users: true, sql: rec?.sql ?? false, scopes: rec?.scopes ?? [] });
     } else if (action === 'remove') {
       umStore.ops.delete(key);
     } else if (rec) {
       if (action === 'disable') { rec.active = false; }
       else if (action === 'enable') { rec.active = true; }
       else if (action === 'users_on') { rec.users = true; }
-      else if (action === 'users_off') { rec.users = false; }
-      else if (action === 'sql_on') { rec.sql = true; }
-      else if (action === 'sql_off') { rec.sql = false; }
+      else if (action === 'users_off') { rec.users = false; rec.scopes = []; }   // S-Studio needs can_users
+      else if (action === 'sql_scope_on' && scope) { rec.scopes = [...new Set([...rec.scopes, scope])]; }
+      else if (action === 'sql_scope_off' && scope) { rec.scopes = rec.scopes.filter((s) => s !== scope); }
     }
     const ops_admins = [...umStore.ops.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([u, v]) => ({ username: u, is_active: v.active ? 'Y' : 'N', can_users: v.users ? 'Y' : 'N', can_sql: v.sql ? 'Y' : 'N', ...umIdentity(u) }));
+      .map(([u, v]) => ({ username: u, is_active: v.active ? 'Y' : 'N', can_users: v.users ? 'Y' : 'N',
+                          can_sql: v.scopes.length ? 'Y' : 'N', sql_scopes: v.scopes, ...umIdentity(u) }));
     return respond({ status: 'success', ops_admins });
   }
 
@@ -816,7 +818,7 @@ function umFeatures(grants: UmGrant[]): { name: string; level: string }[] {
   }
   return Object.keys(feats).sort().map((name) => ({ name, level: feats[name] }));
 }
-interface UmOps { active: boolean; users: boolean; sql: boolean; }
+interface UmOps { active: boolean; users: boolean; sql: boolean; scopes: string[]; }
 const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, UmOps>() };
 let umSeeded = false;
 
@@ -825,9 +827,9 @@ function umSeed(): void {
     return;
   }
   umSeeded = true;
-  umStore.ops.set(environment.username.toUpperCase(), { active: true, users: true, sql: true });
-  umStore.ops.set('DBAUSER', { active: true, users: true, sql: false });
-  umStore.ops.set('SQLONLY', { active: true, users: false, sql: true });   // S-Studio, NOT super-admin
+  umStore.ops.set(environment.username.toUpperCase(), { active: true, users: true, sql: true, scopes: ['group', 'cib', 'retail'] });
+  umStore.ops.set('DBAUSER', { active: true, users: true, sql: false, scopes: ['cib'] });
+  umStore.ops.set('SQLONLY', { active: true, users: false, sql: true, scopes: [] });   // no can_users → S-Studio inert
   umStore.grants.set('JDOE', [
     { username: 'JDOE', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ' },
     { username: 'JDOE', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ' },

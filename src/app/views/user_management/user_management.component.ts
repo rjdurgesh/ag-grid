@@ -129,6 +129,10 @@ export class UserManagementComponent implements OnInit {
   readonly freeKey = signal('');           // free-text key (config table, custom server)
   readonly level = signal<Level>('READ');
   readonly sectionDb = signal('');         // '' = hide section on every DB
+  // Full access = everything EXCEPT User Management + S-Studio. This toggle (shown only for kind='full')
+  // ALSO stages a SCREEN/user_management grant so the admin gets the User-access side too. S-Studio is
+  // never included this way — it's ops_access/per-scope only.
+  readonly fullIncludeUsers = signal(false);
 
   // --- Staged grants (build several, then apply in one go) -------------------
   readonly staged = signal<GrantRow[]>([]);
@@ -514,10 +518,20 @@ export class UserManagementComponent implements OnInit {
     }
     const row = g as unknown as GrantRow;
     const existed = this.staged().some((s) => this.sameKey(s, row));
-    const next = this.staged().filter((s) => !this.sameKey(s, row));
+    let next = this.staged().filter((s) => !this.sameKey(s, row));
     next.push(row);
+    // Full access + "Include User Management" → also stage the SCREEN/user_management allow grant
+    // (READ — the screen isn't write-capable). Full access alone never reveals User Management.
+    let extra = '';
+    if (this.kind() === 'full' && this.fullIncludeUsers() && this.level() !== 'DENY') {
+      const um = { username: g.username, resource_type: 'SCREEN', resource_scope: 'user_management',
+                   resource_key: '*', access_level: 'READ' } as GrantRow;
+      next = next.filter((s) => !this.sameKey(s, um));
+      next.push(um);
+      extra = ' + User Management';
+    }
     this.staged.set(next);
-    this.toast.set({ kind: 'info', text: `${existed ? 'Updated' : 'Added'} “${this.describe(row)}” — click Apply to save.` });
+    this.toast.set({ kind: 'info', text: `${existed ? 'Updated' : 'Added'} “${this.describe(row)}”${extra} — click Apply to save.` });
   }
 
   removeStaged(row: GrantRow): void {
@@ -739,22 +753,36 @@ export class UserManagementComponent implements OnInit {
     });
   }
 
-  /** Grant / revoke S-Studio (the SQL console) for an operator — independent of User Management. */
-  async toggleSql(o: OpsAdmin): Promise<void> {
-    if (o.is_active !== 'Y') { return; }   // no privilege changes on a disabled user — enable them first
-    const granting = o.can_sql !== 'Y';
+  /** The three config scopes S-Studio can be granted for, with display labels. */
+  readonly sqlScopeOptions: { key: string; label: string }[] = [
+    { key: 'group', label: 'OLS GROUP' },
+    { key: 'cib', label: 'OLS CIB' },
+    { key: 'retail', label: 'OLS RETAIL' }
+  ];
+
+  /** Does this operator have S-Studio for the given scope? */
+  hasSqlScope(o: OpsAdmin, scope: string): boolean {
+    return (o.sql_scopes ?? []).includes(scope);
+  }
+
+  /** Grant / revoke S-Studio for ONE config scope. S-Studio is exclusive to FULL super admins, so it's
+   *  only assignable when the operator has User Management (can_users='Y') and is active. */
+  async toggleSqlScope(o: OpsAdmin, scope: string): Promise<void> {
+    if (o.is_active !== 'Y' || o.can_users !== 'Y') { return; }
+    const label = this.sqlScopeOptions.find((s) => s.key === scope)?.label ?? scope.toUpperCase();
+    const granting = !this.hasSqlScope(o, scope);
     const ok = await this.confirm.ask({
-      title: granting ? 'Grant S-Studio' : 'Revoke S-Studio',
+      title: granting ? `Grant S-Studio · ${label}` : `Revoke S-Studio · ${label}`,
       message: granting
-        ? `Grant ${o.username} access to S-Studio — the Config Ops console for running raw SQL / DDL on the databases? Assign only to trusted operators.`
-        : `Revoke ${o.username}'s S-Studio access?`,
+        ? `Grant ${o.username} S-Studio on ${label} — the Config Ops console for running raw SQL / DDL on that scope's databases? Assign only to trusted operators.`
+        : `Revoke ${o.username}'s S-Studio access on ${label}?`,
       confirmLabel: granting ? 'Grant' : 'Revoke', tone: granting ? 'primary' : 'danger'
     });
     if (!ok) { return; }
-    this.svc.ops(granting ? 'sql_on' : 'sql_off', o.username).subscribe({
+    this.svc.ops(granting ? 'sql_scope_on' : 'sql_scope_off', o.username, scope).subscribe({
       next: (r) => {
         this.opsAdmins.set(r.ops_admins ?? []);
-        this.toast.set({ kind: 'info', text: `${o.username} S-Studio ${granting ? 'granted' : 'revoked'}.` });
+        this.toast.set({ kind: 'info', text: `${o.username} S-Studio · ${label} ${granting ? 'granted' : 'revoked'}.` });
       },
       error: (e) => this.fail(e, 'Could not update S-Studio access')
     });
@@ -849,5 +877,6 @@ export class UserManagementComponent implements OnInit {
     this.toast.set({ kind: 'err', text });
   }
 }
+
 
 

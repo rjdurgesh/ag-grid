@@ -194,8 +194,9 @@ export abstract class ConfigScopeBase implements OnInit {
     this.tabLoadTimer = setTimeout(() => { this.tabLoading.set(false); this.tabLoadTimer = null; }, 450);
   }
 
-  /** S-Studio tab visible ONLY for authorised operators (`ols_ops_access.can_sql`). */
-  readonly canSql = computed(() => this.rbac.canSql());
+  /** S-Studio tab visible ONLY for authorised operators granted S-Studio for THIS config scope
+   *  (`ols_ops_access` per-scope flags). */
+  readonly canSql = computed(() => this.rbac.canSql(this.scope));
 
   /** Regression tab: DEV/STG only AND granted for this scope via `ols_app_access` (`config.regression`).
    *  So it's hidden unless explicitly granted — not shown to every config user any more. */

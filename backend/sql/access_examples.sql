@@ -221,21 +221,23 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','ADMIN','
 --==============================================================================
 -- 7) S-STUDIO (the Config Ops SQL console) — lives in ols_ops_access, NOT ols_app_access
 --==============================================================================
--- S-Studio is gated by ols_ops_access.can_sql='Y'. This is INDEPENDENT of User Management
--- (can_users) — you can give someone S-Studio WITHOUT making them a super-admin. The operator also
--- needs a Config Ops grant (section 2) for each scope whose DBs they'll run against, because
--- S-Studio lives inside the scope screen. Assign from the User Management screen, or by SQL:
+-- S-Studio is PER CONFIG SCOPE and exclusive to FULL super admins: the per-scope flags
+-- sql_group / sql_cib / sql_retail only take effect when the row is active AND can_users='Y'. So you
+-- cannot give a plain admin S-Studio without User Management. A READ operator also needs a Config Ops
+-- grant (section 2) for each scope whose screen hosts the S-Studio tab. Assign from the User Management
+-- Manage-access tab (per-scope checkboxes), or by SQL:
 --
---   -- S-Studio ONLY (not a super-admin):
---   INSERT INTO ols_ops_access (username, is_active, can_users, can_sql)
---   VALUES ('CHANGE_ME','Y','N','Y');
---   -- + the Config Ops scope(s) they'll query (so the scope screen — and its S-Studio tab — appears):
+--   -- Full super admin with S-Studio on CIB only:
+--   INSERT INTO ols_ops_access (username, is_active, can_users, sql_cib)
+--   VALUES ('CHANGE_ME','Y','Y','Y');
+--   -- (a READ operator would also need the Config Ops scope grant so the scope screen — and its
+--   --  S-Studio tab — appears; an ADMIN reaches every scope screen already):
 --   INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
---   VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:group','OMT-BOTH','READ','ADMIN','see GROUP scope for S-Studio');
+--   VALUES ('CHANGE_ME','TABLE_CATEGORY','config_ops:cib','OMT-BOTH','READ','ADMIN','see CIB scope for S-Studio');
 --   COMMIT;
 --
---   -- Turn S-Studio on/off for an EXISTING operator:
---   UPDATE ols_ops_access SET can_sql='Y' WHERE UPPER(username)=UPPER('CHANGE_ME'); COMMIT;
+--   -- Turn S-Studio on/off for an EXISTING operator, per scope:
+--   UPDATE ols_ops_access SET sql_group='Y' WHERE UPPER(username)=UPPER('CHANGE_ME'); COMMIT;
 -- (Table + all columns: ops_access_setup.sql.)
 
 

@@ -20,7 +20,7 @@ const EMPTY: AccessSnapshot = {
   infra: { all_apps: false, apps: [], denied_apps: [] },
   service: { all_apps: false, apps: [], denied_apps: [] },
   oracle: { all_dbs: false, all_level: 'READ', dbs: {}, denied_dbs: [] },
-  denied_sections: [], is_ops_admin: false, can_sql: false
+  denied_sections: [], denied_screens: [], is_ops_admin: false, can_sql: false, sql_scopes: []
 };
 
 /** Screens always resolvable (login/error routes only). Docs is NOT here anymore — both Docs screens
@@ -88,23 +88,27 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    // User Management is now split into two tabs with DIFFERENT gates (see the component):
-    //  • "User access" (grant/revoke) = grant-driven like the other screens — ADMIN, or an explicit
-    //    SCREEN/user_management grant. This `canView` drives the route + nav + that tab.
+    // A SCREEN/<screen>/*/DENY grant is ABSOLUTE — it hides the screen even for an ADMIN, the
+    // full-access wildcard, an ops-admin or an ungated default. Checked before everything else.
+    if ((s.denied_screens ?? []).includes(screen)) {
+      return false;
+    }
+    // User Management is split into two tabs with DIFFERENT gates (see the component):
+    //  • "User access" (grant/revoke) = an explicit SCREEN/user_management grant (the ADMIN "include
+    //    User Management" toggle writes it) OR an ops-admin. The base ADMIN role no longer implies it.
     //  • "Manage access" (the ops-admin table) stays exclusive to `ols_ops_access` → `isOpsAdmin()`.
-    // Ops-admins are super-users, so they always reach the screen (and it's the only door to the
-    // exclusive tab). The Manage-access tab itself is gated separately by isOpsAdmin().
     if (screen === 'user_management') {
-      return s.role === 'ADMIN' || s.screens.includes('user_management') || this.isOpsAdmin();
+      return s.screens.includes('user_management') || this.isOpsAdmin();
     }
     // Log Analytics + Infrastructure Health are visible to EVERY active user (ungated — see
-    // RBAC_DESIGN §2). They are the default screens a user with no other features still sees.
+    // RBAC_DESIGN §2), unless explicitly denied above.
     if (screen === 'log_analytics' || screen === 'infra_health') {
       return true;
     }
     if (ALWAYS_VIEW.has(screen)) {
       return true;
     }
+    // ADMIN sees every OTHER screen (S-Studio is not a screen — it's gated per scope by canSql()).
     if (s.role === 'ADMIN') {
       return true;
     }
@@ -127,11 +131,18 @@ export class RbacService {
     return s.active && !!s.is_ops_admin;
   }
 
-  /** May the user use S-Studio (the Config Ops SQL console)? Gated by `ols_ops_access.can_sql`,
-   *  assigned specifically per user — even other ops-admins are false unless granted. */
-  canSql(): boolean {
+  /** May the user use S-Studio in a given config scope? Gated per-scope by `ols_ops_access`
+   *  (`sql_scopes`), assigned only to full super admins. Falls back to the legacy global `can_sql`
+   *  flag when `sql_scopes` is absent (older snapshot / dev mock), so nothing breaks in transition. */
+  canSql(scope: string): boolean {
     const s = this.snapshot();
-    return s.active && !!s.can_sql;
+    if (!s.active) {
+      return false;
+    }
+    if (s.sql_scopes !== undefined) {
+      return s.sql_scopes.includes(scope);
+    }
+    return !!s.can_sql;   // back-compat: no per-scope info → the old global flag
   }
 
   /** Can the user take write actions on this screen? (OCC kill, Service start/stop.) */
@@ -147,10 +158,11 @@ export class RbacService {
   }
 
   /** Any access at all? (Active AND at least one feature — a granted screen, User Management, or
-   *  S-Studio.) False → No-Access page with the "contact OLS Team" message. */
+   *  S-Studio in any scope.) False → No-Access page with the "contact OLS Team" message. */
   hasAnyAccess(): boolean {
     const s = this.snapshot();
-    return s.active && (s.screens.length > 0 || this.isOpsAdmin() || this.canSql());
+    const anySql = (s.sql_scopes?.length ?? 0) > 0 || !!s.can_sql;
+    return s.active && (s.screens.length > 0 || this.isOpsAdmin() || anySql);
   }
 
   /** First screen the user is allowed to open (for redirects). */

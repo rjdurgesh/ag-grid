@@ -244,11 +244,16 @@ export interface AccessSnapshot {
   oracle: { all_dbs: boolean; all_level: 'READ' | 'WRITE'; dbs: Record<string, 'READ' | 'WRITE'>; denied_dbs?: string[] };
   /** Sections hidden for this user. */
   denied_sections: DeniedSection[];
+  /** Whole screens hidden for this user by a screen-level DENY grant — ABSOLUTE (beats ADMIN, the
+   *  full-access wildcard, can_users and S-Studio). Checked first by `canView`. */
+  denied_screens?: string[];
   /** Ops-admin gate (`ols_ops_access`): may open User Management + hand out grants. Independent of
    *  `role` — even an ADMIN is false here unless listed in the gate table. */
   is_ops_admin?: boolean;
-  /** S-Studio gate (`ols_ops_access.can_sql`, assigned per user): sees the Config Ops SQL console.
-   *  Only ever true for an ops-admin. */
+  /** S-Studio config scopes the user may use (`ols_ops_access` per-scope flags): e.g. ['cib'].
+   *  Only ever populated for a full super admin. Drives the per-scope S-Studio tab. */
+  sql_scopes?: string[];
+  /** DEPRECATED back-compat: true if S-Studio is granted in ANY scope. Prefer `sql_scopes`. */
   can_sql?: boolean;
 }
 
@@ -317,7 +322,10 @@ export interface OpsAdmin {
   username: string;
   is_active: string;
   can_users?: string;
+  /** DEPRECATED legacy global S-Studio flag. Prefer `sql_scopes`. */
   can_sql?: string;
+  /** S-Studio config scopes granted to this operator (e.g. ['group','cib']). */
+  sql_scopes?: string[];
   /** Identity fields (from ols_users) so the list can show the full name, not just the UID initial. */
   display_name?: string;
   first_name?: string;

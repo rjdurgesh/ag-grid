@@ -219,18 +219,21 @@ route. Everything else follows.
 **User Management screen** (Administration → User Management) lets an operator grant/revoke access from
 the UI (no SQL). The screen has **two tabs with DIFFERENT gates**:
 
-* **User access** (grant/revoke `ols_app_access` for one user) is **grant-driven like every other screen**
-  — visible to an `ADMIN`, a user holding a **`SCREEN / user_management`** grant, OR any ops-admin. The
-  route uses the normal [`rbacGuard`](src/app/auth/rbac.guard.ts) (`data.screen: 'user_management'`); the
-  nav item and tab follow `RbacService.canView('user_management')`. `user_management` is now a grantable
-  screen in the catalogue (`SCREEN_CATALOGUE` / `SCREEN_KEYS`). **Caveat:** this tab can grant *any*
-  access to *anyone*, so a `SCREEN/user_management` grant is effectively "can hand out access".
+* **User access** (grant/revoke `ols_app_access` for one user) is **grant-driven** — visible to a user
+  holding a (non-DENY) **`SCREEN / user_management`** grant, OR any ops-admin. The **base ADMIN role no
+  longer implies it**: an admin gets it only via the **"Include User Management" toggle** on the
+  Full-access grant (which stages a `SCREEN/user_management` grant) or by being an ops-admin. The route
+  uses the normal [`rbacGuard`](src/app/auth/rbac.guard.ts) (`data.screen: 'user_management'`); the nav
+  item and tab follow `RbacService.canView('user_management')`, which honors `denied_screens` first (a
+  `SCREEN/user_management/*/DENY` grant hides it even for an ADMIN or ops-admin). **Caveat:** this tab can
+  grant *any* access to *anyone*, so a `SCREEN/user_management` grant is effectively "can hand out access".
 * **Manage access** (the ops-admin table itself) stays **super-exclusive** to **`ols_ops_access`** — only a
-  UID in that table (`is_ops_admin`) sees this tab; the tab is gated in the component by `isOpsAdmin()`.
+  UID in that table with `can_users='Y'` (`is_ops_admin`) sees this tab; gated in the component by
+  `isOpsAdmin()`. This tab also assigns **per-scope S-Studio** (Group/CIB/Retail checkboxes per operator).
 
 Server-side the split is enforced too: `/api/access/admin/catalogue|user|grant|grant/delete` use
-`_require_user_admin` (ops-admin OR ADMIN OR a `SCREEN/user_management` grant); `/api/access/admin/ops`
-keeps the strict `_require_ops_admin`. (`ops-admin.guard.ts` is no longer wired to the route — kept for
+`_require_user_admin` (ops-admin OR a non-DENY `SCREEN/user_management` grant — **not** the bare ADMIN
+role); `/api/access/admin/ops` keeps the strict `_require_ops_admin`. (`ops-admin.guard.ts` is no longer wired to the route — kept for
 reference.) Target users are validated against `ols_users`; revoke = **hard delete** (no audit); the
 ops-admin list has no self-lockout guard. DDL/seed:
 [`backend/sql/ops_access_setup.sql`](backend/sql/ops_access_setup.sql). Full detail: RBAC_DESIGN.md §11.
@@ -293,8 +296,11 @@ the index without it (see `rbac_setup.sql` §2b).
 
 **S-Studio** (Config Ops → **Config | MISC | S-Studio** tab) is a raw SQL / PL-SQL console for running
 queries, DML, anonymous blocks, and package/procedure deployments against one database. **Doubly
-exclusive**: visible only to an ops-admin with **`ols_ops_access.can_sql='Y'`** (assigned per user from the
-User Management **S-Studio** toggle; snapshot flag `can_sql`, `rbac.canSql()`). DB dropdown = the config
+exclusive AND per-scope**: visible only to a full super admin granted S-Studio **for that config scope**
+via the per-scope `ols_ops_access` flags (`sql_group`/`sql_cib`/`sql_retail`; effective only when the row
+is active AND `can_users='Y'`). Assigned only from the User Management **Manage access** tab (per-scope
+checkboxes → `/admin/ops` `sql_scope_on`/`sql_scope_off`); snapshot carries `sql_scopes`, gated by
+`rbac.canSql(scope)` and re-checked per scope server-side (`fetch_sql_scope`). DB dropdown = the config
 scope's databases from `db_configs` (prefix-filtered, so `cib` shows batch + reporting; auto-grows).
 SELECT → results grid; DML/DDL/PL-SQL → status; **Oracle errors show in the panel**; **manual commit**
 (include `COMMIT;`); **every run confirms the target DB**. Runs via [`sql_studio_api.py`](backend/sql_studio_api.py)

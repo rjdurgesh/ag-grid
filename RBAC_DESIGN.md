@@ -21,9 +21,15 @@ then READ, then SALT):
 
 | Role | Sees | Writes | Everything is |
 |---|---|---|---|
-| **ADMIN** | everything | everywhere (kill, start/stop, add/edit/delete, apply) | granted — **ignores grants** |
+| **ADMIN** | everything **except User Management & S-Studio** | everywhere (kill, start/stop, add/edit/delete, apply) | granted, but a **screen-level DENY grant still applies** |
 | **READ** | **only screens it's granted** | only where a grant says so | **opt-in** |
 | **SALT** | **Config Ops only** (whatever config it's granted) | only where granted | opt-in, config-only |
+
+> **User Management & S-Studio are never implicit — not even for ADMIN.** User Management needs an
+> ops-admin (`can_users`) or an explicit `SCREEN/user_management` grant (the ADMIN "include User
+> Management" toggle writes it). S-Studio needs a per-scope `ols_ops_access` flag (full super admins
+> only). A **`SCREEN/<screen>` DENY grant is absolute** — it removes that screen even for an ADMIN or
+> a full-access wildcard, and surfaces in the snapshot's `denied_screens` (checked first by `canView`).
 
 **Two default screens for everyone; the rest opt-in.** Every **active** user (in `ols_users`,
 `LGCL_DEL_FLG='N'`) sees **Log Analytics** and **Infrastructure Health** by default — these two are
@@ -304,22 +310,26 @@ A dedicated **Administration → User Management** screen lets an *ops-admin* gr
 **Two tabs, two gates.** The screen is split so the day-to-day grant work can be delegated while the
 keys to the kingdom stay locked down:
 
-- **User access** tab (grant/revoke `ols_app_access` for a user) is **grant-driven like any other
-  screen**: an `ADMIN`, a user with a **`SCREEN / user_management`** grant, or any ops-admin sees it.
-  It uses the normal `rbacGuard` (`data.screen: 'user_management'`), `RbacService.canView('user_management')`
-  drives the route/nav/tab, and `user_management` is a grantable screen (`SCREEN_CATALOGUE` / `SCREEN_KEYS`).
+- **User access** tab (grant/revoke `ols_app_access` for a user) is **grant-driven**: a user with a
+  (non-DENY) **`SCREEN / user_management`** grant, or any ops-admin, sees it. The **base ADMIN role no
+  longer implies it** — an admin gets it only via the "include User Management" toggle (which writes the
+  grant) or by being an ops-admin. It uses the normal `rbacGuard` (`data.screen: 'user_management'`),
+  `RbacService.canView('user_management')` drives the route/nav/tab, and `user_management` is a grantable
+  screen (`SCREEN_CATALOGUE` / `SCREEN_KEYS`). A `SCREEN/user_management/*/DENY` grant blocks it outright.
   Because this tab can grant *any* access to *anyone*, treat a `SCREEN/user_management` grant as "may hand
   out access" and give it sparingly.
 - **Manage access** tab (the ops-admin table itself) stays **super-exclusive** to **`ols_ops_access`**.
 
 **Super-exclusive gate — `ols_ops_access`.** A deliberately tiny table of *privileged operators*
-(`username`, `is_active`, **`can_users`**, **`can_sql`**) gates the exclusive surfaces. **Manage access**
-shows only when the row is active with **`can_users='Y'`** (`is_ops_admin`); `can_users` and `can_sql`
-(S-Studio, §12) are **independent** — an operator can have either alone. The snapshot carries
-`is_ops_admin`; the component gates the Manage-access tab with `isOpsAdmin()`. Server-side,
+(`username`, `is_active`, **`can_users`**, and per-scope **`sql_group`/`sql_cib`/`sql_retail`**) gates the
+exclusive surfaces. **Manage access** shows only when the row is active with **`can_users='Y'`**
+(`is_ops_admin`). S-Studio (§12) is **per config scope** and exclusive to full super admins — the `sql_*`
+flags only take effect when the row is active AND `can_users='Y'`. The snapshot carries `is_ops_admin`
+and `sql_scopes`; the component gates the Manage-access tab with `isOpsAdmin()`. Server-side,
 `/admin/ops` uses `_require_ops_admin` while `/admin/catalogue|user|grant|grant/delete` use
-`_require_user_admin` (ops-admin OR ADMIN OR a `SCREEN/user_management` grant). `opsAdminGuard` is no
-longer wired to the route (kept for reference). DDL + bootstrap seed: `backend/sql/ops_access_setup.sql`.
+`_require_user_admin` (ops-admin OR a non-DENY `SCREEN/user_management` grant — **not** the bare ADMIN
+role). `opsAdminGuard` is no longer wired to the route (kept for reference). DDL + bootstrap seed:
+`backend/sql/ops_access_setup.sql`.
 Bootstrap by SQL once (chicken-and-egg is intentional); after that the screen can add more ops-admins.
 
 **What it does** (all `POST /api/access/admin/*`; every call re-checks the caller server-side —
@@ -368,15 +378,19 @@ A raw SQL / PL-SQL worksheet inside Config Ops (a third in-page tab **Config | M
 each scope screen). An operator can run any query, DML, anonymous block, or deploy a
 package/procedure/function against ONE database.
 
-**Exclusive gate — `ols_ops_access.can_sql`.** S-Studio is visible only to an operator whose
-`can_sql='Y'`. This is **independent of User Management (`can_users`)** — you can grant S-Studio
-**without** making the person a super-admin (and vice-versa). Assign it from the User Management
-"Who can manage access" panel (the **S-Studio** toggle → `/admin/ops` `sql_on`/`sql_off`) or by SQL.
-Snapshot flag `can_sql`; `RbacService.canSql()`; the tab is gated by `canSql()` and the execute
-endpoint re-checks it server-side.
+**Exclusive gate — `ols_ops_access` per-scope, full super admins only.** S-Studio is **per config
+scope**: an operator is granted it for any subset of `group` / `cib` / `retail` via the per-scope flags
+`sql_group` / `sql_cib` / `sql_retail`. It is **exclusive to full super admins** — the flags only take
+effect when the row is active AND `can_users='Y'` (so a plain ADMIN can never receive S-Studio, and
+there is no S-Studio-only operator). Assign it **only** from the User Management **Manage access** tab
+(ops-super-admins only) — a per-scope S-Studio checkbox per operator (→ `/admin/ops`
+`sql_scope_on`/`sql_scope_off` with `scope`) — or by SQL. Snapshot carries `sql_scopes: string[]`;
+`RbacService.canSql(scope)`; the tab is gated per scope by `canSql(scope)` and the endpoints re-check the
+scope server-side (`fetch_sql_scope`). The legacy single `can_sql` flag is deprecated (kept for
+back-compat, no longer the gate).
 Because S-Studio lives *inside* a config scope screen, an operator reaches it only on the scopes they
-can already see — i.e. `can_sql` **plus** a config grant in that scope. (This keeps scope visibility
-strictly grant-driven — a scope with no grant, e.g. RETAIL, stays hidden even for an S-Studio operator.)
+can already see — i.e. the per-scope S-Studio flag **plus** the ability to open that scope's config
+screen. (Scope visibility stays grant-driven for READ users; an ADMIN reaches every scope's screen.)
 
 **DB dropdown** — the databases in the current config scope, from `db_configs` filtered by key prefix
 (`group`→[group], `cib`→[cib_batch, cib_reporting], …). A new DB (e.g. `group_reporting`) appears
@@ -393,9 +407,11 @@ automatically — no code change. Same keys OCC passes.
 **Security (mandatory).** S-Studio runs writes/DDL, so it MUST use a **privileged connection, SEPARATE
 from the read-only OCC monitor** — wire `app.state.sql_db_configs` (`{scope_key: privileged_conn}`); if
 left empty in prod it falls back to `db_configs` and logs a warning. The execute endpoint re-checks
-`can_sql` from the token server-side (UI hiding is not the gate). No auto-commit; `SQL_STUDIO_MAX_ROWS`
-caps result size. DDL to add the column: `ops_access_setup.sql` (`can_sql CHAR(1) DEFAULT 'N'`).
+the per-scope S-Studio flag from the token server-side (UI hiding is not the gate). No auto-commit;
+`SQL_STUDIO_MAX_ROWS` caps result size. DDL to add the columns: `ops_access_setup.sql`
+(`sql_group` / `sql_cib` / `sql_retail CHAR(1) DEFAULT 'N'`).
 
-Code: `backend/sql_studio_api.py` (`/databases`, `/execute`, `can_sql` gate) + `database.execute_sql`
-(+ `fetch_can_sql` / `ops_admin_set_sql`); UI `src/app/views/config_ops_console/sql_studio/*`, the
+Code: `backend/sql_studio_api.py` (`/databases`, `/execute`, per-scope gate via `_scope_of_db`) +
+`database.execute_sql` (+ `fetch_sql_scopes` / `fetch_sql_scope` / `ops_admin_set_sql_scope`); UI
+`src/app/views/config_ops_console/sql_studio/*`, the
 `S-Studio` tab in each `config_ols_*` screen, `canSql` in `config-scope.base.ts` and `rbac.service.ts`.
