@@ -134,6 +134,28 @@ def connect(db_config: Any, call_timeout_ms: int | None = None):
     return _apply_timeouts(_install_lob_handler(oracledb.connect(str(db_config))), call_timeout_ms)
 
 
+def fetch_instance_name(db_config: Any) -> str:
+    """The Oracle instance name for a scope's DB — ``SYS_CONTEXT('USERENV','INSTANCE_NAME')`` (e.g.
+    ``OLSGD1``), for DISPLAY only (the Regression DB picker), so it needs no special privilege. Falls
+    back to ``DB_NAME`` when the instance name is unset (non-RAC / some editions), and to ``""`` when
+    both are null. Lets connection errors propagate — the caller decides how to degrade."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT NVL(SYS_CONTEXT('USERENV','INSTANCE_NAME'), "
+            "SYS_CONTEXT('USERENV','DB_NAME')) FROM dual")
+        row = cursor.fetchone()
+        return str(row[0]).strip() if row and row[0] is not None else ""
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
 # =============================================================================
 # Overview (Home strip) — one light snapshot per DB
 # =============================================================================
