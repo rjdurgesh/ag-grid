@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import access_api           # grants_have_full_access (Model B — role is not authorization)
 import config_loader
 import database
 import regression_ops as ops
@@ -48,6 +49,10 @@ STEP_STALE_SECS = config_loader.regression_defaults()["step_stale_minutes"] * 60
 class Caller(BaseModel):
     caller: str
     scope: str = "cib"
+
+
+class DownstreamExtractBody(Caller):
+    business_date: str | None = None   # 'YYYY-MM-DD'; None → recent rows (no date filter)
 
 
 class MarkBody(Caller):
@@ -161,12 +166,12 @@ def _require_regression(request: Request, body: Caller):
     ident = database.fetch_user_identity(cfg, caller)
     if not ident or str(ident.get("lgcl_del_flg") or "").strip().upper() != "N":
         raise HTTPException(status_code=403, detail="Not an active OLS user.")
-    is_admin = str(ident.get("is_admin") or "").strip().upper() in ("Y", "YES", "1", "TRUE")
-    if not is_admin:
-        grants = database.fetch_user_grants(cfg, caller, request.app.state.app_env)
-        has_cib = any((g.get("resource_scope") or "").lower() == "config_ops:cib" for g in grants)
-        if not has_cib:
-            raise HTTPException(status_code=403, detail="CIB Config access required.")
+    # Model B: role no longer grants — need a full-access wildcard OR a CIB config grant.
+    grants = database.fetch_user_grants(cfg, caller)
+    has_cib = any((g.get("resource_scope") or "").lower() == "config_ops:cib"
+                  and (g.get("access_level") or "").strip().upper() != "DENY" for g in grants)
+    if not (access_api.grants_have_full_access(grants) or has_cib):
+        raise HTTPException(status_code=403, detail="CIB Config access required.")
     return cfg
 
 
@@ -1029,16 +1034,20 @@ def activity(request: Request, body: ActivityBody) -> dict:
 
 
 @router.post("/downstream-extract")
-def downstream_extract(request: Request, body: Caller) -> dict:
+def downstream_extract(request: Request, body: DownstreamExtractBody) -> dict:
     cfg = _require_regression(request, body)
+    bd = (body.business_date or "").strip() or None
     if REGRESSION_USE_DUMMY:
-        return {"status": "success", "rows": [
+        rows = [
             {"business_date": "2026-08-28", "post_dt": "2026-08-28 09:35:00", "load_id": 910244,
              "business_line": "CB", "filename": "CB_POSITION_20260828.csv", "filerowcount": 24813},
             {"business_date": "2026-08-28", "post_dt": "2026-08-28 09:32:00", "load_id": 910243,
              "business_line": "ALMT", "filename": "ALMT_PNL_20260828.csv", "filerowcount": 12890},
-        ]}
+        ]
+        if bd:
+            rows = [r for r in rows if r["business_date"] == bd]
+        return {"status": "success", "rows": rows}
     try:
-        return {"status": "success", "rows": database.regression_downstream_extract(cfg)}
+        return {"status": "success", "rows": database.regression_downstream_extract(cfg, bd)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc))

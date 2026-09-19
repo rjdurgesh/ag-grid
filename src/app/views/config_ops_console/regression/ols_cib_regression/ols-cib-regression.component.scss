@@ -151,6 +151,10 @@
 .rg-meta-line { margin: 0.5rem 0 0.4rem; font-size: 0.78rem; color: var(--cui-secondary-color, #6b7280); }
 .rg-grid { display: block; width: 100%; height: 460px; }
 .rg-refreshed { font-size: 0.78rem; color: var(--cui-secondary-color, #6b7280); font-variant-numeric: tabular-nums; }
+/* Downstream-extract business-date picker — sits on the left of the tools row. */
+.rg-bdpick { display: inline-flex; align-items: center; gap: 0.45rem; margin-right: auto; }
+.rg-bdpick__label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; color: var(--cui-secondary-color, #6b7280); }
+.rg-bdpick .rg-field__in--date { width: 11rem; }
 :host ::ng-deep .rg-cell--ok   { color: var(--cui-success, #1e9e3e); font-weight: 600; }
 :host ::ng-deep .rg-cell--err  { color: var(--cui-danger, #e55353); font-weight: 600; }
 :host ::ng-deep .rg-cell--warn { color: var(--cui-warning, #b8860b); font-weight: 600; }

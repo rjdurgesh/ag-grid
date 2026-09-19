@@ -56,8 +56,8 @@ class ContentBody(BaseModel):
 # ---- access ----------------------------------------------------------------
 def _docs_access(request: Request, caller: str, app_env: str = "PROD") -> tuple[bool, bool]:
     """Return ``(can_user_guide, can_technical_guide)`` for the caller — grant-driven (like every other
-    screen). ADMIN / full-access (SCREEN */*) → both; else an explicit ``SCREEN / docs`` grant reveals
-    the User Guide and ``SCREEN / docs_technical`` the Technical Guide. No grant → neither (Docs hidden).
+    screen). Full-access (SCREEN */*) → both; else an explicit ``SCREEN / docs`` grant reveals the User
+    Guide and ``SCREEN / docs_technical`` the Technical Guide. No grant → neither (Docs hidden).
     Dummy mode → both (so it is browsable locally without a DB)."""
     if DOCS_USE_DUMMY:
         return True, True
@@ -66,8 +66,7 @@ def _docs_access(request: Request, caller: str, app_env: str = "PROD") -> tuple[
     active = bool(ident) and str(ident.get("lgcl_del_flg") or "").strip().upper() == "N"
     if not active:
         return False, False
-    if str(ident.get("is_admin") or "").strip().upper() in ("Y", "YES", "1", "TRUE"):
-        return True, True
+    # Model B: role no longer grants — the SCREEN/*/* wildcard below covers full-access users.
     can_user = can_tech = False
     for g in (database.fetch_user_grants(cfg, caller, app_env) or []):
         if (g.get("resource_type") or "").strip().upper() != "SCREEN":

@@ -248,6 +248,8 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly extractRows = signal<RegressionDownstreamExtractRow[]>([]);
   readonly extractLoading = signal(false);
   readonly extractError = signal(false);
+  /** Business date filter for the downstream-extract grid (YYYY-MM-DD); defaults to today. */
+  readonly extractDate = signal<string>(new Date().toLocaleDateString('en-CA'));
   readonly monitorLoading = signal(false);
 
   // Batch-monitor grid: AG-Grid (pagination + per-column filter + sort; virtualized for large sets).
@@ -1537,7 +1539,7 @@ export class OlsRetailRegressionComponent implements OnInit {
   loadDownstreamExtract(): void {
     this.extractLoading.set(true);
     this.extractError.set(false);
-    this.svc.downstreamExtract().subscribe({
+    this.svc.downstreamExtract(this.extractDate() || undefined).subscribe({
       next: (r) => {
         this.extractLoading.set(false);
         this.extractRows.set([...(r.rows ?? [])]);

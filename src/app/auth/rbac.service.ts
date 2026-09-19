@@ -33,8 +33,9 @@ const ALWAYS_VIEW = new Set<string>(['extras']);
  * screen view/write, config sub-screen (scope) + per-table access, Log Analytics server visibility,
  * and per-section allow/deny. See RBAC_DESIGN.md for the model.
  *
- * Rules: ADMIN → everything. READ → all screens read; servers/config tables opt-in via grants;
- * write only where granted. SALT → Config-Ops-only persona (Home + granted config scopes).
+ * Model B (grants-only): the `ols_users` role (ADMIN/READ/SALT) is metadata, NOT authorization. Every
+ * active user gets the default screens (Home, Log Analytics, Infra Health); everything else — including
+ * full/"admin" access via a full-access wildcard grant — comes from `ols_app_access`.
  * Fails **closed** — a failed/empty load means no access.
  */
 @Injectable({ providedIn: 'root' })
@@ -108,12 +109,8 @@ export class RbacService {
     if (ALWAYS_VIEW.has(screen)) {
       return true;
     }
-    // ADMIN sees every OTHER screen (S-Studio is not a screen — it's gated per scope by canSql()).
-    if (s.role === 'ADMIN') {
-      return true;
-    }
-    // Everything else (incl. both Documentation screens `docs` / `docs_technical`) is opt-in: visible
-    // only when a grant put it in `screens`.
+    // Model B (grants-only): every other screen is opt-in — visible only when a grant put it in
+    // `screens` (a full-access `SCREEN/*/*` grant fills them all). The ols_users role never grants.
     return s.screens.includes(screen);
   }
 
@@ -151,9 +148,6 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
     return s.write_screens.includes(screen);
   }
 
@@ -181,35 +175,29 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN' || s.config.all) {
+    if (s.config.all) {   // a full-access wildcard grant sets config.all
       return true;
     }
     return s.config.scopes.includes(scope);
   }
 
   /** Is the Regression tab granted for this scope? Driven by an `ols_app_access` grant
-   *  (`config.regression`), NOT the ops-admin table — so it doesn't overload `ols_ops_access`. ADMIN
-   *  always; others only where explicitly granted. The DEV/STG-only gate is applied at the screen. */
+   *  (`config.regression`; a full-access wildcard fills all scopes). The DEV/STG-only gate is at the
+   *  screen. Model B: no role shortcut. */
   regressionVisible(scope: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
     return (s.config.regression ?? []).includes(scope);
   }
 
   /** Is the Reconciliation tab granted for this scope? Same model as {@link regressionVisible} but a
-   *  separate grant (`config.reconciliation`) — Group gets it too. ADMIN always; DEV/STG gate at screen. */
+   *  separate grant (`config.reconciliation`) — Group gets it too. DEV/STG gate at screen. */
   reconciliationVisible(scope: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
-    }
-    if (s.role === 'ADMIN') {
-      return true;
     }
     return (s.config.reconciliation ?? []).includes(scope);
   }
@@ -224,10 +212,7 @@ export class RbacService {
     if (!s.active) {
       return 'none';
     }
-    if (s.role === 'ADMIN') {
-      return 'write';
-    }
-    if (s.config.all) {
+    if (s.config.all) {   // full-access wildcard → config.all + all_level
       return s.config.all_level === 'WRITE' ? 'write' : 'read';
     }
     const name = (tableName || '').toLowerCase();
@@ -263,10 +248,7 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
-    if (s.config.all) {
+    if (s.config.all) {   // full-access wildcard → config.all + all_level
       return s.config.all_level === 'WRITE';
     }
     return (
@@ -295,9 +277,6 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
     const a = (app || '').toUpperCase();
     if ((s.service.denied_apps ?? []).includes(a)) {
       return false;
@@ -310,9 +289,6 @@ export class RbacService {
     const s = this.snapshot();
     if (!s.active) {
       return false;
-    }
-    if (s.role === 'ADMIN') {
-      return true;
     }
     const k = (db || '').toLowerCase();
     if ((s.oracle.denied_dbs ?? []).includes(k)) {
@@ -327,9 +303,6 @@ export class RbacService {
     if (!s.active) {
       return false;
     }
-    if (s.role === 'ADMIN') {
-      return true;
-    }
     const k = (db || '').toLowerCase();
     if ((s.oracle.denied_dbs ?? []).includes(k)) {
       return false;
@@ -342,16 +315,13 @@ export class RbacService {
 
   // --- Sections (e.g. hide OCC SQL Intelligence) -----------------------------
 
-  /** Is a section within a screen allowed? (ADMIN always; others unless explicitly denied.) A deny
-   *  with no `db` hides the section everywhere; a deny with a `db` hides it only on that OCC DB
-   *  (pass the active `db` to honour per-DB section grants). */
+  /** Is a section within a screen allowed? (Allowed unless explicitly denied.) A deny with no `db`
+   *  hides the section everywhere; a deny with a `db` hides it only on that OCC DB (pass the active
+   *  `db` to honour per-DB section grants). */
   sectionAllowed(screen: string, key: string, db?: string): boolean {
     const s = this.snapshot();
     if (!s.active) {
       return false;
-    }
-    if (s.role === 'ADMIN') {
-      return true;
     }
     const cur = (db || '').toLowerCase();
     return !s.denied_sections.some((d) =>
@@ -390,3 +360,4 @@ function categoryMatches(grantCategory: string, tableCategory: string): boolean 
   }
   return g === t;
 }
+

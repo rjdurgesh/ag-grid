@@ -30,6 +30,7 @@ from env_loader import env_bool
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+import access_api           # grants_have_full_access (Model B — role is not authorization)
 import config_loader
 import database
 import db_errors
@@ -86,14 +87,14 @@ def _require_reconciliation(request: Request, body: Caller):
     ident = database.fetch_user_identity(cfg, caller)
     if not ident or str(ident.get("lgcl_del_flg") or "").strip().upper() != "N":
         raise HTTPException(status_code=403, detail="Not an active OLS user.")
-    if str(ident.get("is_admin") or "").strip().upper() in ("Y", "YES", "1", "TRUE"):
-        return cfg
-    grants = database.fetch_user_grants(cfg, caller, request.app.state.app_env)
+    # Model B: role no longer grants — need a full-access wildcard OR a config/reconciliation grant.
+    grants = database.fetch_user_grants(cfg, caller)
     want_cfg = f"config_ops:{scope}".lower()
-    ok = any(
-        (g.get("resource_scope") or "").lower() == want_cfg
-        or ((g.get("resource_type") or "").upper() == "RECONCILIATION"
-            and (g.get("resource_scope") or "").lower() in (scope, want_cfg))
+    ok = access_api.grants_have_full_access(grants) or any(
+        ((g.get("access_level") or "").strip().upper() != "DENY")
+        and ((g.get("resource_scope") or "").lower() == want_cfg
+             or ((g.get("resource_type") or "").upper() == "RECONCILIATION"
+                 and (g.get("resource_scope") or "").lower() in (scope, want_cfg)))
         for g in grants
     )
     if not ok:

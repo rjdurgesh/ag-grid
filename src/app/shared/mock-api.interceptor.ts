@@ -539,10 +539,10 @@ function baseActive(over: Record<string, unknown>): Record<string, unknown> {
 const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
   // Full access (like ADMIN + ops-admin + S-Studio).
   admin: () => baseActive({
-    role: 'ADMIN', is_ops_admin: true, can_sql: true,
+    role: 'ADMIN', is_ops_admin: true, can_sql: true, sql_scopes: ['group', 'cib', 'retail'],
     screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'user_management'],
     write_screens: ['service_console', 'oracle_command_center'],
-    config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [] },
+    config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [], regression: ['group', 'cib', 'retail'], reconciliation: ['group', 'cib', 'retail'] },
     service: { all_apps: true, apps: [], denied_apps: [] },
     oracle: { all_dbs: true, all_level: 'WRITE', dbs: {}, denied_dbs: [] }
   }),
@@ -1410,12 +1410,15 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
                ['FI', 'FI_POST', 3, '2026-08-28 08:30', '2026-08-28 08:31']] };
     case '/api/regression/activity':
       return { status: 'success', rows: rs.activity };
-    case '/api/regression/downstream-extract':
-      return { status: 'success', rows: [
+    case '/api/regression/downstream-extract': {
+      const bd = String(body['business_date'] ?? '').trim();
+      const extractRows = [
         { business_date: '2026-08-28', post_dt: '2026-08-28 09:35:00', load_id: 910244, business_line: 'CB', filename: 'CB_POSITION_20260828.csv', filerowcount: 24813 },
         { business_date: '2026-08-28', post_dt: '2026-08-28 09:32:00', load_id: 910243, business_line: 'ALMT', filename: 'ALMT_PNL_20260828.csv', filerowcount: 12890 },
         { business_date: '2026-08-27', post_dt: '2026-08-27 09:41:00', load_id: 910115, business_line: 'FI', filename: 'FI_POSTING_20260827.csv', filerowcount: 8732 }
-      ] };
+      ];
+      return { status: 'success', rows: bd ? extractRows.filter((r) => r.business_date === bd) : extractRows };
+    }
     default:
       return { status: 'success' };
   }

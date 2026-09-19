@@ -8,14 +8,14 @@ support/diagnostic view of "what can user X actually do, and why".
 Model (see RBAC_DESIGN.md for the full handbook):
 
 * **Gate 1 — active user.** The user must exist in ``ols_users`` with ``LGCL_DEL_FLG='N'``.
-  ``ols_users`` is READ ONLY here (identity + base role live there); we never modify it.
-* **Base role** comes from ``ols_users`` flags: ``IS_ADMIN`` / ``IS_READ`` / ``IS_SALT``.
-    - ADMIN → sees everything + writes everywhere (ignores grants).
-    - READ  → sees every screen read-only; servers & config tables are **opt-in** (granted);
-              write only where a grant says so.
-    - SALT  → a Config-Ops-only persona (Home + Config Ops), otherwise like READ.
-* **Overrides** (the fine-grained grants) live in ``ols_app_access`` — additive READ/WRITE, or
-  DENY to subtract. Resource types: SCREEN, SERVER, TABLE_CATEGORY, TABLE, SECTION.
+  ``ols_users`` is READ ONLY here (identity lives there); we never modify it.
+* **Model B — access is grants-only.** The ``ols_users`` role flags (``IS_ADMIN`` / ``IS_READ`` /
+  ``IS_SALT``) are **metadata only** (shown on the profile card) and DO NOT grant access. Every active
+  user gets just the **default screens** (Home, Log Analytics, Infra Health); everything else — including
+  full/"admin" access via a ``SCREEN/*/*`` wildcard grant — comes from ``ols_app_access``.
+* **Grants** live in ``ols_app_access`` — additive READ/WRITE, or DENY to subtract (a ``SCREEN/<screen>``
+  DENY is absolute). Resource types: SCREEN, SERVER, APP, DB, TABLE_CATEGORY, TABLE, SECTION,
+  REGRESSION, RECONCILIATION.
 
 Follows the same data-layer / API-layer split as ``oracle_cc_api.py``: ALL SQL is in
 ``database.py`` (``fetch_user_identity`` / ``fetch_user_grants``); this module only resolves the
@@ -200,6 +200,19 @@ def _is_active(identity: dict | None) -> bool:
     return bool(identity) and str(identity.get("lgcl_del_flg") or "").strip().upper() == "N"
 
 
+def grants_have_full_access(grants: list[dict] | None) -> bool:
+    """True iff the grants include a non-DENY full-access wildcard (`SCREEN / * / *`). Under Model B this
+    is how "admin"/everything is conferred — the ols_users role no longer grants access. Shared by the
+    server-side gates (config/docs already inline the same test)."""
+    for g in grants or []:
+        if ((g.get("resource_type") or "").strip().upper() == "SCREEN"
+                and (g.get("resource_scope") or "").strip() == "*"
+                and (g.get("resource_key") or "").strip() == "*"
+                and (g.get("access_level") or "").strip().upper() != "DENY"):
+            return True
+    return False
+
+
 def _display_name(identity: dict) -> str:
     fn = (identity.get("firstname") or "").strip()
     ln = (identity.get("surname") or "").strip()
@@ -322,8 +335,8 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     when the user is an ops-admin OR holds a `SCREEN/user_management` grant. A `SCREEN/<screen>/*/DENY`
     grant is ABSOLUTE — it removes that screen even for an ADMIN or a full-access wildcard. See
     RBAC_DESIGN.md."""
-    role = _role_of(identity)
-    active = _is_active(identity) and role != "NONE"
+    role = _role_of(identity)   # metadata only (profile card) — NOT authorization (Model B, grants-only)
+    active = _is_active(identity)   # active = LGCL_DEL_FLG='N'; the role flags never gate access
 
     if not active:
         return {
@@ -350,10 +363,9 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         "sql_scopes": sorted(sql_scope_set),   # S-Studio per config scope (independent of role)
     }
 
-    # Screen-level DENY + an explicit User-Management allow apply to EVERY role (incl. ADMIN), so scan
-    # for them up front. A `SCREEN/<screen>/*/DENY` grant is ABSOLUTE — it beats ADMIN, the full-access
-    # wildcard and can_users. `SCREEN/user_management/*` (non-DENY) is what the ADMIN "include User
-    # Management" toggle writes.
+    # Screen-level DENY + an explicit User-Management allow, scanned up front. A `SCREEN/<screen>/*/DENY`
+    # grant is ABSOLUTE — it beats the full-access wildcard and can_users. `SCREEN/user_management/*`
+    # (non-DENY) is what the "include User Management" toggle writes.
     denied_screens: set[str] = set()
     um_allow = False
     for g in grants:
@@ -367,29 +379,10 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             elif rs == "user_management":
                 um_allow = True
 
-    # ADMIN: every normal screen EXCEPT User Management + S-Studio. User Management is added back only
-    # for an ops-admin or an explicit grant; DENY then subtracts. S-Studio is never implicit (sql_scopes).
-    if role == "ADMIN":
-        admin_screens = ["home", "log_analytics", "config_ops_console", "infra_health",
-                         "service_console", "oracle_command_center", "docs", "docs_technical"]
-        if is_ops_admin or um_allow:
-            admin_screens.append("user_management")
-        admin_screens = [s for s in admin_screens if s not in denied_screens]
-        base.update({
-            "screens": admin_screens,
-            "write_screens": WRITE_CAPABLE_SCREENS,
-            "config": {"scopes": list(CONFIG_SCOPES), "all": True, "all_level": "WRITE",
-                       "category_grants": [], "table_grants": [], "regression": list(CONFIG_SCOPES),
-                       "reconciliation": list(CONFIG_SCOPES)},
-            "servers": ["*"], "all_servers": True, "denied_servers": [],
-            "infra": {"all_apps": True, "apps": [], "denied_apps": []},
-            "service": {"all_apps": True, "apps": [], "denied_apps": []},
-            "oracle": {"all_dbs": True, "all_level": "WRITE", "dbs": {}, "denied_dbs": []},
-            "denied_sections": [], "denied_screens": sorted(denied_screens),
-        })
-        return base
-
-    # READ / SALT: OPT-IN. A screen is visible ONLY if a grant touches it — a SCREEN grant, a
+    # Model B (grants-only): EVERY active user — regardless of the ols_users role flags — resolves purely
+    # from grants below (defaults + whatever is granted). "Admin"/full access comes from a `SCREEN/*/*`
+    # wildcard grant (handled by the `full_read` block), NOT the role. A screen is visible ONLY if a grant
+    # touches it — a SCREEN grant, a
     # SERVER grant (→ Log Analytics), or a TABLE/TABLE_CATEGORY/SCREEN grant in a config scope
     # (→ Config Ops). No grants → no screens → the app shows the "contact OLS Team" page.
     category_grants: list[dict] = []
@@ -554,18 +547,14 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     for k in denied_dbs:
         oracle_dbs.pop(k, None)
 
-    # SALT is a Config-Ops-only persona — it never sees non-config screens, even if granted.
-    if role == "SALT":
-        granted_screens = set()
-        write_screens.clear()
-        infra_apps.clear(); all_infra_apps = False; denied_infra_apps.clear()
-        service_apps.clear(); all_service_apps = False; denied_service_apps.clear()
-        oracle_dbs.clear(); all_dbs = False; denied_dbs.clear()
-        denied_servers.clear()
+    # User Management is visible to an ops-admin (can_users) or a SCREEN/user_management grant — never
+    # from the base role. DENY (below) still subtracts it.
+    if is_ops_admin or um_allow:
+        granted_screens.add("user_management")
 
     # Log Analytics + Infrastructure Health are visible to EVERY active user — no RBAC (see
     # RBAC_DESIGN §2). All servers / all infra apps show; SERVER and APP/infra_health grants are
-    # ignored (kept only for backward compatibility). This runs for all roles incl. SALT.
+    # ignored (kept only for backward compatibility).
     granted_screens.add("log_analytics")
     granted_screens.add("infra_health")
     all_servers = True
@@ -652,8 +641,12 @@ def access_effective(request: Request, body: EffectiveQuery, token_user: str = D
     cfg = getattr(request.app.state, "app_db_config", None)
     try:
         caller = database.fetch_user_identity(cfg, caller_uid)
-        if _role_of(caller) != "ADMIN" or not _is_active(caller):
-            raise HTTPException(status_code=403, detail="Admin access required")
+        # Model B: grant-driven — the diagnostic is for full-access holders or ops-admins, not a role.
+        caller_ok = _is_active(caller) and (
+            grants_have_full_access(database.fetch_user_grants(cfg, caller_uid))
+            or database.fetch_is_ops_admin(cfg, caller_uid))
+        if not caller_ok:
+            raise HTTPException(status_code=403, detail="Full access or User Management is required")
         identity = database.fetch_user_identity(cfg, body.username)
         grants = database.fetch_user_grants(cfg, body.username)
         return {

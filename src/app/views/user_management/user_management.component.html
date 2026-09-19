@@ -206,12 +206,15 @@
               </div>
 
               @if (kind() === 'full') {
-                <div class="um__field um__field--wide">
-                  <label class="um__check">
-                    <input type="checkbox" [ngModel]="fullIncludeUsers()" (ngModelChange)="fullIncludeUsers.set($event)" />
-                    Include User Management
+                <div class="um__field um__field--check">
+                  <label class="um__check" [class.is-on]="fullIncludeUsers()">
+                    <input type="checkbox" class="um__check-box" [ngModel]="fullIncludeUsers()"
+                           (ngModelChange)="fullIncludeUsers.set($event)" />
+                    <span class="um__check-text">
+                      <span class="um__check-title">Include User Management</span>
+                      <span class="um__check-desc">Full access covers every screen except User Management. Tick this to also grant the User Management screen.</span>
+                    </span>
                   </label>
-                  <p class="um__hint">Full access covers every screen except User Management and S-Studio. Tick this to also grant the User Management screen (the “User access” side). S-Studio is never included — it’s assigned per scope in Manage access.</p>
                 </div>
               }
 

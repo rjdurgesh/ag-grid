@@ -279,7 +279,8 @@ export class OlsCibRegressionService {
   activity(run_id?: number): Observable<{ rows: RegressionActivityRow[] }> {
     return this.api.post(API.regression.activity, { caller: this.caller(), scope: this.scope, run_id });
   }
-  downstreamExtract(): Observable<{ rows: RegressionDownstreamExtractRow[] }> {
-    return this.api.post(API.regression.downstreamExtract, { caller: this.caller(), scope: this.scope });
+  downstreamExtract(businessDate?: string): Observable<{ rows: RegressionDownstreamExtractRow[] }> {
+    return this.api.post(API.regression.downstreamExtract,
+      { caller: this.caller(), scope: this.scope, business_date: businessDate || null });
   }
 }

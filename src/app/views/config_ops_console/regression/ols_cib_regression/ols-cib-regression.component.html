@@ -678,6 +678,11 @@
         } @else { <p class="rg-hint rg-monitor-empty">Loading batch status…</p> }
       } @else if (monitorTab() === 'extract') {
         <div class="rg-row rg-row--tools">
+          <label class="rg-bdpick">
+            <span class="rg-bdpick__label">Business date</span>
+            <input type="date" class="rg-field__in rg-field__in--date" [value]="extractDate()"
+                   (change)="extractDate.set($any($event.target).value); loadDownstreamExtract()" />
+          </label>
           <span class="rg-refreshed">{{ extractRefreshed() || 'Latest downstream extract rows.' }}</span>
           <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="extractLoading()"
                   [disabled]="extractLoading()" (click)="loadDownstreamExtract()" title="Refresh" aria-label="Refresh downstream extract">

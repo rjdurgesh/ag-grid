@@ -2510,19 +2510,28 @@ def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 
             connection.close()
 
 
-def regression_downstream_extract(db_config: Any, limit: int = 1000) -> list[dict]:
-    """Recent downstream extract rows from ols_extract for the regression monitoring grid."""
+def regression_downstream_extract(db_config: Any, business_date: str | None = None,
+                                  limit: int = 1000) -> list[dict]:
+    """Downstream extract rows from ols_extract for the regression monitoring grid. When
+    ``business_date`` ('YYYY-MM-DD') is given, filter to that day (business_date is a DATE column, so
+    match on TRUNC); otherwise return the most recent rows."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute("""
+        binds: dict[str, Any] = {"lim": limit}
+        where = ""
+        if business_date:
+            where = "WHERE TRUNC(business_date) = TO_DATE(:bd, 'YYYY-MM-DD')"
+            binds["bd"] = business_date
+        cursor.execute(f"""
             SELECT business_date, post_dt, load_id, business_line, filename, filerowcount
               FROM ols_extract
+             {where}
              ORDER BY post_dt DESC NULLS LAST, business_date DESC NULLS LAST, load_id DESC
              FETCH FIRST :lim ROWS ONLY
-        """, {"lim": limit})
+        """, binds)
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, [_cell(v) for v in row])) for row in cursor.fetchall()]
     finally:
