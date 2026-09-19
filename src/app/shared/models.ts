@@ -482,6 +482,15 @@ export interface BatchMonitorResult {
   rows: unknown[][];
   row_count?: number;
 }
+/** One downstream extract row from ols_extract. */
+export interface RegressionDownstreamExtractRow {
+  business_date?: string;
+  post_dt?: string;
+  load_id?: string | number;
+  business_line?: string;
+  filename?: string;
+  filerowcount?: number;
+}
 /** One regression audit-log row (Regression Activity grid). */
 export interface RegressionActivityRow {
   load_dt?: string;

@@ -923,6 +923,14 @@ def compress_object(db_config: Any, *, owner: str, table: str, partition: str,
                        [owner, table, partition, subpartition, compress_type, requested_by])
 
 
+def rebuild_index(db_config: Any, *, owner: str, index: str, requested_by: str) -> int:
+    """**Submit** an index rebuild (fixes an UNUSABLE index) as a background job via
+    ``ols_util.occ_submit_rebuild_index`` and return the ``action_id`` (does NOT wait — a rebuild can
+    run for a while; the UI polls its status). The proc rebuilds the whole index if non-partitioned,
+    else each UNUSABLE (sub)partition, ONLINE. PRIVILEGED conn."""
+    return _occ_submit(db_config, "ols_util.occ_submit_rebuild_index", [owner, index, requested_by])
+
+
 def _occ_submit(db_config: Any, proc: str, args: list) -> int:
     """Call one of the occ_submit_* procs (positional binds + a trailing NUMBER OUT action_id) and
     return the generated action_id. The proc inserts a RUNNING row and creates the background job."""
@@ -2424,6 +2432,28 @@ def regression_activity(db_config: Any, run_id: int | None = None, limit: int = 
               {where_l}
              ORDER BY l.log_id DESC FETCH FIRST :lim ROWS ONLY
         """, binds)
+        cols = [c[0].lower() for c in cursor.description]
+        return [dict(zip(cols, [_cell(v) for v in row])) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def regression_downstream_extract(db_config: Any, limit: int = 1000) -> list[dict]:
+    """Recent downstream extract rows from ols_extract for the regression monitoring grid."""
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT business_date, post_dt, load_id, business_line, filename, filerowcount
+              FROM ols_extract
+             ORDER BY post_dt DESC NULLS LAST, business_date DESC NULLS LAST, load_id DESC
+             FETCH FIRST :lim ROWS ONLY
+        """, {"lim": limit})
         cols = [c[0].lower() for c in cursor.description]
         return [dict(zip(cols, [_cell(v) for v in row])) for row in cursor.fetchall()]
     finally:

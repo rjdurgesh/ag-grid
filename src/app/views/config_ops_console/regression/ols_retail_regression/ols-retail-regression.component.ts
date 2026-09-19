@@ -14,7 +14,8 @@ import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
   BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
-  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionState, RunSqlResult
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDownstreamExtractRow,
+  RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 interface StepDef { key: string; title: string; }
@@ -46,20 +47,9 @@ export class OlsRetailRegressionComponent implements OnInit {
     { key: 'reset', title: 'Reset batches' },
     { key: 'trigger', title: 'Trigger batches' }
   ];
-  // `name` = the actual database name/SID shown to the operator (placeholders — set to your real DB names).
-  readonly databases = [
-    { key: 'group', label: 'OLS GROUP', name: 'OLSGD1' },
-    { key: 'cib_batch', label: 'OLS CIB Batch', name: 'OLSCD1' },
-    { key: 'cib_reporting', label: 'OLS CIB Reporting', name: 'OLSCR1' },
-    { key: 'retail_batch', label: 'OLS RETAIL Batch', name: 'OLSRD1' },
-    { key: 'retail_reporting', label: 'OLS RETAIL Reporting', name: 'OLSRR1' }
-  ];
-  /** The three batch schedulers — used by Reset, Trigger and Monitoring Batches. */
-  readonly batchDatabases = [
-    { key: 'group', label: 'OLS GROUP' },
-    { key: 'cib_batch', label: 'OLS CIB Batch' },
-    { key: 'retail_batch', label: 'OLS RETAIL Batch' }
-  ];
+  // ALL databases the app is initialised with — loaded from the backend (app.state.db_configs) so the
+  // UI never hardcodes DB names/SIDs; `name` = the actual database name/SID shown to the operator.
+  readonly databases = signal<{ key: string; label: string; name: string }[]>([]);
 
   readonly state = signal<RegressionState>({ run: null, steps: {} });
   /** Set after a run is closed out, so we can show a "run completed" banner. */
@@ -184,6 +174,21 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly cleanupResults = signal<CleanupResult[]>([]);          // last real run's per-path results (popup)
   readonly cleanupDetail = signal<CleanupResult[] | null>(null);  // detail popup (last run, or a clicked activity row)
   readonly cleanupInfoOpen = signal(false);                       // the ⓘ "manifest rules" popover
+  readonly manifestInfoOpen = signal(false);                      // the ⓘ "file-copy manifest rules" popover
+  /** Copy-ready reference snippets for the cleanup manifest ⓘ popover — one per distinct feature. */
+  readonly cleanupExamples: { label: string; json: string }[] = [
+    { label: 'Delete every file in a folder', json: '{ "path": "D:\\\\ols\\\\retail\\\\logs" }' },
+    { label: 'Only certain file types', json: '{ "path": "D:\\\\ols\\\\retail\\\\extracts", "include_pattern": ".csv,.dat" }' },
+    { label: 'Recurse & drop emptied subfolders', json: '{ "path": "D:\\\\ols\\\\retail\\\\tmp", "include_subdir": "Y", "remove_empty_dir": "Y" }' },
+    { label: 'Keep a few, delete the rest', json: '{ "path": "D:\\\\ols\\\\retail\\\\out", "include_pattern": "*", "exclude_pattern": ".keep,.gitkeep" }' },
+    { label: 'Only files older than 30 days', json: '{ "path": "D:\\\\ols\\\\retail\\\\archive", "older_than_days": 30 }' }
+  ];
+  /** Copy-ready reference snippets for the file-copy manifest ⓘ popover — one per distinct feature. */
+  readonly fileCopyExamples: { label: string; json: string }[] = [
+    { label: 'Copy one file', json: '{ "source": "D:\\\\rel\\\\ols_retail.jar", "destination": "D:\\\\ols\\\\retail\\\\lib\\\\ols_retail.jar" }' },
+    { label: 'Copy a whole folder (recursive)', json: '{ "source": "D:\\\\rel\\\\config", "destination": "D:\\\\ols\\\\retail\\\\config" }' },
+    { label: 'From a network share (UNC)', json: '{ "source": "\\\\\\\\eurv12\\\\d$\\\\rel\\\\rates.dat", "destination": "D:\\\\ols\\\\retail\\\\data\\\\rates.dat" }' }
+  ];
   /** Per-path cleanup state (path → latest status) reconstructed from the run's clean_item audit rows. */
   readonly cleanupState = computed(() => {
     const m: Record<string, { status: string; deleted?: number; bytes_freed?: number; error?: string }> = {};
@@ -206,10 +211,8 @@ export class OlsRetailRegressionComponent implements OnInit {
 
   // Reset / Trigger — scripts come from ONE RegressionTesting folder; the operator ticks scripts (+ sequence)
   // AND ticks which DB(s) to run them on (batch/reporting only). Every selected script runs on every selected DB.
-  readonly resetTriggerDbs = [
-    { key: 'retail_batch', label: 'OLS RETAIL Batch' },
-    { key: 'retail_reporting', label: 'OLS RETAIL Reporting' }
-  ];
+  /** This scope's databases (Retail), derived from `databases` — the Reset / Trigger targets. */
+  readonly resetTriggerDbs = computed(() => this.databases().filter((d) => d.key.startsWith('retail')));
   readonly resetSelected = signal<string[]>([]);     // ordered — run order = array order
   readonly resetDbs = signal<string[]>(['retail_batch']);   // target DB(s) — every reset script runs on each
   readonly resetScripts = signal<string[]>([]);
@@ -237,11 +240,14 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly consoleRunning = signal(false);      // a live run is streaming into the console
 
   // Monitoring
-  readonly monitorTab = signal<'batches' | 'activity'>('activity');   // Regression Activity shown first
+  readonly monitorTab = signal<'batches' | 'activity' | 'extract'>('activity');   // Regression Activity shown first
   readonly monitorDb = signal('retail_batch');
   readonly batchResult = signal<BatchMonitorResult | null>(null);
   readonly batchError = signal(false);       // true when the last batch-monitor load failed → show a retryable message, not a stuck spinner
   readonly activityRows = signal<RegressionActivityRow[]>([]);
+  readonly extractRows = signal<RegressionDownstreamExtractRow[]>([]);
+  readonly extractLoading = signal(false);
+  readonly extractError = signal(false);
   readonly monitorLoading = signal(false);
 
   // Batch-monitor grid: AG-Grid (pagination + per-column filter + sort; virtualized for large sets).
@@ -277,6 +283,22 @@ export class OlsRetailRegressionComponent implements OnInit {
     enableCellTextSelection: true, ensureDomOrder: true,   // let the user select + copy cell text
     onCellClicked: (e: { colDef?: { field?: string }; data?: RegressionActivityRow }) => this.onActivityCellClicked(e),
   };
+  readonly extractGridOptions = {
+    defaultColDef: { resizable: true, sortable: true, filter: true, floatingFilter: true, minWidth: 120 },
+    pagination: true,
+    paginationPageSize: 100,
+    paginationPageSizeSelector: [50, 100, 500, 1000],
+    enableCellTextSelection: true, ensureDomOrder: true,
+  };
+  readonly extractColDefs: ColDef[] = [
+    { field: 'business_date', headerName: 'BUSINESS_DATE', maxWidth: 160 },
+    { field: 'post_dt', headerName: 'POST_DT', maxWidth: 180 },
+    { field: 'load_id', headerName: 'LOAD_ID', maxWidth: 140 },
+    { field: 'business_line', headerName: 'BUSINESS_LINE', maxWidth: 170 },
+    { field: 'filename', headerName: 'FILENAME', flex: 2, minWidth: 240 },
+    { field: 'filerowcount', headerName: 'FILEROWCOUNT', maxWidth: 170, type: 'numericColumn',
+      valueFormatter: (p) => this.formatCount(p.value) },
+  ];
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
     { field: 'load_dt', headerName: 'Action Date', maxWidth: 130 },
@@ -514,8 +536,10 @@ export class OlsRetailRegressionComponent implements OnInit {
   private readonly nowTick = signal(Date.now());
   private readonly batchAt = signal<Date | null>(null);
   private readonly activityAt = signal<Date | null>(null);
+  private readonly extractAt = signal<Date | null>(null);
   readonly batchRefreshed = computed(() => this.refreshedLabel(this.batchAt()));
   readonly activityRefreshed = computed(() => this.refreshedLabel(this.activityAt()));
+  readonly extractRefreshed = computed(() => this.refreshedLabel(this.extractAt()));
   private refreshedLabel(at: Date | null): string {
     return at ? `Last refreshed ${formatDateTime(at)} · ${syncAgo(at, this.nowTick())}` : '';
   }
@@ -551,6 +575,7 @@ export class OlsRetailRegressionComponent implements OnInit {
       },
       error: (e) => { this.loading.set(false); this.fail(e, 'Could not load the regression run'); }
     });
+    this.loadDatabases();        // backend-driven DB list for Apply / Reset / Trigger pickers
     this.loadRefreshDatabases(); // env-specific DBs for this scope's Refresh-DB picker
     this.loadActivity();         // Regression Activity is the default monitoring tab
     this.loadBatches();          // preload batch status too — don't make the user click Refresh
@@ -785,6 +810,14 @@ export class OlsRetailRegressionComponent implements OnInit {
       error: (e) => this.fail(e, 'Could not load the databases for this environment')
     });
   }
+  /** Backend-driven list of every initialized DB (from app.state.db_configs) for the
+   *  Apply / Reset / Trigger pickers — replaces the old hardcoded UI array. */
+  loadDatabases(): void {
+    this.svc.databases().subscribe({
+      next: (r) => this.databases.set(r.databases ?? []),
+      error: (e) => this.fail(e, 'Could not load the databases')
+    });
+  }
   toggleRefreshDb(d: string): void { this.refreshDbs.set(this.toggle(this.refreshDbs(), d)); }
   toggleRefreshOpen(): void { this.refreshOpen.set(!this.refreshOpen()); }
   closeRefreshMenu(): void { this.refreshOpen.set(false); }
@@ -931,7 +964,7 @@ export class OlsRetailRegressionComponent implements OnInit {
   applyFileRuns(file: string): boolean { return this.applyDbsOf(file).length > 0; }
   applyFileName(file: string): string { return file.split('/').pop() || file; }
   /** Keep a file's DB list in the fixed `databases` order (so per-file DB order is stable). */
-  private applyOrderDbs(keys: Set<string>): string[] { return this.databases.map((x) => x.key).filter((k) => keys.has(k)); }
+  private applyOrderDbs(keys: Set<string>): string[] { return this.databases().map((x) => x.key).filter((k) => keys.has(k)); }
   /** Tick/untick one DB for one file. A file joins the run sequence when it gets its first DB and leaves it
    *  when the last DB is removed (a file with no DB ticked is simply not run). */
   toggleApplyFileDb(file: string, db: string): void {
@@ -945,14 +978,14 @@ export class OlsRetailRegressionComponent implements OnInit {
   }
   /** Select all / clear the 5 DBs for one file. */
   toggleApplyFileAllDbs(file: string): void {
-    const all = this.databases.map((x) => x.key);
+    const all = this.databases().map((x) => x.key);
     const map = { ...this.applyFileDbs() };
     const had = (map[file]?.length || 0) > 0;
     map[file] = (map[file]?.length || 0) === all.length ? [] : [...all];
     this.applyFileDbs.set(map);
     this.syncApplyOrder(file, map[file].length > 0, had);
   }
-  applyFileAllDbsOn(file: string): boolean { return this.applyDbsOf(file).length === this.databases.length; }
+  applyFileAllDbsOn(file: string): boolean { return this.applyDbsOf(file).length === this.databases().length; }
   private syncApplyOrder(file: string, hasDbs: boolean, hadDbs: boolean): void {
     if (hasDbs && !hadDbs) { this.applyOrder.set([...this.applyOrder(), file]); }
     else if (!hasDbs && hadDbs) { this.applyOrder.set(this.applyOrder().filter((f) => f !== file)); }
@@ -1315,6 +1348,8 @@ export class OlsRetailRegressionComponent implements OnInit {
   closeCleanupDetail(): void { this.cleanupDetail.set(null); }
   toggleCleanupInfo(): void { this.cleanupInfoOpen.set(!this.cleanupInfoOpen()); }
   closeCleanupInfo(): void { this.cleanupInfoOpen.set(false); }
+  toggleManifestInfo(): void { this.manifestInfoOpen.set(!this.manifestInfoOpen()); }
+  closeManifestInfo(): void { this.manifestInfoOpen.set(false); }
   /** No paths to clean this release (no/empty manifest) → complete the step cleanly (logged, not a force). */
   async markNothingToClean(): Promise<void> {
     const note = this.cleanupLocations().length
@@ -1499,16 +1534,34 @@ export class OlsRetailRegressionComponent implements OnInit {
       next: (r) => { this.activityRows.set([...(r.rows ?? [])]); this.activityAt.set(new Date()); this.nowTick.set(Date.now()); }
     });
   }
+  loadDownstreamExtract(): void {
+    this.extractLoading.set(true);
+    this.extractError.set(false);
+    this.svc.downstreamExtract().subscribe({
+      next: (r) => {
+        this.extractLoading.set(false);
+        this.extractRows.set([...(r.rows ?? [])]);
+        this.extractAt.set(new Date());
+        this.nowTick.set(Date.now());
+      },
+      error: (e) => { this.extractLoading.set(false); this.extractError.set(true); this.fail(e, 'Could not load downstream extract'); }
+    });
+  }
   cell(v: unknown): string { return v === null || v === undefined ? '' : String(v); }
+  private formatCount(v: unknown): string {
+    if (v === null || v === undefined || v === '') { return ''; }
+    const n = Number(v);
+    return Number.isFinite(n) ? n.toLocaleString('en-US') : String(v);
+  }
 
   // --- utils -----------------------------------------------------------------
   private toggle(list: string[], v: string): string[] {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
   }
-  dbLabel(key: string): string { return this.databases.find((d) => d.key === key)?.label ?? key; }
+  dbLabel(key: string): string { return this.databases().find((d) => d.key === key)?.label ?? key; }
   /** Operator-facing DB name: the actual DB name/SID + friendly label, e.g. "OLSCD1 (OLS CIB Batch)". */
   dbDisplay(key: string): string {
-    const d = this.databases.find((x) => x.key === key);
+    const d = this.databases().find((x) => x.key === key);
     return d ? (d.name ? `${d.name} (${d.label})` : d.label) : key;
   }
   private fail(e: unknown, fallback: string): void {

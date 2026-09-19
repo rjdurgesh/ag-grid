@@ -287,6 +287,59 @@ def refresh_databases(request: Request, body: Caller) -> dict:
     return {"status": "success", "databases": config_loader.regression_scope_config(body.scope)["refresh_databases"]}
 
 
+# All databases the app is initialised with (every scope in app.state.db_configs) — used by the
+# Apply / Reset / Trigger pickers. Generic + dynamic: keys come from the SAME db_configs the rest of
+# the app uses, labels from a small map, and the real DB name/SID is read LIVE from the connection
+# (SYS_CONTEXT, cached) so it's correct per environment — nothing hardcoded in the UI.
+_REG_DB_LABELS = {
+    "group": "OLS GROUP", "cib_batch": "OLS CIB Batch", "cib_reporting": "OLS CIB Reporting",
+    "retail_batch": "OLS RETAIL Batch", "retail_reporting": "OLS RETAIL Reporting",
+}
+_REG_DB_NAME_CACHE: dict = {}
+
+
+def _reg_db_label(key: str) -> str:
+    return _REG_DB_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _reg_db_name(key: str, cfg) -> str:
+    """Real DB name/SID for display — read LIVE from the connection (SYS_CONTEXT instance name), cached
+    per key. Falls back to the key upper-cased if the DB can't be reached / has no config."""
+    cached = _REG_DB_NAME_CACHE.get(key)
+    if cached:
+        return cached
+    name = ""
+    if cfg:
+        try:
+            name = (database.fetch_instance_name(cfg) or "").strip()
+        except Exception:  # noqa: BLE001 — display only; never fail the picker over a name
+            logger.warning("regression: could not read instance name for db '%s'", key)
+            name = ""
+    resolved = name or key.upper()
+    if name:
+        _REG_DB_NAME_CACHE[key] = resolved           # cache only a real value (retry on transient failure)
+    return resolved
+
+
+@router.post("/databases")
+def databases(request: Request, body: Caller) -> dict:
+    """Every database the app is initialised with (all scopes in ``app.state.db_configs``), as
+    ``[{key,label,name}]`` — drives the Apply / Reset / Trigger DB pickers dynamically (no UI-hardcoded
+    list). Reset/Trigger filter it to their scope on the client."""
+    _require_regression(request, body)
+    if REGRESSION_USE_DUMMY:
+        env = str(getattr(request.app.state, "app_env", "DEV")).upper() or "DEV"
+        names = {"group": f"OLS_GROUP_{env}", "cib_batch": f"OLS_CIB_BATCH_{env}",
+                 "cib_reporting": f"OLS_CIB_RPT_{env}", "retail_batch": f"OLS_RET_BATCH_{env}",
+                 "retail_reporting": f"OLS_RET_RPT_{env}"}
+        dbs = [{"key": k, "label": _reg_db_label(k), "name": names.get(k, k.upper())}
+               for k in ("group", "cib_batch", "cib_reporting", "retail_batch", "retail_reporting")]
+        return {"status": "success", "databases": dbs}
+    cfgs = getattr(request.app.state, "db_configs", {}) or {}
+    dbs = [{"key": k, "label": _reg_db_label(k), "name": _reg_db_name(k, cfgs.get(k))} for k in cfgs]
+    return {"status": "success", "databases": dbs}
+
+
 @router.post("/refresh-db")
 def refresh_db(request: Request, body: RefreshBody) -> dict:
     """Step 1 — trigger the DB-refresh API for each selected database and log a per-DB audit row.
@@ -973,3 +1026,19 @@ def activity(request: Request, body: ActivityBody) -> dict:
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "rows": []}
     return {"status": "success", "rows": database.regression_activity(cfg, body.run_id)}
+
+
+@router.post("/downstream-extract")
+def downstream_extract(request: Request, body: Caller) -> dict:
+    cfg = _require_regression(request, body)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success", "rows": [
+            {"business_date": "2026-08-28", "post_dt": "2026-08-28 09:35:00", "load_id": 910244,
+             "business_line": "CB", "filename": "CB_POSITION_20260828.csv", "filerowcount": 24813},
+            {"business_date": "2026-08-28", "post_dt": "2026-08-28 09:32:00", "load_id": 910243,
+             "business_line": "ALMT", "filename": "ALMT_PNL_20260828.csv", "filerowcount": 12890},
+        ]}
+    try:
+        return {"status": "success", "rows": database.regression_downstream_extract(cfg)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc))

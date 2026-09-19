@@ -142,14 +142,21 @@ def top_indexes_dummy(t: OracleTarget) -> dict:
 
 def index_health_dummy(t: OracleTarget) -> dict:
     rows = [
-        {"index_name": "IX_TRADE_EVENTS_TS", "table_name": "TRADE_EVENTS", "state": "UNUSABLE", "state__sev": "crit",
-         "detail": "Offline — not maintained; rebuild required", "last_analyzed": "14-Aug", "__sev": "crit"},
-        {"index_name": "IX_STG_LOAD_TMP", "table_name": "STG_LOAD", "state": "INVISIBLE", "state__sev": "warn",
-         "detail": "Maintained but hidden from optimizer (active/offline)", "last_analyzed": "12-Aug", "__sev": "warn"},
-        {"index_name": "IX_POSITION_ACCT", "table_name": "POSITION_SNAP", "state": "STALE STATS", "state__sev": "warn",
-         "detail": "32% rows modified since last gather", "last_analyzed": "09-Aug", "__sev": "warn"},
+        {"index_name": "IX_TRADE_EVENTS_TS", "table_name": "TRADE_EVENTS", "owner": "OLS", "state": "UNUSABLE", "state__sev": "crit",
+         "detail": "Offline — not maintained; rebuild required", "last_analyzed": "14-Aug", "__sev": "crit", "__actions": ["rebuild"]},
+        {"index_name": "IX_STG_LOAD_TMP", "table_name": "STG_LOAD", "owner": "OLS", "state": "INVISIBLE", "state__sev": "warn",
+         "detail": "Maintained but hidden from optimizer (active/offline)", "last_analyzed": "12-Aug", "__sev": "warn", "__actions": []},
+        {"index_name": "IX_POSITION_ACCT", "table_name": "POSITION_SNAP", "owner": "OLS", "state": "STALE STATS", "state__sev": "warn",
+         "detail": "32% rows modified since last gather", "last_analyzed": "09-Aug", "__sev": "warn", "__actions": []},
     ]
     return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
+
+
+def rebuild_index_dummy(t: OracleTarget, owner: str, index: str, caller: str) -> dict:
+    aid = _dummy_submit(t, "REBUILD_INDEX", owner, index, None, caller)
+    logger.info("DUMMY rebuild-index submit #%s %s.%s on %s", aid, owner, index, t.key)
+    return {"status": "success", "action_id": aid, "state": "RUNNING",
+            "message": f"Rebuild submitted for index {owner}.{index} on {t.instance} — running in the background."}
 
 
 def locks_dummy(t: OracleTarget) -> dict:

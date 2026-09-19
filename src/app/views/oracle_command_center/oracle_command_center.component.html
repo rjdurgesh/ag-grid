@@ -345,7 +345,11 @@
           @if (idxHealthLoading() && !idxHealth()) { <app-loader variant="skeleton" [rows]="3" message="Checking index health…" /> }
           @else if (idxHealthError()) { <div class="occ-empty occ-empty--err">Couldn't read index health. Try refresh.</div> }
           @else if (idxHealth(); as d) {
-            @if (d.rows.length) { <app-dyn-table [model]="d" [maxRows]="10" /> }
+            @if (d.rows.length) {
+              <app-dyn-table [model]="d" [maxRows]="10"
+                [actions]="canRebuild() ? rebuildActions : []" (action)="onIndexAction($event)" />
+              <p class="occ-note"><b>UNUSABLE</b> indexes offer a <b>Rebuild</b> action (online); <b>INVISIBLE</b> is a visibility choice and <b>STALE STATS</b> needs a stats gather, so neither is rebuildable here.</p>
+            }
             @else { <div class="occ-empty">All indexes valid, visible and fresh. ✓</div> }
           }
         </div>

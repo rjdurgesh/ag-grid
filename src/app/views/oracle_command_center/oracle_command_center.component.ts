@@ -509,6 +509,44 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
     { key: 'gather', label: 'Gather stats', tone: 'primary', title: 'Gather optimizer statistics for this object' }
   ];
 
+  /** Rebuild an UNUSABLE index — WRITE on the current DB (same gate as Kill). The per-row `__actions`
+   *  whitelist means the button shows only on UNUSABLE rows in Index Health. */
+  readonly canRebuild = computed(() => this.rbac.dbWritable(this.activeKey()));
+  readonly rebuildActions: DynAction[] = [
+    { key: 'rebuild', label: 'Rebuild', tone: 'primary', title: 'Rebuild this unusable index (online)' }
+  ];
+
+  async onIndexAction(evt: { key: string; row: Record<string, unknown> }): Promise<void> {
+    if (evt.key !== 'rebuild' || !this.canRebuild()) {
+      return;
+    }
+    const db = this.activeKey();
+    const owner = String(evt.row['owner'] ?? '');
+    const index = String(evt.row['index_name'] ?? '');
+    if (!db || !owner || !index) {
+      return;
+    }
+    const dbName = this.activeTarget()?.instance ?? db;
+    const ok = await this.confirm.ask({
+      title: 'Rebuild index',
+      message: `Rebuild index ${owner}.${index} on ${dbName}?\n\n`
+        + 'It rebuilds ONLINE (the whole index if non-partitioned, else each unusable partition/subpartition).'
+        + ' This can be heavy on a large index and runs in the background.',
+      confirmLabel: 'Rebuild', cancelLabel: 'Cancel', tone: 'danger'
+    });
+    if (!ok) {
+      return;
+    }
+    this.svc.rebuildIndex(db, owner, index, this.actor()).subscribe({
+      next: (res) => {
+        this.notify(true, res.message || `Rebuild submitted for index ${owner}.${index} — running in the background.`);
+        this.loadActions();
+        this.pollAction(db, res.action_id, `${owner}.${index}`, 'Rebuild index', dbName, 'rebuild');
+      },
+      error: (err) => this.showActionError('Rebuild index', `${owner}.${index}`, dbName, err)
+    });
+  }
+
   async onStatsAction(evt: { key: string; row: Record<string, unknown> }): Promise<void> {
     if (evt.key !== 'gather' || !this.canKill()) {
       return;
@@ -546,7 +584,7 @@ export class OracleCommandCenterComponent implements OnInit, OnDestroy {
    * switches DB, polling stops. Long ops that outrun the cap fall back to the history panel.
    */
   private pollAction(db: string, actionId: number | undefined, label: string, opTitle: string,
-                     dbName: string, kind: 'mv' | 'stats' | 'compress'): void {
+                     dbName: string, kind: 'mv' | 'stats' | 'compress' | 'rebuild'): void {
     if (actionId == null || db !== this.activeKey()) {
       return;
     }

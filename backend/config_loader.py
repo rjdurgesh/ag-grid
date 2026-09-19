@@ -147,6 +147,33 @@ def docs_config() -> dict:
     }
 
 
+# Environment names that, when they are the ONLY top-level keys of a value, mark it as env-keyed —
+# e.g. refresh_databases: {"DEV": {...}, "STG": {...}}. Lets ONE committed config serve every env
+# (the section is chosen by APP_ENV; LIVE and PROD are the same env).
+_ENV_SECTION_KEYS = {"DEV", "STG", "PROD", "LIVE"}   # the OLS environments (LIVE = PROD)
+
+
+def _env_section(value: Any) -> Any:
+    """If ``value`` is a dict whose top-level keys are ALL environment names, return the section matching
+    the current ``APP_ENV`` (LIVE⇄PROD interchangeable), or ``{}`` when this env has no section. Any other
+    shape (a grouped ``{BATCH:[…]}`` dict, or a flat list) is returned unchanged — fully backward-compatible."""
+    if not isinstance(value, dict) or not value:
+        return value
+    if not all(str(k).strip().upper() in _ENV_SECTION_KEYS for k in value):
+        return value                     # not env-keyed (grouped categories / other) → use as-is
+    by_env = {str(k).strip().upper(): v for k, v in value.items()}
+    app_env = os.getenv("APP_ENV", "PROD").strip().upper()
+    candidates = [app_env]
+    if app_env == "LIVE":
+        candidates.append("PROD")
+    elif app_env == "PROD":
+        candidates.append("LIVE")
+    for cand in candidates:
+        if cand in by_env:
+            return by_env[cand]
+    return {}                            # env-keyed but nothing for THIS env → no entries
+
+
 # --- Regression (per scope: cib / retail / group) ----------------------------
 def regression_defaults() -> dict:
     """Non-per-scope regression settings (same for every scope)."""
@@ -189,14 +216,16 @@ def regression_scope_config(scope: str) -> dict:
     br = s.get("batch_db_script_roots")
     if not isinstance(br, dict):
         br = defaults.get("batch_db_script_roots") if isinstance(defaults.get("batch_db_script_roots"), dict) else {}
-    # refresh_databases: this SCOPE's refreshable DBs for THIS server's env (DEV/STG can have several,
-    # both batch + reporting). Per-server file → DEV lists DEV DBs, STG lists STG DBs. Two shapes:
-    #   grouped  {"BATCH": ["OLS1","OLS2"], "REPORTING": ["OLSR1"]}   (category = the key)
-    #   flat     ["OLS1", {"key":"OLS2","label":"..","category":"BATCH"}]
-    # Both normalise to [{key,label,category}] (category "" when unspecified). Order is preserved.
+    # refresh_databases: this SCOPE's refreshable DBs for the CONNECTED env (DEV/STG can have several,
+    # both batch + reporting). Three shapes (all normalise to [{key,label,category}], order preserved):
+    #   env-keyed {"DEV": {"BATCH":[…],"REPORTING":[…]}, "STG": {…}}  → the APP_ENV section is picked, so
+    #             ONE committed file serves DEV *and* STG (this is what the OLS team asked for).
+    #   grouped   {"BATCH": ["OLS1","OLS2"], "REPORTING": ["OLSR1"]}  (category = the key; same for every env)
+    #   flat      ["OLS1", {"key":"OLS2","label":"..","category":"BATCH"}]
     rd = s.get("refresh_databases")
     if rd is None:
         rd = defaults.get("refresh_databases")
+    rd = _env_section(rd)                 # env-keyed → this env's section; grouped/flat → unchanged
 
     def _rdb(item, category):
         if isinstance(item, dict) and item.get("key"):

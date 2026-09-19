@@ -233,6 +233,12 @@
                         <dt>exclude_pattern <span class="rg-inforules__def">[empty]</span></dt><dd>Files matching these are <strong>kept</strong>, even if included. Same syntax — e.g. include <code>*</code> and exclude <code>.keep</code> to delete everything except <code>.keep</code> files.</dd>
                         <dt>older_than_days <span class="rg-inforules__def">[0]</span></dt><dd><code>0</code> = no age filter. Otherwise only files last modified more than N days ago are deleted.</dd>
                       </dl>
+                      <p class="rg-inforules__exhd">Examples <span class="rg-inforules__def">(each goes inside <code>{{ '{' }} "items": [ … ] {{ '}' }}</code>)</span></p>
+                      <ul class="rg-inforules__ex">
+                        @for (ex of cleanupExamples; track ex.label) {
+                          <li><span class="rg-inforules__exlbl">{{ ex.label }}</span><code>{{ ex.json }}</code></li>
+                        }
+                      </ul>
                       <p class="rg-inforules__warn">⚠ Deletions cannot be undone. Always Preview first, and keep the manifest reviewed in the release branch.</p>
                     </div>
                   }
@@ -385,7 +391,7 @@
                           </div>
                           <div class="rg-applyfile__dbs">
                             <span class="rg-applyfile__dblabel">Run on:</span>
-                            @for (db of databases; track db.key) {
+                            @for (db of databases(); track db.key) {
                               <label class="rg-dbchip" [class.is-on]="applyFileHas(s, db.key)">
                                 <input type="checkbox" [checked]="applyFileHas(s, db.key)" (change)="toggleApplyFileDb(s, db.key)" />{{ db.name }} ({{ db.label }})
                               </label>
@@ -406,7 +412,31 @@
                 }
 
                 @case ('file_copy') {
-                  <p class="rg-hint">The manifest lives in the release repo (<code>Scripts/{{ state().run?.release_date }}/filecopy_manifest_{{ state().run?.release_date }}.json</code>). Tick the files to copy — copy some now and the rest later; the step completes only when all are done.</p>
+                  <p class="rg-hint">The manifest lives in the release repo (<code>Scripts/{{ state().run?.release_date }}/filecopy_manifest_{{ state().run?.release_date }}.json</code>). Tick the files to copy — copy some now and the rest later; the step completes only when all are done.
+                    <button type="button" class="rg-infobtn" [class.is-on]="manifestInfoOpen()" (click)="toggleManifestInfo()" aria-label="File-copy manifest rules" title="File-copy manifest rules">i</button>
+                  </p>
+
+                  @if (manifestInfoOpen()) {
+                    <div class="rg-inforules">
+                      <div class="rg-inforules__hd">
+                        <strong>File-copy manifest rules</strong>
+                        <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeManifestInfo()" aria-label="Close" title="Close">×</button>
+                      </div>
+                      <p class="rg-inforules__intro">Each entry is <code>{{ '{' }} "source": "…", "destination": "…" {{ '}' }}</code> in the JSON. Fields:</p>
+                      <dl class="rg-inforules__dl">
+                        <dt>source</dt><dd>A single <strong>file</strong> to copy, or a <strong>directory</strong> (or a path ending in <code>\*</code>) to copy the whole tree <strong>recursively as one unit</strong>. Local path or UNC share (<code>\\server\share\…</code>).</dd>
+                        <dt>destination</dt><dd>Target path — parent folders are created as needed. For a file source it's the target file; for a folder source it's the target folder.</dd>
+                      </dl>
+                      <p class="rg-inforules__exhd">Examples <span class="rg-inforules__def">(each goes inside <code>{{ '{' }} "items": [ … ] {{ '}' }}</code>)</span></p>
+                      <ul class="rg-inforules__ex">
+                        @for (ex of fileCopyExamples; track ex.label) {
+                          <li><span class="rg-inforules__exlbl">{{ ex.label }}</span><code>{{ ex.json }}</code></li>
+                        }
+                      </ul>
+                      <p class="rg-inforules__warn">Run <strong>Preflight</strong> first — it checks each source exists and each destination is reachable, writable and has free space before anything is copied.</p>
+                    </div>
+                  }
+
                   <div class="rg-row">
                     <button type="button" class="rg-btn" [disabled]="loadingManifests()" (click)="loadManifests()">{{ loadingManifests() ? 'Discovering…' : 'Discover manifests' }}</button>
                   </div>
@@ -515,7 +545,7 @@
                   <div class="rg-pick">
                     <div class="rg-pick__label">Databases</div>
                     <div class="rg-chips">
-                      @for (d of resetTriggerDbs; track d.key) {
+                      @for (d of resetTriggerDbs(); track d.key) {
                         <label class="rg-chip" [class.is-on]="resetDbOn(d.key)"><input type="checkbox" [checked]="resetDbOn(d.key)" (change)="toggleResetDb(d.key)" />{{ dbDisplay(d.key) }}</label>
                       }
                     </div>
@@ -555,7 +585,7 @@
                   <div class="rg-pick">
                     <div class="rg-pick__label">Databases</div>
                     <div class="rg-chips">
-                      @for (d of resetTriggerDbs; track d.key) {
+                      @for (d of resetTriggerDbs(); track d.key) {
                         <label class="rg-chip" [class.is-on]="triggerDbOn(d.key)"><input type="checkbox" [checked]="triggerDbOn(d.key)" (change)="toggleTriggerDb(d.key)" />{{ dbDisplay(d.key) }}</label>
                       }
                     </div>
@@ -622,6 +652,7 @@
       <div class="rg-subtabs">
         <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'activity'" (click)="monitorTab.set('activity'); loadActivity()">Regression Activity</button>
         <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'batches'" (click)="monitorTab.set('batches'); loadBatches()">Monitoring Batches</button>
+        <button type="button" class="rg-subtab" [class.is-active]="monitorTab() === 'extract'" (click)="monitorTab.set('extract'); loadDownstreamExtract()">Downstream Extract</button>
       </div>
 
       @if (monitorTab() === 'batches') {
@@ -636,15 +667,34 @@
           </button>
         </div>
         @if (batchError()) {
-          <p class="rg-hint rg-hint--err">Couldn't load batch status. Try refresh.</p>
+          <p class="rg-hint rg-hint--err rg-monitor-empty">Couldn't load batch status. Try refresh.</p>
         } @else if (monitorLoading() && !batchResult()) {
-          <p class="rg-hint">Loading batch status…</p>
+          <p class="rg-hint rg-monitor-empty">Loading batch status…</p>
         } @else if (batchResult(); as br) {
           @if (batchRowData().length) {
             <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="batchRowData()"
                              [columnDefs]="batchColDefs()" [gridOptions]="batchGridOptions"></ag-grid-angular>
-          } @else { <p class="rg-hint">No batch activity to display.</p> }
-        } @else { <p class="rg-hint">Loading batch status…</p> }
+          } @else { <p class="rg-hint rg-monitor-empty">No batch activity to display.</p> }
+        } @else { <p class="rg-hint rg-monitor-empty">Loading batch status…</p> }
+      } @else if (monitorTab() === 'extract') {
+        <div class="rg-row rg-row--tools">
+          <span class="rg-refreshed">{{ extractRefreshed() || 'Latest downstream extract rows.' }}</span>
+          <button type="button" class="ols-refresh-btn" [class.ols-refresh-btn--spin]="extractLoading()"
+                  [disabled]="extractLoading()" (click)="loadDownstreamExtract()" title="Refresh" aria-label="Refresh downstream extract">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.5 4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+              <path d="M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        @if (extractError()) {
+          <p class="rg-hint rg-hint--err rg-monitor-empty">Couldn't load downstream extract. Try refresh.</p>
+        } @else if (extractLoading() && !extractRows().length) {
+          <p class="rg-hint rg-monitor-empty">Loading downstream extract…</p>
+        } @else if (extractRows().length) {
+          <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="extractRows()"
+                           [columnDefs]="extractColDefs" [gridOptions]="extractGridOptions"></ag-grid-angular>
+        } @else { <p class="rg-hint rg-monitor-empty">No downstream extract rows to display.</p> }
       } @else {
         <div class="rg-row rg-row--tools">
           <span class="rg-refreshed">{{ activityRefreshed() || 'Latest regression activity.' }}</span>
@@ -659,7 +709,7 @@
         @if (activityRows().length) {
           <ag-grid-angular class="rg-grid" [theme]="gridTheme()" [rowData]="activityRows()"
                            [columnDefs]="activityColDefs" [gridOptions]="activityGridOptions"></ag-grid-angular>
-        } @else { <p class="rg-hint">No activity yet.</p> }
+        } @else { <p class="rg-hint rg-monitor-empty">No activity yet.</p> }
       }
     </section>
     }

@@ -83,6 +83,11 @@ export class OracleCcService {
     return this.api.post<ActionSubmit>(API.oracle.gatherStats(db), { owner, table, caller });
   }
 
+  /** Rebuild an UNUSABLE index (async background job). Returns `{ action_id, state }` (poll `actionStatus`). */
+  rebuildIndex(db: string, owner: string, index: string, caller: string): Observable<ActionSubmit> {
+    return this.api.post<ActionSubmit>(API.oracle.rebuildIndex(db), { owner, index, caller });
+  }
+
   /** Live status of one submitted action (poll until `state` != RUNNING). */
   actionStatus(db: string, actionId: number): Observable<ActionStatus> {
     return this.api.post<ActionStatus>(API.oracle.actionStatus(db), { action_id: actionId });

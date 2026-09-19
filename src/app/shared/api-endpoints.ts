@@ -93,6 +93,7 @@ export const API = {
     stepMark: `${API_BASE_URL}/api/regression/step/mark`,
     stepUnlock: `${API_BASE_URL}/api/regression/step/unlock`,
     refreshDatabases: `${API_BASE_URL}/api/regression/refresh-databases`,
+    databases: `${API_BASE_URL}/api/regression/databases`,
     refreshDb: `${API_BASE_URL}/api/regression/refresh-db`,
     gitBranches: `${API_BASE_URL}/api/regression/git/branches`,
     gitPull: `${API_BASE_URL}/api/regression/git/pull`,
@@ -115,7 +116,8 @@ export const API = {
     cleanupPreview: `${API_BASE_URL}/api/regression/cleanup/preview`,
     cleanupRun: `${API_BASE_URL}/api/regression/cleanup/run`,
     batchMonitor: `${API_BASE_URL}/api/regression/batch-monitor`,
-    activity: `${API_BASE_URL}/api/regression/activity`
+    activity: `${API_BASE_URL}/api/regression/activity`,
+    downstreamExtract: `${API_BASE_URL}/api/regression/downstream-extract`
   },
   /**
    * Data Reconciliation (DEV/STG) — Phase 1: trigger report extracts + monitor them. Every body
@@ -329,6 +331,7 @@ export const API = {
      *  → `{ action_id, state:'RUNNING' }` (async background job). A PL/SQL proc picks the
      *  partition/subpartition/table granularity. Privileged connection. */
     gatherStats: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/gather-stats`,
+    rebuildIndex: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/rebuild-index`,
     /** Live status of one submitted action (poll until `state` != RUNNING). POST `{ action_id }`. */
     // Object Compress Activity — search a table, list its partitions/subpartitions, submit compression.
     compressObjectInfo: (db: string) => `${API_BASE_URL}/api/oracle_cc/${db}/compress/object-info`,

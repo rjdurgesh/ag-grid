@@ -356,8 +356,9 @@ too (a missing CHG or an absent date → 400, no run created). CHG + branch + da
 (`change_number`, `git_branch`, `release_date`) and shown in the run header + the Regression Activity grid — one CHG per
 release (a CHG may span several run ids), so a month with two releases yields two clearly-labelled runs. Steps: Refresh
 DB (a **grouped multi-select dropdown** of this **scope's own databases for the current env** — DEV/STG can have many,
-grouped **BATCH / REPORTING**; loaded from the grouped `refresh_databases` in `config/regression.json` via
+grouped **BATCH / REPORTING**; loaded from `refresh_databases` in `regression.json` via
 `/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact.
+`refresh_databases` may be **env-keyed** (`{"DEV": {"BATCH":[…],…}, "STG": {…}}`) so one file serves DEV *and* STG — the backend returns the section for `APP_ENV`; a plain grouped/flat form (no env keys) applies to every env (see `config/README.md`).
 Each DB row also shows its **last-refreshed timestamp** (`last refreshed <YYYY-MM-DD HH:MM>` in green, or a muted *never refreshed*),
 reconstructed from the activity log so the operator sees at a glance which DBs are stale. The **confirm dialog lists the actual DB names**
 (not just a count) before the refresh runs. Like the sqlplus steps, Refresh writes **one Regression Activity row per database** — a
@@ -391,8 +392,8 @@ file list never pushes the close button off-screen. Engine: `regression_ops.clea
 failure for any path containing "fail"/"missing")
 → Apply DB changes (all `chg*.sql` load from the scope's **single Scripts folder** — `<script_roots["*"]>/<release_date>/`,
 i.e. cib←`sql/Scripts`, retail←`RET/Scripts`, group←`Scripts` — as a **flat list**, `/api/regression/release/scripts`
-returning `{scripts:[…]}`. There is **no auto per-DB mapping**: the operator decides, **per file**, which of the **5
-databases** (Group / CIB Batch / CIB Reporting / Retail Batch / Retail Reporting) it runs on — each file row has a
+returning `{scripts:[…]}`. There is **no auto per-DB mapping**: the operator decides, **per file**, which of the
+**initialized databases** it runs on — each file row has a
 **DB-checkbox strip** (+ per-file All/Clear) — and the **run sequence** across the participating files (▲▼; a file joins
 the sequence when it gets its first DB, leaves when its last DB is cleared). So `chg1.sql` can target Group+CIB Batch,
 `chg2.sql` only CIB Reporting, `chg3.sql` nothing — fully operator-controlled. Running builds an **ordered
@@ -431,8 +432,13 @@ free space** — and shows a green/amber panel (Source · Dest · Space ✓/✗ 
 read-only path or full disk is caught **before** the copy runs, not mid-way) → Reset → Trigger (tick `.sql` from the
 scope's **single RegressionTesting folder** = `batch_db_script_roots["*"]` (cib←`sql/RegressionTesting`), listed via
 `/api/regression/batch-db-scripts`, with a **checkbox + sequence** picker like Apply, **AND** tick the target
-**database(s)** — the scope's batch+reporting only (cib_batch / cib_reporting) — as a shared multi-select: **every ticked
+**database(s)** — this scope's own DBs (cib→`cib_*`, retail→`retail_*`) — as a shared multi-select: **every ticked
 script runs on every ticked database, in the chosen sequence** (built as a scripts×DBs `executions` list for run-sql).
+**The DB list is backend-driven, never hardcoded in the UI:** `/api/regression/databases` returns every database the app
+was initialised with (from `app.state.db_configs`, each `{key, label, name}` — `name` = the real SID via
+`database.fetch_instance_name`), loaded into the component's `databases()` signal on entry; the Apply strip shows the full
+list and Reset/Trigger's `resetTriggerDbs` computed filters it to the current scope (`cib`/`retail`). Adding or renaming a
+DB in the backend config flows through automatically — no UI edit.
 **Every workflow step is collapsible** (chevron in its header). Once every step is complete/forced, **Mark run complete** closes out the run (logs a
 `run/complete` audit row, run status → Completed on screen, then Start new run). Apply DB also has
 a collapsible **release-branch browser** (`git/tree` + `git/file`) to walk the pulled branch tree and read any
@@ -1106,7 +1112,8 @@ down DB still gets a tab (grey) and its sections show read errors — the app ne
 | `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — per-tablespace space. Gauge `summary` (**Total/Used/Free Alloc (GB)**) is **physical-allocation** based: `total=Σ physical_alloc`, `used=Σ used`, `free=total−used`, `used% = used/physical`. Per-row columns also carry the autoextend view: **Alloc max (GB)** (`Σ DECODE(autoextensible,'NO',bytes,maxbytes)`) and **Total Free (GB)** (`alloc_max − used`). |
 | `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes as a real **3-level tree** (Table → Partition → Subpartition via `__children`), each node with its own stale-stats chip. `database.fetch_top_segments` → `{tables, stats, partitions, subpartitions}`. **Tuned (2026-09-18):** partition/subpartition sizes no longer JOIN `dba_tab_subpartitions`↔`dba_segments` or use window functions (that join was the bottleneck) — now TWO cheap scoped scans (a scoped `dba_segments` GROUP BY + a scoped `dba_tab_subpartitions` scan) rolled up + top-N-per-parent picked in **Python**. Partition size = its own `TABLE PARTITION` segment **or**, for composite tables (no partition-level segment), the roll-up of its `TABLE SUBPARTITION` segments (subpartition→parent partition comes from `dba_tab_subpartitions`, since `dba_segments` has no parent-partition column). Only query 1 (top-N tables) is still an owner-wide `dba_segments` aggregation — if slow, gather **dictionary + fixed-object stats** (see the docstring). Stats keyed `(table, partition, subpartition)`; longer timeout via `OCC_TOPSEG_TIMEOUT_MS`. |
 | `POST /api/oracle_cc/{db}/top_indexes` | `{}` | Section 3 — top-5 indexes by allocated bytes (+ partitions). |
-| `POST /api/oracle_cc/{db}/index_health` | `{}` | Section 4 — UNUSABLE / INVISIBLE / STALE-STATS indexes (state chip). |
+| `POST /api/oracle_cc/{db}/index_health` | `{}` | Section 4 — UNUSABLE / INVISIBLE / STALE-STATS indexes (state chip). **UNUSABLE** rows carry `owner` + `__actions:['rebuild']` → a **Rebuild** row action (INVISIBLE/STALE get none — visibility choice / stats gather respectively). |
+| `POST /api/oracle_cc/{db}/rebuild-index` | `{ owner?, index, caller }` | **WRITE — ASYNC.** DB-write gated (same as Kill) + confirm; offered only on UNUSABLE index rows. **Submits a background job**, returns `{ action_id, state:'RUNNING' }`. Runs **`ols_util.occ_submit_rebuild_index`** → `occ_run_action` → `ALTER INDEX … REBUILD [PARTITION/SUBPARTITION …] ONLINE` (whole index if non-partitioned, else each UNUSABLE (sub)partition; `DBMS_ASSERT`-quoted). Logged in `ols_occ_action_log` (`REBUILD_INDEX`). Reference DDL: `backend/sql/occ_actions_setup.sql`. |
 | `POST /api/oracle_cc/{db}/locks` | `{}` | Section 5 — TX/TM enqueue locks, `state` BLOCKING/WAITING/HELD; each row killable. `summary:{blocking,waiting,total}`. |
 | `POST /api/oracle_cc/{db}/blocking` | `{}` | Section 6 — **flat blocker↔victim pairs** (one row per blocking relationship): blocker SID/user/name/machine, object held + type, **blocker SQL_ID + SQL text**, victim SID/user/name, wait event + time, victim SQL_ID + SQL text. Both SQL_IDs are clickable → SQL Intelligence; SQL text uses the `clob` popup. (Blocker SQL_ID is often `—` — a blocker idle "in transaction" has no current statement.) Kill targets the **blocker** (frees the victim). `summary:{chains=distinct blockers, waiters=row count}`. |
 | `POST /api/oracle_cc/{db}/temp-usage` | `{}` | Section 6b — **sessions holding TEMP/sort space** (`V$TEMPSEG_USAGE` + `V$SESSION`/`V$PROCESS`/`DBA_TABLESPACES`), one row per session+tablespace, **largest MB first** — the ones to kill when temp fills. Columns: SID,Serial#, status, user, OS user, **first name/surname**, machine, program, SQL_ID (→ SQL Intelligence), temp TS, **Temp (MB)** (row tint warn ≥ `ORACLE_CC_TEMP_WARN_MB`=1024 / crit ≥ `ORACLE_CC_TEMP_CRIT_MB`=5120), running-for, segments. Each row killable (`__actions:['kill']`). `summary:{sessions,total_mb}`. **`ols_users` is OPTIONAL** — `database.fetch_temp_usage` checks `ALL_OBJECTS` for `OLS_USERS` (table/view/synonym) and, if it isn't visible to the monitoring user, drops it from the join and returns NULL first/surname (a missing table can never break the query). Placed just before Sessions Detail. |

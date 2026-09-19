@@ -1106,6 +1106,22 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       regSetStep(key, st, body['forced'] ? environment.username : undefined, String(body['details'] ?? ''));
       return { status: 'success', run: rs.run, steps: rs.steps };
     }
+    case '/api/regression/databases': {
+      // ALL databases the app is initialised with (backend sources these from app.state.db_configs) —
+      // the Apply / Reset / Trigger pickers filter this list by scope. Mirrors the backend dummy path.
+      const env = String(environment.appEnv || 'DEV').toUpperCase();
+      const names: Record<string, string> = {
+        group: `OLS_GROUP_${env}`, cib_batch: `OLS_CIB_BATCH_${env}`, cib_reporting: `OLS_CIB_RPT_${env}`,
+        retail_batch: `OLS_RET_BATCH_${env}`, retail_reporting: `OLS_RET_RPT_${env}`,
+      };
+      const labels: Record<string, string> = {
+        group: 'OLS GROUP', cib_batch: 'OLS CIB Batch', cib_reporting: 'OLS CIB Reporting',
+        retail_batch: 'OLS RETAIL Batch', retail_reporting: 'OLS RETAIL Reporting',
+      };
+      const dbs = ['group', 'cib_batch', 'cib_reporting', 'retail_batch', 'retail_reporting']
+        .map((k) => ({ key: k, label: labels[k], name: names[k] }));
+      return { status: 'success', databases: dbs };
+    }
     case '/api/regression/refresh-databases': {
       // Scope-specific, env-specific DBs, GROUPED by category (DEV/STG can have several per group).
       const env = String(environment.appEnv || 'DEV').toUpperCase();
@@ -1392,6 +1408,12 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
                ['FI', 'FI_POST', 3, '2026-08-28 08:30', '2026-08-28 08:31']] };
     case '/api/regression/activity':
       return { status: 'success', rows: rs.activity };
+    case '/api/regression/downstream-extract':
+      return { status: 'success', rows: [
+        { business_date: '2026-08-28', post_dt: '2026-08-28 09:35:00', load_id: 910244, business_line: 'CB', filename: 'CB_POSITION_20260828.csv', filerowcount: 24813 },
+        { business_date: '2026-08-28', post_dt: '2026-08-28 09:32:00', load_id: 910243, business_line: 'ALMT', filename: 'ALMT_PNL_20260828.csv', filerowcount: 12890 },
+        { business_date: '2026-08-27', post_dt: '2026-08-27 09:41:00', load_id: 910115, business_line: 'FI', filename: 'FI_POSTING_20260827.csv', filerowcount: 8732 }
+      ] };
     default:
       return { status: 'success' };
   }

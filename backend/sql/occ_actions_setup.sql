@@ -34,19 +34,19 @@ CREATE TABLE ols_occ_action_log (
     error_text     VARCHAR2(4000),
     job_name       VARCHAR2(128),
     CONSTRAINT ols_occ_action_log_pk PRIMARY KEY (action_id),
-    CONSTRAINT ols_occ_action_type_ck CHECK (action_type IN ('GATHER_STATS','MV_REFRESH','COMPRESS')),
+    CONSTRAINT ols_occ_action_type_ck CHECK (action_type IN ('GATHER_STATS','MV_REFRESH','COMPRESS','REBUILD_INDEX')),
     CONSTRAINT ols_occ_action_status_ck CHECK (status IN ('RUNNING','SUCCESS','FAILED'))
 );
 CREATE INDEX ols_occ_action_log_ix ON ols_occ_action_log (submitted_on DESC);
 
--- ---- MIGRATION (existing installs only) — run if ols_occ_action_log predates COMPRESS -------
--- Adds the two partition columns, widens method, and allows the COMPRESS action_type. Safe to skip
--- on a fresh CREATE above. (Oracle can't modify a CHECK condition in place → drop + re-add.)
---   ALTER TABLE ols_occ_action_log ADD (partition_name VARCHAR2(128), subpartition_name VARCHAR2(128));
---   ALTER TABLE ols_occ_action_log MODIFY (method VARCHAR2(30));
+-- ---- MIGRATION (existing installs only) — run if ols_occ_action_log predates COMPRESS/REBUILD_INDEX --
+-- Adds the two partition columns, widens method, and allows the COMPRESS + REBUILD_INDEX action_types.
+-- Safe to skip on a fresh CREATE above. (Oracle can't modify a CHECK condition in place → drop + re-add.)
+--   ALTER TABLE ols_occ_action_log ADD (partition_name VARCHAR2(128), subpartition_name VARCHAR2(128));  -- if pre-COMPRESS
+--   ALTER TABLE ols_occ_action_log MODIFY (method VARCHAR2(30));                                          -- if pre-COMPRESS
 --   ALTER TABLE ols_occ_action_log DROP CONSTRAINT ols_occ_action_type_ck;
 --   ALTER TABLE ols_occ_action_log ADD  CONSTRAINT ols_occ_action_type_ck
---     CHECK (action_type IN ('GATHER_STATS','MV_REFRESH','COMPRESS'));
+--     CHECK (action_type IN ('GATHER_STATS','MV_REFRESH','COMPRESS','REBUILD_INDEX'));
 
 -- ---- worker: run one queued action, recording status/timing/errors ----------
 -- Called by the scheduler job (never directly). Reads the queued row, does the work
@@ -117,6 +117,29 @@ BEGIN
                      DBMS_ASSERT.ENQUOTE_NAME(v_part) || ' ' || v_clause || ' UPDATE INDEXES';
         END IF;
         EXECUTE IMMEDIATE v_ddl;
+    ELSIF v_type = 'REBUILD_INDEX' THEN
+        -- Rebuild an UNUSABLE index. Non-partitioned → one REBUILD; partitioned/composite → rebuild
+        -- each UNUSABLE (sub)partition. ONLINE avoids locking (EE); drop ONLINE if not licensed.
+        SELECT partitioned INTO v_partd FROM dba_indexes WHERE owner = v_owner AND index_name = v_object;
+        IF v_partd = 'YES' THEN
+            FOR rec IN (SELECT partition_name, subpartition_name
+                          FROM dba_ind_subpartitions
+                         WHERE index_owner = v_owner AND index_name = v_object AND status = 'UNUSABLE') LOOP
+                EXECUTE IMMEDIATE 'ALTER INDEX ' || DBMS_ASSERT.ENQUOTE_NAME(v_owner) || '.' ||
+                    DBMS_ASSERT.ENQUOTE_NAME(v_object) || ' REBUILD SUBPARTITION ' ||
+                    DBMS_ASSERT.ENQUOTE_NAME(rec.subpartition_name) || ' ONLINE';
+            END LOOP;
+            FOR rec IN (SELECT partition_name
+                          FROM dba_ind_partitions
+                         WHERE index_owner = v_owner AND index_name = v_object AND status = 'UNUSABLE') LOOP
+                EXECUTE IMMEDIATE 'ALTER INDEX ' || DBMS_ASSERT.ENQUOTE_NAME(v_owner) || '.' ||
+                    DBMS_ASSERT.ENQUOTE_NAME(v_object) || ' REBUILD PARTITION ' ||
+                    DBMS_ASSERT.ENQUOTE_NAME(rec.partition_name) || ' ONLINE';
+            END LOOP;
+        ELSE
+            EXECUTE IMMEDIATE 'ALTER INDEX ' || DBMS_ASSERT.ENQUOTE_NAME(v_owner) || '.' ||
+                DBMS_ASSERT.ENQUOTE_NAME(v_object) || ' REBUILD ONLINE';
+        END IF;
     END IF;
 
     UPDATE ols_occ_action_log
@@ -195,4 +218,23 @@ BEGIN
         job_action => 'BEGIN ols_util.occ_run_action(' || p_action_id || '); END;',
         start_date => SYSTIMESTAMP, enabled => TRUE, auto_drop => TRUE);
 END occ_submit_compress;
+/
+
+-- Rebuild an UNUSABLE index (whole index if non-partitioned; each unusable (sub)partition otherwise).
+CREATE OR REPLACE PROCEDURE ols_util.occ_submit_rebuild_index(
+    p_owner IN VARCHAR2, p_index IN VARCHAR2, p_by IN VARCHAR2, p_action_id OUT NUMBER
+) AS
+BEGIN
+    p_action_id := ols_occ_action_seq.NEXTVAL;
+    INSERT INTO ols_occ_action_log(action_id, action_type, object_owner, object_name,
+                                   requested_by, status, submitted_on, job_name)
+    VALUES (p_action_id, 'REBUILD_INDEX', p_owner, p_index, p_by, 'RUNNING', SYSTIMESTAMP,
+            'OCC_ACT_' || p_action_id);
+    COMMIT;
+    DBMS_SCHEDULER.create_job(
+        job_name   => 'OCC_ACT_' || p_action_id,
+        job_type   => 'PLSQL_BLOCK',
+        job_action => 'BEGIN ols_util.occ_run_action(' || p_action_id || '); END;',
+        start_date => SYSTIMESTAMP, enabled => TRUE, auto_drop => TRUE);
+END occ_submit_rebuild_index;
 /

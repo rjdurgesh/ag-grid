@@ -407,9 +407,12 @@ def index_health(request: Request, db: str) -> dict:
             st = r["state"]
             s = sev.get(st, "warn")
             rows.append({
-                "index_name": r["index_name"], "table_name": r["table_name"],
+                "index_name": r["index_name"], "table_name": r["table_name"], "owner": OCC_SCHEMA,
                 "state": st, "state__sev": s, "detail": detail.get(st, ""),
                 "last_analyzed": r.get("last_analyzed") or "—", "__sev": s,
+                # Only UNUSABLE indexes get the Rebuild action (INVISIBLE = a visibility choice,
+                # STALE STATS = gather, not rebuild). Per-row whitelist → the button shows on those rows only.
+                "__actions": ["rebuild"] if st == "UNUSABLE" else [],
             })
         return {"status": "success", "columns": _IDXH_COLS, "rows": rows}
     except Exception:
@@ -818,6 +821,36 @@ def gather_stats(request: Request, db: str, body: GatherStatsRequest) -> dict:
             "message": f"Statistics gather submitted for {body.owner}.{body.table} — running in the background."}
 
 
+class RebuildIndexRequest(BaseModel):
+    owner: str = ""
+    index: str
+    caller: str = ""               # requesting operator (for the action log)
+
+
+@router.post("/{db}/rebuild-index")
+def rebuild_index(request: Request, db: str, body: RebuildIndexRequest) -> dict:
+    """**Submit** an index rebuild for an UNUSABLE index as a BACKGROUND job (WRITE — UI-gated behind
+    DB-write + confirm; offered only on UNUSABLE rows in Index Health). Returns immediately with
+    `action_id` + `state:'RUNNING'`; the UI polls `action-status`. Runs `ols_util.occ_submit_rebuild_index`
+    on a PRIVILEGED connection (whole index if non-partitioned, else each UNUSABLE (sub)partition, ONLINE)."""
+    body.caller = resolve_caller(request, body.caller)  # OIDC: real requester from token (401 if OIDC on + no token)
+    t = _target(db)
+    index = (body.index or "").strip()
+    owner = (body.owner or OCC_SCHEMA or "").strip().upper()
+    if not index:
+        raise HTTPException(status_code=400, detail="index is required.")
+    if ORACLE_CC_USE_DUMMY:
+        return rebuild_index_dummy(t, owner, index, body.caller)
+    try:
+        action_id = database.rebuild_index(_priv_cfg(request, db), owner=owner, index=index,
+                                           requested_by=body.caller or "unknown")
+    except Exception as exc:  # noqa: BLE001 — surface the real ORA text to the (admin) operator
+        logger.exception("rebuild-index submit failed for %s.%s on %s", owner, index, db)
+        raise db_errors.http_error_verbose(exc)
+    return {"status": "success", "action_id": action_id, "state": "RUNNING",
+            "message": f"Rebuild submitted for index {owner}.{index} — running in the background."}
+
+
 # --- Object Compress Activity ------------------------------------------------
 # Compress existing partition/subpartition data (segment MOVE). READS (object-info / partitions /
 # subpartitions) drive the search + dropdowns; the RUN is a privileged async action per selected target.
@@ -971,7 +1004,8 @@ def compress_run(request: Request, db: str, body: CompressRunRequest) -> dict:
 
 
 # --- Action status (live poll) + history -------------------------------------
-_ACTION_LABEL = {"GATHER_STATS": "Gather stats", "MV_REFRESH": "MV refresh", "COMPRESS": "Compress"}
+_ACTION_LABEL = {"GATHER_STATS": "Gather stats", "MV_REFRESH": "MV refresh", "COMPRESS": "Compress",
+                 "REBUILD_INDEX": "Rebuild index"}
 _ACTION_STATE_SEV = {"RUNNING": "muted", "SUCCESS": "ok", "FAILED": "crit"}
 
 _ACTION_COLS = [
@@ -2151,6 +2185,7 @@ from oracle_cc_dummy import (  # noqa: E402
     mviews_dummy,
     mview_refresh_dummy,
     gather_stats_dummy,
+    rebuild_index_dummy,
     compress_object_info_dummy,
     compress_partitions_dummy,
     compress_subpartitions_dummy,

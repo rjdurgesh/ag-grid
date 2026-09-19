@@ -7,7 +7,8 @@ import { environment } from '../../../../../environments/environment';
 import { RbacService } from '../../../../auth/rbac.service';
 import {
   BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
-  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionState, RunSqlResult
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDownstreamExtractRow,
+  RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 /** Live-stream callbacks for a run-sql-stream (Apply / Reset / Trigger). */
@@ -54,6 +55,10 @@ export class OlsRetailRegressionService {
     return this.api.post(API.regression.stepUnlock, { caller: this.caller(), scope: this.scope, run_id, step_key });
   }
   /** This scope's refreshable DBs for the current env (DEV/STG can have several; scope-specific). */
+  /** ALL databases the app is initialised with (Apply / Reset / Trigger pickers) — {key,label,name}. */
+  databases(): Observable<{ databases: { key: string; label: string; name: string }[] }> {
+    return this.api.post(API.regression.databases, { caller: this.caller(), scope: this.scope });
+  }
   refreshDatabases(): Observable<{ databases: RegressionDb[] }> {
     return this.api.post(API.regression.refreshDatabases, { caller: this.caller(), scope: this.scope });
   }
@@ -271,5 +276,8 @@ export class OlsRetailRegressionService {
   }
   activity(run_id?: number): Observable<{ rows: RegressionActivityRow[] }> {
     return this.api.post(API.regression.activity, { caller: this.caller(), scope: this.scope, run_id });
+  }
+  downstreamExtract(): Observable<{ rows: RegressionDownstreamExtractRow[] }> {
+    return this.api.post(API.regression.downstreamExtract, { caller: this.caller(), scope: this.scope });
   }
 }

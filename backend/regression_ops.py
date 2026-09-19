@@ -64,6 +64,29 @@ def _git_env(cfg: dict) -> dict:
     return env
 
 
+def _git_safe_dir(wd: Path) -> str:
+    """Path format Git for Windows accepts in safe.directory."""
+    try:
+        return str(wd.resolve()).replace("\\", "/")
+    except OSError:
+        return str(wd.absolute()).replace("\\", "/")
+
+
+def _git_repo_cmd(wd: Path, *args: str) -> list[str]:
+    """Build a repo-scoped git command.
+
+    Regression workdirs are configured server-side. Passing safe.directory only
+    for that one path avoids the Windows "dubious ownership" guard without
+    globally trusting every repository on the machine.
+    """
+    return ["git", "-c", f"safe.directory={_git_safe_dir(wd)}", "-C", str(wd), *args]
+
+
+def _has_git_metadata(wd: Path) -> bool:
+    """True for normal clones and worktrees/submodules where .git is a file."""
+    return (wd / ".git").exists()
+
+
 def list_release_branches(cfg: dict) -> list[str]:
     """The most-recent release branches (name starts with the scope's prefix, e.g. release/*), **newest
     first, capped at `branch_limit`** (default 10) — `release/YYYY-MM-DD` sorts chronologically."""
@@ -93,13 +116,18 @@ def git_pull_branch(cfg: dict, branch: str) -> str:
         raise RuntimeError("git_workdir is not configured for this scope.")
     wd = Path(workdir)
     genv = _git_env(cfg)
-    if (wd / ".git").is_dir():
-        for args in (["fetch", "origin", branch], ["checkout", branch],
+    if _has_git_metadata(wd):
+        for args in (["fetch", "origin", branch], ["checkout", "-B", branch, f"origin/{branch}"],
                      ["reset", "--hard", f"origin/{branch}"]):
-            r = subprocess.run(["git", "-C", str(wd), *args], capture_output=True, text=True, timeout=timeout, env=genv)
+            r = subprocess.run(_git_repo_cmd(wd, *args), capture_output=True, text=True, timeout=timeout, env=genv)
             if r.returncode != 0:
                 raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()[:400]}")
     else:
+        if wd.exists() and any(wd.iterdir()):
+            raise RuntimeError(
+                f"git_workdir exists but is not a Git checkout: {wd}. "
+                "Move/delete that folder, restore its .git metadata, or configure git_workdir to an empty directory."
+            )
         wd.parent.mkdir(parents=True, exist_ok=True)
         r = subprocess.run(["git", "clone", "--branch", branch, "--depth", "1", _auth_url(cfg), str(wd)],
                            capture_output=True, text=True, timeout=timeout, env=genv)
@@ -200,9 +228,9 @@ def repo_info(cfg: dict) -> dict:
     """The work dir path + the currently checked-out branch (for the browser header)."""
     wd = Path(cfg.get("git_workdir", ""))
     branch = ""
-    if (wd / ".git").is_dir():
-        r = subprocess.run(["git", "-C", str(wd), "rev-parse", "--abbrev-ref", "HEAD"],
-                           capture_output=True, text=True, timeout=cfg.get("git_timeout", 120))
+    if _has_git_metadata(wd):
+        r = subprocess.run(_git_repo_cmd(wd, "rev-parse", "--abbrev-ref", "HEAD"),
+                           capture_output=True, text=True, timeout=cfg.get("git_timeout", 120), env=_git_env(cfg))
         branch = r.stdout.strip()
     return {"workdir": str(wd), "branch": branch}
 

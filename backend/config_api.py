@@ -118,20 +118,41 @@ class CellError(Exception):
 
 # ---- gate ------------------------------------------------------------------
 def _require_config_access(request: Request, caller: str, scope: str, action: str = "write"):
-    """Active OLS user with access to this config scope (admin or a ``config_ops:<scope>`` grant). Reads
-    and writes use the same scope-visibility check today; ``action`` only tunes the 403 message."""
+    """Active OLS user with the right level of access to this config scope.
+
+    * **read**  — ADMIN, full-access (SCREEN/*/*), or ANY non-DENY ``config_ops:<scope>`` grant (scope
+      visibility). Used by retrieve / columnretrieve.
+    * **write** — ADMIN, full-access WRITE, or a ``config_ops:<scope>`` grant whose ``access_level`` is
+      **WRITE**. A read-only grant is NOT enough. Used by upload / roll / insert / update / delete, so
+      a read-only user is blocked from all of them exactly like the grid's create/update/delete
+      (mirrors the UI's ``configScopeWritable`` / ``canWriteTable``)."""
     if CONFIG_USE_DUMMY:
         return None
     cfg = getattr(request.app.state, "app_db_config", None)
     ident = database.fetch_user_identity(cfg, caller)
     if not ident or str(ident.get("lgcl_del_flg") or "").strip().upper() != "N":
         raise HTTPException(status_code=403, detail="Not an active OLS user.")
-    is_admin = str(ident.get("is_admin") or "").strip().upper() in ("Y", "YES", "1", "TRUE")
-    if not is_admin:
-        grants = database.fetch_user_grants(cfg, caller, getattr(request.app.state, "app_env", "PROD"))
-        want = f"config_ops:{scope}".lower()
-        if not any((g.get("resource_scope") or "").lower() == want for g in grants):
-            raise HTTPException(status_code=403, detail=f"{action.capitalize()} access to {scope.upper()} config is required.")
+    if str(ident.get("is_admin") or "").strip().upper() in ("Y", "YES", "1", "TRUE"):
+        return cfg                                   # super-admin → full read + write
+    grants = database.fetch_user_grants(cfg, caller)
+    want = f"config_ops:{scope}".lower()
+    need_write = (action == "write")
+    allowed = False
+    for g in grants:
+        lvl = (g.get("access_level") or "").strip().upper()
+        if lvl == "DENY":
+            continue                                 # a DENY row never grants access
+        rs = (g.get("resource_scope") or "").lower()
+        rk = (g.get("resource_key") or "").strip()
+        full_access = (g.get("resource_type") or "").strip().upper() == "SCREEN" and rs == "*" and rk == "*"
+        if not (full_access or rs == want):
+            continue                                 # not this scope (and not the global wildcard)
+        if not need_write or lvl == "WRITE":         # read = any non-DENY grant; write = a WRITE grant
+            allowed = True
+            break
+    if not allowed:
+        verb = "Write" if need_write else "Read"
+        raise HTTPException(status_code=403, detail=f"{verb} access to {scope.upper()} config is required.")
     return cfg
 
 
