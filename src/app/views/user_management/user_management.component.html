@@ -46,7 +46,7 @@
       <div class="um__pick">
         <div class="um__search">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <input id="um-uid" type="text" placeholder="Enter OLS user id (e.g. JDOE)" autocomplete="off"
+          <input id="um-uid" type="text" placeholder="Enter OLS user id (e.g. NAMAH)" autocomplete="off"
                  [ngModel]="uidInput()" (ngModelChange)="uidInput.set($event.toUpperCase())" (keyup.enter)="loadUser()" />
         </div>
         <button type="button" class="um__btn um__btn--primary" (click)="loadUser()" [disabled]="loadingUser() || !uidInput().trim()">
@@ -82,7 +82,7 @@
               <div class="um__copy-row">
                 <div class="um__search">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-                  <input type="text" placeholder="Source user id (e.g. JDOE)" autocomplete="off"
+                  <input type="text" placeholder="Source user id (e.g. NAMAH)" autocomplete="off"
                          [ngModel]="copyFromUid()" (ngModelChange)="onCopyUidChange($event)" (keyup.enter)="fetchSource()" />
                 </div>
                 <button type="button" class="um__btn" (click)="fetchSource()" [disabled]="fetchingSource() || !copyFromUid().trim()">
@@ -361,7 +361,7 @@
       <div class="um__addrow">
         <div class="um__search">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="um__search-icon"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <input id="um-ops" type="text" placeholder="OLS user id (e.g. MSMITH)" autocomplete="off"
+          <input id="um-ops" type="text" placeholder="OLS user id (e.g. NAMAH)" autocomplete="off"
                  [ngModel]="opsUidInput()" (ngModelChange)="onOpsUidChange($event)" (keyup.enter)="validateOps()" />
         </div>
         <button type="button" class="um__btn" (click)="validateOps()" [disabled]="opsValidating() || !opsUidInput().trim()">

@@ -174,6 +174,10 @@ class OpsAdminBody(BaseModel):
     action: str            # list|add|disable|enable|users_on|users_off|sql_scope_on|sql_scope_off|remove
     uid: str | None = None
     scope: str | None = None   # for sql_scope_on/off — 'group' | 'cib' | 'retail'
+    # for `add` — the capabilities to create the operator with (User Management on by default; S-Studio
+    # scopes off by default). can_users None → default True.
+    can_users: bool | None = None
+    scopes: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +246,6 @@ def _ops_rows(rows: list[dict]) -> list[dict]:
         "username": r.get("username"),
         "is_active": r.get("is_active"),
         "can_users": r.get("can_users"),
-        "can_sql": r.get("can_sql"),           # DEPRECATED legacy flag (kept for back-compat)
         "sql_scopes": _scopes(r),              # per-scope S-Studio (group/cib/retail)
         **_identity_fields(r),
     } for r in rows]
@@ -350,7 +353,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
             "service": {"all_apps": False, "apps": [], "denied_apps": []},
             "oracle": {"all_dbs": False, "all_level": "READ", "dbs": {}, "denied_dbs": []},
             "denied_sections": [], "denied_screens": [], "is_ops_admin": False,
-            "can_sql": False, "sql_scopes": [],
+            "sql_scopes": [],
         }
 
     username = identity.get("username", "")
@@ -359,7 +362,6 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
         "status": "success", "active": True, "role": role, "app_env": app_env,
         "username": username, **_identity_fields(identity),
         "is_ops_admin": bool(is_ops_admin),
-        "can_sql": bool(sql_scope_set),    # back-compat: true if S-Studio in any scope
         "sql_scopes": sorted(sql_scope_set),   # S-Studio per config scope (independent of role)
     }
 
@@ -856,7 +858,7 @@ def admin_ops(request: Request, body: OpsAdminBody, token_user: str = Depends(cu
     cfg = _require_ops_admin(request, caller)
     action = (body.action or "").strip().lower()
     if ACCESS_USE_DUMMY:
-        row = {"username": caller, "is_active": "Y", "can_users": "Y", "can_sql": "Y",
+        row = {"username": caller, "is_active": "Y", "can_users": "Y",
                "sql_scopes": list(CONFIG_SCOPES)}
         return {"status": "success", "dummy": action != "list", "ops_admins": [row]}
     try:
@@ -868,7 +870,9 @@ def admin_ops(request: Request, body: OpsAdminBody, token_user: str = Depends(cu
             ok, _ = _lookup_target(cfg, body.uid)
             if not ok:
                 raise HTTPException(status_code=422, detail=no_ols_user_msg(body.uid))
-            database.ops_admin_upsert(cfg, body.uid)
+            can_users = True if body.can_users is None else bool(body.can_users)
+            scopes = [s for s in (body.scopes or []) if str(s).strip().lower() in CONFIG_SCOPES]
+            database.ops_admin_upsert(cfg, body.uid, can_users=can_users, sql_scopes=scopes)
         elif action == "disable":
             database.ops_admin_set_active(cfg, body.uid, False)
         elif action == "enable":
@@ -944,7 +948,7 @@ def _dummy_access_users() -> list[dict]:
     """Dev roster for `/admin/users`: a few canned users with varied grants (mirrors _dummy_grants),
     resolved through the SAME grouping the real path uses so the shape matches."""
     rows: list[dict] = []
-    for u in ("JDOE", "MSMITH", "RPATEL", "SALTUSER"):
+    for u in ("NAMAH", "RPATEL", "SALTUSER"):
         ident = _dummy_identity(u)
         for g in _dummy_grants(u):
             rows.append({**g, "username": u, **ident})

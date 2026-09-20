@@ -1851,7 +1851,7 @@ def fetch_access_users(db_config: Any) -> list[dict]:
 
 def fetch_is_ops_admin(db_config: Any, username: str) -> bool:
     """True iff `username` may use User Management — an active row with can_users='Y'. Independent
-    of can_sql (S-Studio), so an S-Studio-only operator is NOT an ops-admin."""
+    of S-Studio (the per-scope sql_* flags), so an S-Studio-only operator is NOT an ops-admin."""
     connection = None
     cursor = None
     try:
@@ -1879,7 +1879,7 @@ def fetch_ops_admins(db_config: Any) -> list[dict]:
         connection = connect(db_config)
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT o.username, o.is_active, o.can_users, o.can_sql,
+            SELECT o.username, o.is_active, o.can_users,
                    o.sql_group, o.sql_cib, o.sql_retail,
                    u.firstname, u.surname, u.email, u.guid
               FROM ols_ops_access o
@@ -1942,12 +1942,6 @@ def fetch_sql_scope(db_config: Any, username: str, scope: str) -> bool:
     return (scope or "").strip().lower() in fetch_sql_scopes(db_config, username)
 
 
-def fetch_can_sql(db_config: Any, username: str) -> bool:
-    """DEPRECATED (back-compat): True iff `username` has S-Studio in ANY scope. New code uses
-    fetch_sql_scopes / fetch_sql_scope for per-scope gating."""
-    return bool(fetch_sql_scopes(db_config, username))
-
-
 def ops_admin_set_users(db_config: Any, username: str, allowed: bool) -> int:
     """Grant/revoke User Management (`can_users`) for an existing operator. Returns rows changed.
     Commits. WRITE — ops-admin only."""
@@ -1958,27 +1952,6 @@ def ops_admin_set_users(db_config: Any, username: str, allowed: bool) -> int:
         cursor = connection.cursor()
         cursor.execute("""
             UPDATE ols_ops_access SET can_users = :flag WHERE UPPER(username) = UPPER(:u)
-        """, {"flag": "Y" if allowed else "N", "u": username})
-        n = cursor.rowcount
-        connection.commit()
-        return n
-    finally:
-        if cursor:
-            cursor.close()
-        if connection is not None and connection is not db_config:
-            connection.close()
-
-
-def ops_admin_set_sql(db_config: Any, username: str, allowed: bool) -> int:
-    """Grant/revoke S-Studio (`can_sql`) for an existing operator. Returns rows changed. Commits.
-    WRITE — ops-admin only."""
-    connection = None
-    cursor = None
-    try:
-        connection = connect(db_config)
-        cursor = connection.cursor()
-        cursor.execute("""
-            UPDATE ols_ops_access SET can_sql = :flag WHERE UPPER(username) = UPPER(:u)
         """, {"flag": "Y" if allowed else "N", "u": username})
         n = cursor.rowcount
         connection.commit()
@@ -2117,8 +2090,17 @@ def grant_delete(db_config: Any, username: str, resource_type: str, resource_sco
             connection.close()
 
 
-def ops_admin_upsert(db_config: Any, username: str) -> None:
-    """Add (or re-activate) an ops-admin in `ols_ops_access`. Commits. WRITE — ops-admin only."""
+def ops_admin_upsert(db_config: Any, username: str, can_users: bool = True,
+                     sql_scopes: "set[str] | list[str] | None" = None) -> None:
+    """Add (or re-activate) an operator in `ols_ops_access` with the chosen capabilities: User Management
+    (`can_users`) and per-scope S-Studio (`sql_scopes` ⊆ {group,cib,retail}). Commits. WRITE — ops-admin
+    only."""
+    scopes = {str(s).strip().lower() for s in (sql_scopes or [])}
+    binds = {"u": username,
+             "cu": "Y" if can_users else "N",
+             "sg": "Y" if "group" in scopes else "N",
+             "sc": "Y" if "cib" in scopes else "N",
+             "sr": "Y" if "retail" in scopes else "N"}
     connection = None
     cursor = None
     try:
@@ -2128,9 +2110,12 @@ def ops_admin_upsert(db_config: Any, username: str) -> None:
             MERGE INTO ols_ops_access t
             USING (SELECT :u username FROM dual) s
                ON (UPPER(t.username) = UPPER(s.username))
-            WHEN MATCHED THEN UPDATE SET t.is_active = 'Y'
-            WHEN NOT MATCHED THEN INSERT (username, is_active) VALUES (s.username, 'Y')
-        """, {"u": username})
+            WHEN MATCHED THEN UPDATE SET t.is_active = 'Y', t.can_users = :cu,
+                                         t.sql_group = :sg, t.sql_cib = :sc, t.sql_retail = :sr
+            WHEN NOT MATCHED THEN
+                INSERT (username, is_active, can_users, sql_group, sql_cib, sql_retail)
+                VALUES (s.username, 'Y', :cu, :sg, :sc, :sr)
+        """, binds)
         connection.commit()
     finally:
         if cursor:
@@ -2180,14 +2165,14 @@ def ops_admin_delete(db_config: Any, username: str) -> int:
 
 
 # =============================================================================
-# S-Studio — raw SQL / PL-SQL console (Config Ops, ops-admins with can_sql only).
+# S-Studio — raw SQL / PL-SQL console (Config Ops, operators with a per-scope S-Studio grant).
 #
 # Runs whatever the operator types against ONE target database. SELECT → columns+rows;
 # DML/DDL/anonymous-PL-SQL/deploy → a status message; Oracle errors → the ORA-xxxxx text.
 # MANUAL COMMIT: the connection has autocommit OFF and is CLOSED after each run, so uncommitted
 # DML rolls back — nothing persists unless the operator's script includes an explicit COMMIT
 # (DDL still auto-commits in Oracle). SECURITY: `db_config` here MUST be a PRIVILEGED connection,
-# separate from the OCC read-only monitor (see RBAC_DESIGN.md). The API layer re-checks can_sql.
+# separate from the OCC read-only monitor (see RBAC_DESIGN.md). The API layer re-checks the S-Studio scope.
 # =============================================================================
 
 SQL_STUDIO_MAX_ROWS = int(os.environ.get("SQL_STUDIO_MAX_ROWS", "1000"))

@@ -194,7 +194,7 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
     const ops_admins = [...umStore.ops.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([u, v]) => ({ username: u, is_active: v.active ? 'Y' : 'N', can_users: v.users ? 'Y' : 'N',
-                          can_sql: v.scopes.length ? 'Y' : 'N', sql_scopes: v.scopes, ...umIdentity(u) }));
+                          sql_scopes: v.scopes, ...umIdentity(u) }));
     return respond({ status: 'success', ops_admins });
   }
 
@@ -523,7 +523,7 @@ function baseActive(over: Record<string, unknown>): Record<string, unknown> {
   return {
     status: 'success', active: true, username: u,
     display_name: titleCase(u), email: `${u.toLowerCase()}@example.com`,
-    role: 'READ', app_env: environment.appEnv, is_ops_admin: false, can_sql: false,
+    role: 'READ', app_env: environment.appEnv, is_ops_admin: false, sql_scopes: [] as string[],
     screens: ['home', 'log_analytics', 'infra_health'],
     write_screens: [] as string[],
     config: { scopes: [] as string[], all: false, all_level: 'READ', category_grants: [], table_grants: [], regression: [] as string[], reconciliation: [] as string[] },
@@ -539,7 +539,7 @@ function baseActive(over: Record<string, unknown>): Record<string, unknown> {
 const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
   // Full access (like ADMIN + ops-admin + S-Studio).
   admin: () => baseActive({
-    role: 'ADMIN', is_ops_admin: true, can_sql: true, sql_scopes: ['group', 'cib', 'retail'],
+    role: 'ADMIN', is_ops_admin: true, sql_scopes: ['group', 'cib', 'retail'],
     screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'user_management'],
     write_screens: ['service_console', 'oracle_command_center'],
     config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [], regression: ['group', 'cib', 'retail'], reconciliation: ['group', 'cib', 'retail'] },
@@ -552,7 +552,7 @@ const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
   not_provisioned: () => ({
     status: 'success', active: false, username: environment.username,
     display_name: titleCase(environment.username), email: `${environment.username.toLowerCase()}@example.com`,
-    role: 'NONE', app_env: environment.appEnv, is_ops_admin: false, can_sql: false,
+    role: 'NONE', app_env: environment.appEnv, is_ops_admin: false, sql_scopes: [],
     screens: [], write_screens: [],
     config: { scopes: [], all: false, all_level: 'READ', category_grants: [], table_grants: [] },
     servers: [], all_servers: false, denied_servers: [],
@@ -588,10 +588,10 @@ const DEV_SCENARIOS: Record<string, () => Record<string, unknown>> = {
   // Granted "User access" ONLY (a SCREEN/user_management grant, NOT an ops-admin): sees the User
   // access tab but NOT Manage access, and the tab strip is hidden (single tab). Validates the split.
   user_access_only: () => baseActive({ screens: ['home', 'log_analytics', 'infra_health', 'user_management'] }),
-  // S-Studio operator WITHOUT super-admin: can_sql only (is_ops_admin false → NO User Management),
-  // plus config GROUP/CIB (S-Studio lives inside the scope screen, so it needs a config grant to reach).
+  // S-Studio operator WITHOUT super-admin: per-scope S-Studio only (is_ops_admin false → NO User
+  // Management), plus config GROUP/CIB (S-Studio lives inside the scope screen, so it needs a config grant).
   sql_studio: () => baseActive({
-    is_ops_admin: false, can_sql: true,
+    is_ops_admin: false, sql_scopes: ['group', 'cib'],
     screens: ['home', 'log_analytics', 'infra_health', 'config_ops_console'],
     config: {
       scopes: ['group', 'cib'], all: false, all_level: 'WRITE',
@@ -677,9 +677,9 @@ function mockAccessSnapshot(): Record<string, unknown> {
     display_name: titleCase(environment.username), email: `${environment.username.toLowerCase()}@example.com`,
     role, app_env: environment.appEnv,
     // Ops-admin gate (ols_ops_access) is INDEPENDENT of role; in dev the ADMIN role stands in for it.
-    // can_sql (S-Studio) is a per-user flag on the same table — ADMIN role stands in for it in dev.
+    // S-Studio scopes are per-user on the same table — the ADMIN branch below fills them in dev.
     is_ops_admin: role === 'ADMIN',
-    can_sql: role === 'ADMIN'
+    sql_scopes: [] as string[]
   };
   const noInfra = { all_apps: false, apps: [] as string[], denied_apps: [] as string[] };
   const noSvc = { all_apps: false, apps: [] as string[], denied_apps: [] as string[] };
@@ -831,18 +831,16 @@ function umSeed(): void {
   umStore.ops.set(environment.username.toUpperCase(), { active: true, users: true, sql: true, scopes: ['group', 'cib', 'retail'] });
   umStore.ops.set('DBAUSER', { active: true, users: true, sql: false, scopes: ['cib'] });
   umStore.ops.set('SQLONLY', { active: true, users: false, sql: true, scopes: [] });   // no can_users → S-Studio inert
-  umStore.grants.set('JDOE', [
-    { username: 'JDOE', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ' },
-    { username: 'JDOE', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ' },
-    { username: 'JDOE', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'WRITE' },
-    { username: 'JDOE', resource_type: 'SECTION', resource_scope: 'oracle_command_center', resource_key: 'sql_intelligence', access_level: 'DENY' }
-  ]);
-  // A few more granted users so the "who has access" roster demonstrates sorting / filtering / features.
-  umStore.grants.set('MSMITH', [
-    { username: 'MSMITH', resource_type: 'SCREEN', resource_scope: 'service_console', resource_key: '*', access_level: 'WRITE' },
-    { username: 'MSMITH', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'cib_batch', access_level: 'READ' },
-    // Screen-level Config Ops for CIB only (the new SCREEN / config_ops:<scope> grant) → "Config Ops (CIB)".
-    { username: 'MSMITH', resource_type: 'SCREEN', resource_scope: 'config_ops:cib', resource_key: '*', access_level: 'READ' }
+  // One granted demo user (NAMAH) with a spread of grants so the "who has access" roster demonstrates
+  // sorting / filtering / features (Log Analytics, Infra, OCC read+write, a section deny, Service
+  // Console, and screen-level Config Ops for CIB).
+  umStore.grants.set('NAMAH', [
+    { username: 'NAMAH', resource_type: 'SERVER', resource_scope: 'log_analytics', resource_key: 'eur17', access_level: 'READ' },
+    { username: 'NAMAH', resource_type: 'APP', resource_scope: 'infra_health', resource_key: 'OLS_GROUP', access_level: 'READ' },
+    { username: 'NAMAH', resource_type: 'DB', resource_scope: 'oracle_command_center', resource_key: 'group', access_level: 'WRITE' },
+    { username: 'NAMAH', resource_type: 'SECTION', resource_scope: 'oracle_command_center', resource_key: 'sql_intelligence', access_level: 'DENY' },
+    { username: 'NAMAH', resource_type: 'SCREEN', resource_scope: 'service_console', resource_key: '*', access_level: 'WRITE' },
+    { username: 'NAMAH', resource_type: 'SCREEN', resource_scope: 'config_ops:cib', resource_key: '*', access_level: 'READ' }
   ]);
   umStore.grants.set('RPATEL', [
     { username: 'RPATEL', resource_type: 'TABLE_CATEGORY', resource_scope: 'config_ops:group', resource_key: 'OMT-BOTH', access_level: 'WRITE' },

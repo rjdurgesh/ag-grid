@@ -20,7 +20,7 @@ const EMPTY: AccessSnapshot = {
   infra: { all_apps: false, apps: [], denied_apps: [] },
   service: { all_apps: false, apps: [], denied_apps: [] },
   oracle: { all_dbs: false, all_level: 'READ', dbs: {}, denied_dbs: [] },
-  denied_sections: [], denied_screens: [], is_ops_admin: false, can_sql: false, sql_scopes: []
+  denied_sections: [], denied_screens: [], is_ops_admin: false, sql_scopes: []
 };
 
 /** Screens always resolvable (login/error routes only). Docs is NOT here anymore — both Docs screens
@@ -129,17 +129,10 @@ export class RbacService {
   }
 
   /** May the user use S-Studio in a given config scope? Gated per-scope by `ols_ops_access`
-   *  (`sql_scopes`), assigned only to full super admins. Falls back to the legacy global `can_sql`
-   *  flag when `sql_scopes` is absent (older snapshot / dev mock), so nothing breaks in transition. */
+   *  (`sql_scopes`), independent of User Management. */
   canSql(scope: string): boolean {
     const s = this.snapshot();
-    if (!s.active) {
-      return false;
-    }
-    if (s.sql_scopes !== undefined) {
-      return s.sql_scopes.includes(scope);
-    }
-    return !!s.can_sql;   // back-compat: no per-scope info → the old global flag
+    return s.active && (s.sql_scopes ?? []).includes(scope);
   }
 
   /** Can the user take write actions on this screen? (OCC kill, Service start/stop.) */
@@ -155,7 +148,7 @@ export class RbacService {
    *  S-Studio in any scope.) False → No-Access page with the "contact OLS Team" message. */
   hasAnyAccess(): boolean {
     const s = this.snapshot();
-    const anySql = (s.sql_scopes?.length ?? 0) > 0 || !!s.can_sql;
+    const anySql = (s.sql_scopes?.length ?? 0) > 0;
     return s.active && (s.screens.length > 0 || this.isOpsAdmin() || anySql);
   }
 

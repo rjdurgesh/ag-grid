@@ -20,20 +20,17 @@ SET DEFINE OFF;
 --   sql_group / sql_cib / sql_retail = S-Studio (Config Ops SQL console), PER CONFIG SCOPE.
 -- S-Studio is PER-SCOPE and INDEPENDENT of can_users: an active operator with sql_<scope>='Y' gets the
 -- SQL console for that OLS line whether or not they have User Management (see fetch_sql_scopes). So a
--- row with can_users='N' + sql_cib='Y' is a CIB-only S-Studio operator, not a super admin. The legacy
--- single can_sql column is kept for back-compat only and is NO LONGER the gate (use the per-scope flags).
+-- row with can_users='N' + sql_cib='Y' is a CIB-only S-Studio operator, not a super admin.
 CREATE TABLE ols_ops_access (
   username   VARCHAR2(64) NOT NULL,
   is_active  CHAR(1) DEFAULT 'Y' NOT NULL,   -- master on/off for the whole row
   can_users  CHAR(1) DEFAULT 'Y' NOT NULL,   -- User Management (super admin)
-  can_sql    CHAR(1) DEFAULT 'N' NOT NULL,   -- DEPRECATED: legacy global S-Studio flag (not the gate)
   sql_group  CHAR(1) DEFAULT 'N' NOT NULL,   -- S-Studio on OLS GROUP
   sql_cib    CHAR(1) DEFAULT 'N' NOT NULL,   -- S-Studio on OLS CIB
   sql_retail CHAR(1) DEFAULT 'N' NOT NULL,   -- S-Studio on OLS RETAIL
   CONSTRAINT ols_ops_access_pk PRIMARY KEY (username),
   CONSTRAINT ols_ops_access_ck_act CHECK (is_active  IN ('Y','N')),
   CONSTRAINT ols_ops_access_ck_usr CHECK (can_users  IN ('Y','N')),
-  CONSTRAINT ols_ops_access_ck_sql CHECK (can_sql    IN ('Y','N')),
   CONSTRAINT ols_ops_access_ck_sg  CHECK (sql_group  IN ('Y','N')),
   CONSTRAINT ols_ops_access_ck_sc  CHECK (sql_cib    IN ('Y','N')),
   CONSTRAINT ols_ops_access_ck_sr  CHECK (sql_retail IN ('Y','N'))
@@ -42,11 +39,10 @@ CREATE TABLE ols_ops_access (
 -- Case-insensitive lookup (the app matches on UPPER(username)).
 CREATE UNIQUE INDEX ols_ops_access_uix ON ols_ops_access (UPPER(username));
 
-COMMENT ON TABLE  ols_ops_access           IS 'Privileged operators — User Management (can_users) and/or S-Studio (can_sql). See RBAC_DESIGN.md.';
+COMMENT ON TABLE  ols_ops_access           IS 'Privileged operators — User Management (can_users) and/or per-scope S-Studio (sql_group/sql_cib/sql_retail). See RBAC_DESIGN.md.';
 COMMENT ON COLUMN ols_ops_access.username  IS 'UID of a privileged operator (matched case-insensitively).';
 COMMENT ON COLUMN ols_ops_access.is_active IS 'Y = row active; N = disabled (kept only so it can be flipped back).';
 COMMENT ON COLUMN ols_ops_access.can_users  IS 'Y = User Management (hand out access — super admin). Default Y.';
-COMMENT ON COLUMN ols_ops_access.can_sql    IS 'DEPRECATED legacy global S-Studio flag — no longer the gate; use sql_group/sql_cib/sql_retail.';
 COMMENT ON COLUMN ols_ops_access.sql_group  IS 'Y = S-Studio on OLS GROUP. Effective when is_active=Y (independent of can_users).';
 COMMENT ON COLUMN ols_ops_access.sql_cib    IS 'Y = S-Studio on OLS CIB. Effective when is_active=Y (independent of can_users).';
 COMMENT ON COLUMN ols_ops_access.sql_retail IS 'Y = S-Studio on OLS RETAIL. Effective when is_active=Y (independent of can_users).';
@@ -54,21 +50,20 @@ COMMENT ON COLUMN ols_ops_access.sql_retail IS 'Y = S-Studio on OLS RETAIL. Effe
 -- Existing installs: add the columns without recreating the table -------------
 --   ALTER TABLE ols_ops_access ADD (can_users CHAR(1) DEFAULT 'Y' NOT NULL);
 --   ALTER TABLE ols_ops_access ADD CONSTRAINT ols_ops_access_ck_usr CHECK (can_users IN ('Y','N'));
---   ALTER TABLE ols_ops_access ADD (can_sql   CHAR(1) DEFAULT 'N' NOT NULL);   -- if not already present
---   ALTER TABLE ols_ops_access ADD CONSTRAINT ols_ops_access_ck_sql CHECK (can_sql IN ('Y','N'));
--- Per-scope S-Studio (2026 — replaces the single can_sql gate):
 --   ALTER TABLE ols_ops_access ADD (sql_group  CHAR(1) DEFAULT 'N' NOT NULL);
 --   ALTER TABLE ols_ops_access ADD (sql_cib    CHAR(1) DEFAULT 'N' NOT NULL);
 --   ALTER TABLE ols_ops_access ADD (sql_retail CHAR(1) DEFAULT 'N' NOT NULL);
 --   ALTER TABLE ols_ops_access ADD CONSTRAINT ols_ops_access_ck_sg CHECK (sql_group  IN ('Y','N'));
 --   ALTER TABLE ols_ops_access ADD CONSTRAINT ols_ops_access_ck_sc CHECK (sql_cib    IN ('Y','N'));
 --   ALTER TABLE ols_ops_access ADD CONSTRAINT ols_ops_access_ck_sr CHECK (sql_retail IN ('Y','N'));
---   -- carry the old global flag forward to all three scopes:
+-- Retiring the old global S-Studio flag (if your table still has it) — carry it forward, then drop:
 --   UPDATE ols_ops_access SET sql_group='Y', sql_cib='Y', sql_retail='Y' WHERE can_sql='Y'; COMMIT;
+--   ALTER TABLE ols_ops_access DROP CONSTRAINT ols_ops_access_ck_sql;   -- if it exists
+--   ALTER TABLE ols_ops_access DROP COLUMN can_sql;
 
 -- ---- BOOTSTRAP: make yourself a full privileged operator (User Management + S-Studio on all scopes) ----
-INSERT INTO ols_ops_access (username, is_active, can_users, can_sql, sql_group, sql_cib, sql_retail)
-VALUES ('CHANGE_ME', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y');
+INSERT INTO ols_ops_access (username, is_active, can_users, sql_group, sql_cib, sql_retail)
+VALUES ('CHANGE_ME', 'Y', 'Y', 'Y', 'Y', 'Y');
 COMMIT;
 
 -- ---- S-Studio ONLY, for a specific scope (NOT a super admin — can_users='N') ----

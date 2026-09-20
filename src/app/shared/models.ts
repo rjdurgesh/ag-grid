@@ -251,10 +251,8 @@ export interface AccessSnapshot {
    *  `role` — even an ADMIN is false here unless listed in the gate table. */
   is_ops_admin?: boolean;
   /** S-Studio config scopes the user may use (`ols_ops_access` per-scope flags): e.g. ['cib'].
-   *  Only ever populated for a full super admin. Drives the per-scope S-Studio tab. */
+   *  Drives the per-scope S-Studio tab. */
   sql_scopes?: string[];
-  /** DEPRECATED back-compat: true if S-Studio is granted in ANY scope. Prefer `sql_scopes`. */
-  can_sql?: boolean;
 }
 
 // --- User Management (ops-admin screen — POST /api/access/admin/* — see access_api.py) --------
@@ -316,14 +314,12 @@ export interface AdminUserResponse {
   grants: GrantRow[];
   snapshot: AccessSnapshot | null;
 }
-/** One row of the `ols_ops_access` privileged-operators table. `can_users` = User Management access,
- *  `can_sql` = S-Studio access — independent. */
+/** One row of the `ols_ops_access` privileged-operators table. `can_users` = User Management access;
+ *  `sql_scopes` = per-scope S-Studio access — independent. */
 export interface OpsAdmin {
   username: string;
   is_active: string;
   can_users?: string;
-  /** DEPRECATED legacy global S-Studio flag. Prefer `sql_scopes`. */
-  can_sql?: string;
   /** S-Studio config scopes granted to this operator (e.g. ['group','cib']). */
   sql_scopes?: string[];
   /** Identity fields (from ols_users) so the list can show the full name, not just the UID initial. */

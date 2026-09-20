@@ -1,7 +1,7 @@
 """S-Studio — the Config Ops SQL console.
 
-A raw SQL / PL-SQL worksheet for **authorised operators only** (ops-admins in `ols_ops_access`
-with `can_sql='Y'` — see RBAC_DESIGN.md §12). Two endpoints, both re-checked server-side:
+A raw SQL / PL-SQL worksheet for **authorised operators only** (an active `ols_ops_access` row with the
+per-scope S-Studio flag for that scope — see RBAC_DESIGN.md §12). Two endpoints, both re-checked server-side:
 
 * ``POST /api/sql_studio/databases`` `{ caller, scope }` → the databases in that config scope
   (from ``db_configs``, filtered by key prefix — future-proof).
