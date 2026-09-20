@@ -62,8 +62,10 @@ export class UserManagementService {
     action: 'list' | 'add' | 'disable' | 'enable' | 'users_on' | 'users_off'
           | 'sql_scope_on' | 'sql_scope_off' | 'remove',
     uid?: string,
-    scope?: string
+    scope?: string,
+    opts?: { can_users?: boolean; scopes?: string[] }   // for `add` — capabilities to create with
   ): Observable<{ ops_admins: OpsAdmin[] }> {
-    return this.api.post(API.access.admin.ops, { caller: this.caller(), action, uid, scope });
+    return this.api.post(API.access.admin.ops,
+      { caller: this.caller(), action, uid, scope, can_users: opts?.can_users, scopes: opts?.scopes });
   }
 }

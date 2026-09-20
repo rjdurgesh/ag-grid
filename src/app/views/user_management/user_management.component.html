@@ -4,10 +4,6 @@
       <h1 class="ols-view__title">Access Control</h1>
       <p class="ols-view__subtitle">Grant or revoke access for any active OLS user, and manage who else can use this screen.</p>
     </div>
-    <span class="um__badge" title="You are listed in ols_ops_access">
-      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m8.5 12 2.4 2.4L15.5 9.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Ops Admin
-    </span>
   </header>
 
   @if (toast(); as t) {
@@ -398,8 +394,21 @@
               }
             </div>
           } @else {
+            <div class="um__caps">
+              <span class="um__caps-label">Grant on add</span>
+              <label class="um__cap" [class.is-on]="newOpsUsers()">
+                <input type="checkbox" [ngModel]="newOpsUsers()" (ngModelChange)="newOpsUsers.set($event)" />
+                User Management
+              </label>
+              @for (sc of sqlScopeOptions; track sc.key) {
+                <label class="um__cap" [class.is-on]="hasNewOpsScope(sc.key)">
+                  <input type="checkbox" [ngModel]="hasNewOpsScope(sc.key)" (ngModelChange)="toggleNewOpsScope(sc.key)" />
+                  S-Studio · {{ sc.label }}
+                </label>
+              }
+            </div>
             <button type="button" class="um__btn um__btn--primary um__addops" (click)="addOps()" [disabled]="savingOps() || !canAddOps()">
-              {{ savingOps() ? 'Adding…' : 'Add ' + lk.username + ' as ops-admin' }}
+              {{ savingOps() ? 'Adding…' : 'Add ' + lk.username }}
             </button>
           }
         }

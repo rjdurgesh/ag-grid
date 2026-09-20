@@ -136,7 +136,7 @@ export const API = {
     activity: `${API_BASE_URL}/api/reconciliation/activity`
   },
   /**
-   * S-Studio — the Config Ops SQL console (ops-admins with `can_sql` only). See sql_studio_api.py.
+   * S-Studio — the Config Ops SQL console (operators with a per-scope S-Studio grant). See sql_studio_api.py.
    */
   sqlStudio: {
     /** `{ caller, scope }` → the databases in that config scope. */

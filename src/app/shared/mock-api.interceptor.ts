@@ -170,24 +170,27 @@ export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
   }
   if (path === '/api/access/admin/ops') {
     umSeed();
-    const b = (req.body ?? {}) as { action?: string; uid?: string };
+    const b = (req.body ?? {}) as { action?: string; uid?: string; scope?: string; can_users?: boolean; scopes?: string[] };
     const action = String(b.action ?? '').toLowerCase();
     const uid = String(b.uid ?? '').trim();
     const key = uid.toUpperCase();
     const rec = umStore.ops.get(key);
-    const scope = String((b as { scope?: string }).scope ?? '').trim().toLowerCase();
+    const scope = String(b.scope ?? '').trim().toLowerCase();
     if (action === 'add') {
       if (!uid || key.includes('GHOST')) {
         return respondError(422, umNoUser(uid || 'that'));
       }
-      umStore.ops.set(key, { active: true, users: true, sql: rec?.sql ?? false, scopes: rec?.scopes ?? [] });
+      // Create with the chosen capabilities: User Management (default ON) + per-scope S-Studio.
+      const users = b.can_users !== false;
+      const scopes = (b.scopes ?? []).map((s) => String(s).toLowerCase());
+      umStore.ops.set(key, { active: true, users, scopes });
     } else if (action === 'remove') {
       umStore.ops.delete(key);
     } else if (rec) {
       if (action === 'disable') { rec.active = false; }
       else if (action === 'enable') { rec.active = true; }
       else if (action === 'users_on') { rec.users = true; }
-      else if (action === 'users_off') { rec.users = false; rec.scopes = []; }   // S-Studio needs can_users
+      else if (action === 'users_off') { rec.users = false; }   // S-Studio is independent of can_users
       else if (action === 'sql_scope_on' && scope) { rec.scopes = [...new Set([...rec.scopes, scope])]; }
       else if (action === 'sql_scope_off' && scope) { rec.scopes = rec.scopes.filter((s) => s !== scope); }
     }
@@ -819,7 +822,7 @@ function umFeatures(grants: UmGrant[]): { name: string; level: string }[] {
   }
   return Object.keys(feats).sort().map((name) => ({ name, level: feats[name] }));
 }
-interface UmOps { active: boolean; users: boolean; sql: boolean; scopes: string[]; }
+interface UmOps { active: boolean; users: boolean; scopes: string[]; }
 const umStore = { grants: new Map<string, UmGrant[]>(), ops: new Map<string, UmOps>() };
 let umSeeded = false;
 
@@ -828,9 +831,9 @@ function umSeed(): void {
     return;
   }
   umSeeded = true;
-  umStore.ops.set(environment.username.toUpperCase(), { active: true, users: true, sql: true, scopes: ['group', 'cib', 'retail'] });
-  umStore.ops.set('DBAUSER', { active: true, users: true, sql: false, scopes: ['cib'] });
-  umStore.ops.set('SQLONLY', { active: true, users: false, sql: true, scopes: [] });   // no can_users → S-Studio inert
+  umStore.ops.set(environment.username.toUpperCase(), { active: true, users: true, scopes: ['group', 'cib', 'retail'] });
+  umStore.ops.set('DBAUSER', { active: true, users: true, scopes: ['cib'] });
+  umStore.ops.set('SQLONLY', { active: true, users: false, scopes: ['cib'] });   // S-Studio operator, NOT a super admin
   // One granted demo user (NAMAH) with a spread of grants so the "who has access" roster demonstrates
   // sorting / filtering / features (Log Analytics, Infra, OCC read+write, a section deny, Service
   // Console, and screen-level Config Ops for CIB).

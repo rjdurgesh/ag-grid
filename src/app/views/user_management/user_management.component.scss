@@ -151,6 +151,85 @@
   }
   &__addops { margin-top: 0.9rem; }   /* content width, not full-bleed */
 
+  /* Capability picker shown before Add (User Management + per-scope S-Studio). */
+  &__caps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+  }
+  &__caps-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--cui-secondary-color, #6b7280);
+    margin-right: 0.1rem;
+  }
+  &__cap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.85rem;
+    font-size: 0.82rem;
+    line-height: 1;
+    color: var(--cui-body-color);
+    background: var(--cui-tertiary-bg, #f6f8fa);
+    border: 1px solid var(--cui-border-color, #d6dae1);
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+
+    /* Custom checkbox — override the global `.um input { width:100%; height:42px }` (same specificity,
+       later in source) so it renders as a small tick box, not a full-width field. */
+    input {
+      appearance: none;
+      -webkit-appearance: none;
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      min-width: 16px;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      place-content: center;
+      border: 1.5px solid var(--cui-border-color, #c2c8d0);
+      border-radius: 5px;
+      background: var(--cui-body-bg, #fff);
+      box-shadow: none;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+
+      &::after {
+        content: "";
+        width: 4px;
+        height: 8px;
+        margin-bottom: 1px;
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+        opacity: 0;
+      }
+      &:checked { background: var(--um-accent); border-color: var(--um-accent); }
+      &:checked::after { opacity: 1; }
+      &:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--um-accent) 55%, transparent);
+        outline-offset: 2px;
+      }
+    }
+
+    &:hover { border-color: color-mix(in srgb, var(--um-accent) 45%, var(--cui-border-color)); }
+    &.is-on {
+      border-color: color-mix(in srgb, var(--um-accent) 55%, var(--cui-border-color));
+      background: color-mix(in srgb, var(--um-accent) 10%, var(--cui-body-bg, #fff));
+      color: var(--cui-emphasis-color, #1a1a2e);
+      font-weight: 600;
+    }
+  }
+
   &__pick {
     display: flex;
     align-items: center;

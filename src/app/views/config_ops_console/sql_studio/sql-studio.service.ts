@@ -9,8 +9,8 @@ import { SqlDatabase, SqlResult } from '../../../shared/models';
 
 /**
  * Client for the S-Studio SQL console (`/api/sql_studio/*`). Every call carries `caller` — the
- * signed-in operator — which the backend re-checks against `ols_ops_access.can_sql`. See
- * sql_studio_api.py / RBAC_DESIGN.md §12.
+ * signed-in operator — which the backend re-checks against the per-scope S-Studio grant in
+ * `ols_ops_access`. See sql_studio_api.py / RBAC_DESIGN.md §12.
  */
 @Injectable({ providedIn: 'root' })
 export class SqlStudioService {

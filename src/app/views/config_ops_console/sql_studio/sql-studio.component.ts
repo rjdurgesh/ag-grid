@@ -7,7 +7,7 @@ import { ConfigScope } from '../../../shared/api-endpoints';
 import { SqlDatabase, SqlResult } from '../../../shared/models';
 
 /**
- * S-Studio — the Config Ops SQL console. An operator (ops-admin with `can_sql`) runs any SQL /
+ * S-Studio — the Config Ops SQL console. An operator with a per-scope S-Studio grant runs any SQL /
  * PL-SQL / deployment against ONE database in the current config scope. SELECT → results grid;
  * DML/DDL/PL-SQL → status line; Oracle errors → the ORA-xxxxx text in the panel. Manual commit —
  * include COMMIT to persist DML. Every run asks for confirmation showing the target DB.

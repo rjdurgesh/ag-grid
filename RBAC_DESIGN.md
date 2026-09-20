@@ -228,7 +228,8 @@ VALUES ('BOB','TABLE','config_ops:cib','CIB_FX_RATES','READ','PROD','ADMIN1');
 | Grant / revoke for a user | INSERT / flip `IS_ACTIVE` — or use the **User Management** screen (§11) | **None** |
 
 The grant table never needs an `ALTER` — the permission *vocabulary is data* (the one exception: a new
-**per-user capability flag** on `ols_ops_access`, like `can_sql`, which adds a column — see §7.1 case C).
+**per-user capability flag** on `ols_ops_access`, like the per-scope S-Studio `sql_group`/`sql_cib`/
+`sql_retail` columns, which adds a column — see §7.1 case C).
 
 ## 7.1 Checklist — adding a new screen / tab / section (RBAC)
 
@@ -255,10 +256,10 @@ The grant table never needs an `ALTER` — the permission *vocabulary is data* (
 - *Mock:* add the field to `baseActive` + grant it in a `DEV_SCENARIOS` entry so it's on-screen testable.
 - *Grant:* `<TYPE>` / `<scope>` / `*` / READ. The user still needs `config_ops:<scope>` to reach the screen.
 
-**Case C — a new per-USER capability flag** (the S-Studio pattern — cross-scope operator capability):
-- Adds a column to `ols_ops_access` (e.g. `can_sql`) — the ONLY case that ALTERs a table. `database.py`
-  fetch + `build_snapshot(... can_x=)`; snapshot flag; `rbac.canX()`; gate the control; toggle in User
-  Management (`/admin/ops` action). Use this only for capabilities that aren't per-scope.
+**Case C — a new per-USER capability flag** (the S-Studio pattern — an operator capability):
+- Adds a column (or per-scope columns) to `ols_ops_access` (e.g. `sql_group`/`sql_cib`/`sql_retail`) —
+  the ONLY case that ALTERs a table. `database.py` fetch + `build_snapshot(... )`; snapshot flag;
+  `rbac.canX()`; gate the control; toggle in User Management (`/admin/ops` action).
 
 **Case D — a new SECTION within a screen** (an OCC-style collapsible panel):
 - *UI:* wrap it with `*olsIfSection="{ screen: '<screen>', key: '<key>', db?: activeKey() }"`.
@@ -387,8 +388,8 @@ from the User Management **Manage access** tab (ops-super-admins only) — a per
 operator (→ `/admin/ops` `sql_scope_on`/`sql_scope_off` with `scope`) — or by SQL. Snapshot carries
 `sql_scopes: string[]`;
 `RbacService.canSql(scope)`; the tab is gated per scope by `canSql(scope)` and the endpoints re-check the
-scope server-side (`fetch_sql_scope`). The legacy single `can_sql` flag is deprecated (kept for
-back-compat, no longer the gate).
+scope server-side (`fetch_sql_scope`). (The old global `can_sql` column has been removed — access is
+purely the per-scope `sql_group`/`sql_cib`/`sql_retail` flags.)
 Because S-Studio lives *inside* a config scope screen, an operator reaches it only on the scopes they
 can already see — i.e. the per-scope S-Studio flag **plus** the ability to open that scope's config
 screen. (Scope visibility stays grant-driven for READ users; an ADMIN reaches every scope's screen.)

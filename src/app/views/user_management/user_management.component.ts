@@ -193,6 +193,8 @@ export class UserManagementComponent implements OnInit {
     this.opsUidInput.set('');
     this.opsLookup.set(null);
     this.opsFilter.set('');
+    this.newOpsUsers.set(true);
+    this.newOpsScopes.set([]);
   }
 
   /** Refresh the User-access tab: re-pull the catalogue and, if a user is loaded, their grants. */
@@ -276,6 +278,15 @@ export class UserManagementComponent implements OnInit {
   /** Candidate validated against OLS (shown for verification BEFORE Add is allowed). */
   readonly opsLookup = signal<UserLookup | null>(null);
   readonly opsValidating = signal(false);
+  /** Capabilities to grant when ADDING a new operator: User Management (default ON) + per-scope
+   *  S-Studio (default none — the granter ticks which). Independent, per Model B. */
+  readonly newOpsUsers = signal(true);
+  readonly newOpsScopes = signal<string[]>([]);
+  hasNewOpsScope(scope: string): boolean { return this.newOpsScopes().includes(scope); }
+  toggleNewOpsScope(scope: string): void {
+    const cur = this.newOpsScopes();
+    this.newOpsScopes.set(cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]);
+  }
   /** Free-text filter over the ops-admin list (username / name / email). */
   readonly opsFilter = signal('');
   readonly filteredOps = computed(() => {
@@ -520,12 +531,13 @@ export class UserManagementComponent implements OnInit {
     const existed = this.staged().some((s) => this.sameKey(s, row));
     let next = this.staged().filter((s) => !this.sameKey(s, row));
     next.push(row);
-    // Full access + "Include User Management" → also stage the SCREEN/user_management allow grant
-    // (READ — the screen isn't write-capable). Full access alone never reveals User Management.
+    // Full access + "Include User Management" → also stage the SCREEN/user_management allow grant.
+    // WRITE — using User Management IS a write capability (you hand out / revoke access). Full access
+    // alone never reveals User Management.
     let extra = '';
     if (this.kind() === 'full' && this.fullIncludeUsers() && this.level() !== 'DENY') {
       const um = { username: g.username, resource_type: 'SCREEN', resource_scope: 'user_management',
-                   resource_key: '*', access_level: 'READ' } as GrantRow;
+                   resource_key: '*', access_level: 'WRITE' } as GrantRow;
       next = next.filter((s) => !this.sameKey(s, um));
       next.push(um);
       extra = ' + User Management';
@@ -693,22 +705,33 @@ export class UserManagementComponent implements OnInit {
       return;
     }
     const uid = lk.username.trim();
+    const users = this.newOpsUsers();
+    const scopes = this.newOpsScopes();
+    if (!users && scopes.length === 0) {
+      this.toast.set({ kind: 'err', text: 'Pick at least one capability — User Management and/or an S-Studio scope.' });
+      return;
+    }
+    const caps = [users ? 'User Management' : null,
+                  scopes.length ? `S-Studio (${scopes.map((s) => s.toUpperCase()).join(', ')})` : null]
+                 .filter(Boolean).join(' + ');
     const ok = await this.confirm.ask({
-      title: 'Add ops-admin',
-      message: `Give ${lk.display_name || uid} (${uid}) access to User Management? They will be able to grant access to any OLS user.`,
+      title: 'Add privileged operator',
+      message: `Give ${lk.display_name || uid} (${uid}): ${caps}?`,
       confirmLabel: 'Add', tone: 'primary'
     });
     if (!ok) { return; }
     this.savingOps.set(true);
-    this.svc.ops('add', uid).subscribe({
+    this.svc.ops('add', uid, undefined, { can_users: users, scopes }).subscribe({
       next: (r) => {
         this.savingOps.set(false);
         this.opsAdmins.set(r.ops_admins ?? []);
         this.opsUidInput.set('');
         this.opsLookup.set(null);
-        this.toast.set({ kind: 'ok', text: `${uid} can now use User Management.` });
+        this.newOpsUsers.set(true);
+        this.newOpsScopes.set([]);
+        this.toast.set({ kind: 'ok', text: `${uid} added — ${caps}.` });
       },
-      error: (e) => { this.savingOps.set(false); this.fail(e, 'Could not add the ops-admin'); }
+      error: (e) => { this.savingOps.set(false); this.fail(e, 'Could not add the operator'); }
     });
   }
 
