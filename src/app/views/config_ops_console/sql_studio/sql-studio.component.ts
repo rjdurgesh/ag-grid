@@ -35,10 +35,8 @@ export class SqlStudioComponent implements OnInit {
   readonly running = signal(false);
   readonly result = signal<SqlResult | null>(null);
 
-  readonly selectedLabel = computed(() => {
-    const d = this.databases().find((x) => x.key === this.selectedDb());
-    return d ? (d.name || d.label) : this.selectedDb();   // show the actual DB name/SID
-  });
+  readonly selectedLabel = computed(
+    () => this.databases().find((d) => d.key === this.selectedDb())?.label || this.selectedDb());
 
   ngOnInit(): void {
     this.svc.databases(this.scope()).subscribe({

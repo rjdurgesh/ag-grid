@@ -19,8 +19,6 @@ back to the monitor ``db_configs`` only when that is not configured (and warns).
 
 from __future__ import annotations
 
-import re
-
 from env_loader import env_bool  # importing also loads backend/.env into os.environ
 
 from fastapi import APIRouter, HTTPException, Request
@@ -82,66 +80,14 @@ def _require_sql_admin(request: Request, body: DbQuery | ExecBody, scope: str):
     return cfg
 
 
-_SQL_DB_NAME_CACHE: dict = {}
-
-
-def _name_from_config(cfg) -> str:
-    """Actual DB name from the ``app.state`` db_config itself (no round-trip) — the preferred source.
-    Reads an explicit name field if the loader set one, else derives the service/SID from the dsn /
-    connect string. '' when nothing usable is present (caller then falls back)."""
-    if not isinstance(cfg, dict):
-        return ""
-    for k in ("name", "db_name", "dbname", "database", "service_name", "service", "sid"):
-        v = cfg.get(k)
-        if v and str(v).strip():
-            return str(v).strip()
-    dsn = str(cfg.get("dsn") or cfg.get("connect_string") or "").strip()
-    if not dsn:
-        return ""
-    # Oracle net descriptor → SERVICE_NAME= / SID=
-    m = re.search(r"SERVICE_NAME\s*=\s*([A-Za-z0-9_.$#-]+)", dsn, re.IGNORECASE) \
-        or re.search(r"\bSID\s*=\s*([A-Za-z0-9_.$#-]+)", dsn, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    # EZConnect host:port/service  → after the last '/', or host:port:sid → after the last ':'
-    tail = dsn.rsplit("/", 1)[-1] if "/" in dsn else (dsn.rsplit(":", 1)[-1] if ":" in dsn else dsn)
-    return tail.split("?")[0].strip()
-
-
-def _sql_db_name(key: str, cfg) -> str:
-    """The actual DB name/SID for one S-Studio target — taken from the db_config (app.state, by scope)
-    first (no DB hit); if the config carries no name, fall back to reading it live from the connection
-    (SYS_CONTEXT instance name); finally to the key upper-cased. Cached per key."""
-    cached = _SQL_DB_NAME_CACHE.get(key)
-    if cached:
-        return cached
-    name = _name_from_config(cfg)                 # preferred: straight from app.state.db_configs
-    if not name and cfg is not None:
-        try:
-            name = (database.fetch_instance_name(cfg) or "").strip()   # fallback: live SYS_CONTEXT
-        except Exception:  # noqa: BLE001 — display only; never fail the picker over a name
-            logger.warning("sql_studio: could not read instance name for db '%s'", key)
-            name = ""
-    resolved = name or key.upper()
-    if name:
-        _SQL_DB_NAME_CACHE[key] = resolved        # cache only a real value (retry on transient failure)
-    return resolved
-
-
 @router.post("/databases")
 def sql_databases(request: Request, body: DbQuery) -> dict:
-    """The databases available to run against for one config scope (ops-admin + S-Studio for that scope).
-    Each carries the real DB `name` (SID) — what the operator actually runs against — plus the friendly
-    `label`; the UI shows the name."""
+    """The databases available to run against for one config scope (ops-admin + S-Studio for that scope)."""
     _require_sql_admin(request, body, (body.scope or "").strip().lower())
     db_keys = list(getattr(request.app.state, "db_configs", {}) or access_api.OCC_DB_LABELS)
     keys = _dbs_for_scope(body.scope, db_keys)
-    # Name from the PRIVILEGED S-Studio connection the query actually uses; fall back to the monitor
-    # db_configs when sql_db_configs isn't wired.
-    name_cfgs = getattr(request.app.state, "sql_db_configs", None) or getattr(request.app.state, "db_configs", {}) or {}
     return {"status": "success", "databases": [
-        {"key": k, "label": access_api.OCC_DB_LABELS.get(k, k.replace("_", " ").title()),
-         "name": _sql_db_name(k, name_cfgs.get(k))} for k in keys]}
+        {"key": k, "label": access_api.OCC_DB_LABELS.get(k, k.replace("_", " ").title())} for k in keys]}
 
 
 def _db_error_text(exc: Exception) -> str:
