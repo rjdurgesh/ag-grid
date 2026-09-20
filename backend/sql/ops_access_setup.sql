@@ -15,13 +15,13 @@
 --------------------------------------------------------------------------------
 SET DEFINE OFF;
 
--- The "privileged operators" table. Capabilities:
+-- The "privileged operators" table. Capabilities (INDEPENDENT):
 --   can_users = User Management screen (hand out access — the "super admin")
 --   sql_group / sql_cib / sql_retail = S-Studio (Config Ops SQL console), PER CONFIG SCOPE.
--- S-Studio is now PER-SCOPE: an operator may be granted the SQL console for any subset of the three
--- OLS lines. S-Studio is exclusive to FULL super admins — the sql_* flags only take effect when the
--- row is active AND can_users='Y' (see access_api.fetch_sql_scopes). The legacy single can_sql column
--- is kept for back-compat only and is NO LONGER the gate (use the per-scope flags).
+-- S-Studio is PER-SCOPE and INDEPENDENT of can_users: an active operator with sql_<scope>='Y' gets the
+-- SQL console for that OLS line whether or not they have User Management (see fetch_sql_scopes). So a
+-- row with can_users='N' + sql_cib='Y' is a CIB-only S-Studio operator, not a super admin. The legacy
+-- single can_sql column is kept for back-compat only and is NO LONGER the gate (use the per-scope flags).
 CREATE TABLE ols_ops_access (
   username   VARCHAR2(64) NOT NULL,
   is_active  CHAR(1) DEFAULT 'Y' NOT NULL,   -- master on/off for the whole row
@@ -47,9 +47,9 @@ COMMENT ON COLUMN ols_ops_access.username  IS 'UID of a privileged operator (mat
 COMMENT ON COLUMN ols_ops_access.is_active IS 'Y = row active; N = disabled (kept only so it can be flipped back).';
 COMMENT ON COLUMN ols_ops_access.can_users  IS 'Y = User Management (hand out access — super admin). Default Y.';
 COMMENT ON COLUMN ols_ops_access.can_sql    IS 'DEPRECATED legacy global S-Studio flag — no longer the gate; use sql_group/sql_cib/sql_retail.';
-COMMENT ON COLUMN ols_ops_access.sql_group  IS 'Y = S-Studio on OLS GROUP. Only effective when is_active=Y AND can_users=Y.';
-COMMENT ON COLUMN ols_ops_access.sql_cib    IS 'Y = S-Studio on OLS CIB. Only effective when is_active=Y AND can_users=Y.';
-COMMENT ON COLUMN ols_ops_access.sql_retail IS 'Y = S-Studio on OLS RETAIL. Only effective when is_active=Y AND can_users=Y.';
+COMMENT ON COLUMN ols_ops_access.sql_group  IS 'Y = S-Studio on OLS GROUP. Effective when is_active=Y (independent of can_users).';
+COMMENT ON COLUMN ols_ops_access.sql_cib    IS 'Y = S-Studio on OLS CIB. Effective when is_active=Y (independent of can_users).';
+COMMENT ON COLUMN ols_ops_access.sql_retail IS 'Y = S-Studio on OLS RETAIL. Effective when is_active=Y (independent of can_users).';
 
 -- Existing installs: add the columns without recreating the table -------------
 --   ALTER TABLE ols_ops_access ADD (can_users CHAR(1) DEFAULT 'Y' NOT NULL);
@@ -71,9 +71,9 @@ INSERT INTO ols_ops_access (username, is_active, can_users, can_sql, sql_group, 
 VALUES ('CHANGE_ME', 'Y', 'Y', 'Y', 'Y', 'Y', 'Y');
 COMMIT;
 
--- ---- S-Studio for a specific scope (still a full super admin — can_users=Y) ----
+-- ---- S-Studio ONLY, for a specific scope (NOT a super admin — can_users='N') ----
 --   (also grant them the Config Ops scope(s) whose screens host the S-Studio tab — see access_examples.sql)
--- INSERT INTO ols_ops_access (username, is_active, can_users, sql_cib) VALUES ('SOMEUID', 'Y', 'Y', 'Y');
+-- INSERT INTO ols_ops_access (username, is_active, can_users, sql_cib) VALUES ('SOMEUID', 'Y', 'N', 'Y');
 -- COMMIT;
 
 --------------------------------------------------------------------------------

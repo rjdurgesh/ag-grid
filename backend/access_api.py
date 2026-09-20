@@ -620,7 +620,8 @@ def access_me(request: Request, body: AccessQuery, token_user: str = Depends(cur
         active = _is_active(identity)
         grants = database.fetch_user_grants(cfg, username) if active else []
         is_ops = database.fetch_is_ops_admin(cfg, username) if active else False
-        # S-Studio scopes (per config scope) are independent of is_ops_admin — fetch on their own.
+        # S-Studio is independent of can_users, so any active user may have per-scope grants — read
+        # them for every active user (one cheap, fail-safe indexed lookup; empty for non-operators).
         sql_scopes = sorted(database.fetch_sql_scopes(cfg, username)) if active else []
         return build_snapshot(identity, grants, body.app_env, is_ops_admin=is_ops, sql_scopes=sql_scopes)
     except Exception:
@@ -768,6 +769,8 @@ def admin_user(request: Request, body: AdminUserQuery, token_user: str = Depends
             return {"status": "success", "lookup": lk, "grants": [], "snapshot": None}
         ident = database.fetch_user_identity(cfg, body.uid)
         grants = database.fetch_all_grants(cfg, body.uid)
+        # S-Studio is independent of can_users, so read the per-scope grants for the viewed user (one
+        # cheap, fail-safe lookup; empty for anyone not in ols_ops_access).
         snap = build_snapshot(ident, grants, body.app_env,
                               is_ops_admin=database.fetch_is_ops_admin(cfg, body.uid),
                               sql_scopes=sorted(database.fetch_sql_scopes(cfg, body.uid)))

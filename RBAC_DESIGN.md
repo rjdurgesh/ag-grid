@@ -27,8 +27,8 @@ then READ, then SALT):
 
 > **User Management & S-Studio are never implicit — not even for ADMIN.** User Management needs an
 > ops-admin (`can_users`) or an explicit `SCREEN/user_management` grant (the ADMIN "include User
-> Management" toggle writes it). S-Studio needs a per-scope `ols_ops_access` flag (full super admins
-> only). A **`SCREEN/<screen>` DENY grant is absolute** — it removes that screen even for an ADMIN or
+> Management" toggle writes it). S-Studio needs a per-scope `ols_ops_access` flag (independent of
+> can_users). A **`SCREEN/<screen>` DENY grant is absolute** — it removes that screen even for an ADMIN or
 > a full-access wildcard, and surfaces in the snapshot's `denied_screens` (checked first by `canView`).
 
 **Two default screens for everyone; the rest opt-in.** Every **active** user (in `ols_users`,
@@ -323,8 +323,8 @@ keys to the kingdom stay locked down:
 **Super-exclusive gate — `ols_ops_access`.** A deliberately tiny table of *privileged operators*
 (`username`, `is_active`, **`can_users`**, and per-scope **`sql_group`/`sql_cib`/`sql_retail`**) gates the
 exclusive surfaces. **Manage access** shows only when the row is active with **`can_users='Y'`**
-(`is_ops_admin`). S-Studio (§12) is **per config scope** and exclusive to full super admins — the `sql_*`
-flags only take effect when the row is active AND `can_users='Y'`. The snapshot carries `is_ops_admin`
+(`is_ops_admin`). S-Studio (§12) is **per config scope** and **independent of `can_users`** — the `sql_*`
+flags take effect on any active `ols_ops_access` row. The snapshot carries `is_ops_admin`
 and `sql_scopes`; the component gates the Manage-access tab with `isOpsAdmin()`. Server-side,
 `/admin/ops` uses `_require_ops_admin` while `/admin/catalogue|user|grant|grant/delete` use
 `_require_user_admin` (ops-admin OR a non-DENY `SCREEN/user_management` grant — **not** the bare ADMIN
@@ -378,13 +378,14 @@ A raw SQL / PL-SQL worksheet inside Config Ops (a third in-page tab **Config | M
 each scope screen). An operator can run any query, DML, anonymous block, or deploy a
 package/procedure/function against ONE database.
 
-**Exclusive gate — `ols_ops_access` per-scope, full super admins only.** S-Studio is **per config
+**Exclusive gate — `ols_ops_access` per-scope, independent of can_users.** S-Studio is **per config
 scope**: an operator is granted it for any subset of `group` / `cib` / `retail` via the per-scope flags
-`sql_group` / `sql_cib` / `sql_retail`. It is **exclusive to full super admins** — the flags only take
-effect when the row is active AND `can_users='Y'` (so a plain ADMIN can never receive S-Studio, and
-there is no S-Studio-only operator). Assign it **only** from the User Management **Manage access** tab
-(ops-super-admins only) — a per-scope S-Studio checkbox per operator (→ `/admin/ops`
-`sql_scope_on`/`sql_scope_off` with `scope`) — or by SQL. Snapshot carries `sql_scopes: string[]`;
+`sql_group` / `sql_cib` / `sql_retail`, effective on any **active** `ols_ops_access` row **regardless of
+`can_users`**. So a row with `can_users='N'` + `sql_cib='Y'` is a CIB-only S-Studio operator (not a super
+admin), and a plain ADMIN still can't get S-Studio without an `ols_ops_access` row. Assign it **only**
+from the User Management **Manage access** tab (ops-super-admins only) — a per-scope S-Studio checkbox per
+operator (→ `/admin/ops` `sql_scope_on`/`sql_scope_off` with `scope`) — or by SQL. Snapshot carries
+`sql_scopes: string[]`;
 `RbacService.canSql(scope)`; the tab is gated per scope by `canSql(scope)` and the endpoints re-check the
 scope server-side (`fetch_sql_scope`). The legacy single `can_sql` flag is deprecated (kept for
 back-compat, no longer the gate).

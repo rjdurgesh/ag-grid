@@ -446,8 +446,8 @@
                   @for (sc of sqlScopeOptions; track sc.key) {
                     <button type="button" class="um__ops-btn um__ops-btn--sql" [class.is-on]="hasSqlScope(o, sc.key)"
                             (click)="toggleSqlScope(o, sc.key)"
-                            [disabled]="o.is_active !== 'Y' || o.can_users !== 'Y'"
-                            [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (o.can_users !== 'Y' ? 'S-Studio needs User Management (full super admin) first' : (hasSqlScope(o, sc.key) ? 'S-Studio granted for ' + sc.label + ' — click to revoke' : 'Grant S-Studio (SQL console) for ' + sc.label))">
+                            [disabled]="o.is_active !== 'Y'"
+                            [title]="o.is_active !== 'Y' ? 'Enable the user before changing privileges' : (hasSqlScope(o, sc.key) ? 'S-Studio granted for ' + sc.label + ' — click to revoke' : 'Grant S-Studio (SQL console) for ' + sc.label)">
                       S-Studio · {{ sc.label }} {{ hasSqlScope(o, sc.key) ? '✓' : '✕' }}
                     </button>
                   }

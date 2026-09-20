@@ -687,9 +687,10 @@ function mockAccessSnapshot(): Record<string, unknown> {
   if (role === 'ADMIN') {
     return {
       ...base,
+      sql_scopes: ['group', 'cib', 'retail'],
       screens: ['home', 'log_analytics', 'config_ops_console', 'infra_health', 'service_console', 'oracle_command_center', 'user_management'],
       write_screens: ['service_console', 'oracle_command_center'],
-      config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [] },
+      config: { scopes: ['group', 'cib', 'retail'], all: true, all_level: 'WRITE', category_grants: [], table_grants: [], regression: ['group', 'cib', 'retail'], reconciliation: ['group', 'cib', 'retail'] },
       servers: ['*'], all_servers: true, denied_servers: [],
       infra: { all_apps: true, apps: [], denied_apps: [] }, service: { all_apps: true, apps: [], denied_apps: [] },
       oracle: { all_dbs: true, all_level: 'WRITE', dbs: {}, denied_dbs: [] },
@@ -894,13 +895,14 @@ function umDeleteGrant(g: UmGrant): UmGrant[] {
 
 // --- S-Studio dev mocks (mirror sql_studio_api._dummy_execute) --------------------------------
 
-function mockSqlDatabases(scope: string): { key: string; label: string }[] {
+function mockSqlDatabases(scope: string): { key: string; label: string; name: string }[] {
+  const env = String(environment.appEnv || 'DEV').toUpperCase();
   const all = [
-    { key: 'group', label: 'OLS GROUP' },
-    { key: 'cib_batch', label: 'OLS CIB Batch' },
-    { key: 'cib_reporting', label: 'OLS CIB Reporting' },
-    { key: 'retail_batch', label: 'OLS RETAIL Batch' },
-    { key: 'retail_reporting', label: 'OLS RETAIL Reporting' }
+    { key: 'group', label: 'OLS GROUP', name: `OLS_GROUP_${env}` },
+    { key: 'cib_batch', label: 'OLS CIB Batch', name: `OLS_CIB_BATCH_${env}` },
+    { key: 'cib_reporting', label: 'OLS CIB Reporting', name: `OLS_CIB_RPT_${env}` },
+    { key: 'retail_batch', label: 'OLS RETAIL Batch', name: `OLS_RET_BATCH_${env}` },
+    { key: 'retail_reporting', label: 'OLS RETAIL Reporting', name: `OLS_RET_RPT_${env}` }
   ];
   return all.filter((d) => d.key === scope || d.key.startsWith(scope + '_'));
 }

@@ -765,10 +765,10 @@ export class UserManagementComponent implements OnInit {
     return (o.sql_scopes ?? []).includes(scope);
   }
 
-  /** Grant / revoke S-Studio for ONE config scope. S-Studio is exclusive to FULL super admins, so it's
-   *  only assignable when the operator has User Management (can_users='Y') and is active. */
+  /** Grant / revoke S-Studio for ONE config scope. S-Studio is independent of User Management, so it's
+   *  assignable to any active operator (they need not have can_users). */
   async toggleSqlScope(o: OpsAdmin, scope: string): Promise<void> {
-    if (o.is_active !== 'Y' || o.can_users !== 'Y') { return; }
+    if (o.is_active !== 'Y') { return; }
     const label = this.sqlScopeOptions.find((s) => s.key === scope)?.label ?? scope.toUpperCase();
     const granting = !this.hasSqlScope(o, scope);
     const ok = await this.confirm.ask({

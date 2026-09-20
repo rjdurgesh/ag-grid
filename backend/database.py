@@ -1901,17 +1901,30 @@ _SQL_SCOPE_COLUMNS = {"group": "sql_group", "cib": "sql_cib", "retail": "sql_ret
 
 
 def fetch_sql_scopes(db_config: Any, username: str) -> set[str]:
-    """The config scopes where `username` may use S-Studio. S-Studio is exclusive to FULL super
-    admins, so the per-scope flags only take effect when the row is ACTIVE and can_users='Y'."""
+    """The config scopes where `username` may use S-Studio. S-Studio is granted PER SCOPE via the
+    per-scope flags on an ACTIVE ols_ops_access row — INDEPENDENT of can_users (User Management). So
+    an S-Studio operator need not be a User-Management super admin.
+
+    FAILS SAFE: a user who is not in ols_ops_access simply returns no scopes, and if the per-scope
+    columns are missing (the ops_access_setup.sql migration hasn't been run yet) the read is caught
+    and returns no scopes too — so a normal user's profile view (/admin/user) and login (/access/me)
+    never 500 over this privileged lookup. S-Studio just shows as none until the columns exist."""
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute("""
-            SELECT sql_group, sql_cib, sql_retail FROM ols_ops_access
-             WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y' AND can_users = 'Y'
-        """, {"u": username})
+        try:
+            cursor.execute("""
+                SELECT sql_group, sql_cib, sql_retail FROM ols_ops_access
+                 WHERE UPPER(username) = UPPER(:u) AND is_active = 'Y'
+            """, {"u": username})
+        except Exception as exc:  # noqa: BLE001 — most likely the per-scope columns aren't there yet
+            import logging
+            logging.getLogger("database").warning(
+                "fetch_sql_scopes: could not read per-scope S-Studio columns for %s (run the "
+                "ols_ops_access migration in sql/ops_access_setup.sql?): %s", username, exc)
+            return set()
         row = cursor.fetchone()
         if not row:
             return set()

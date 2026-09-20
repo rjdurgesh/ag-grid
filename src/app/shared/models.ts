@@ -353,6 +353,9 @@ export interface AccessUser {
 export interface SqlDatabase {
   key: string;
   label: string;
+  /** The actual database name / SID (SYS_CONTEXT instance name) shown in the S-Studio DB dropdown, so
+   *  the operator sees exactly which physical DB a statement runs against. Falls back to `label`. */
+  name?: string;
 }
 // --- Config Ops CSV Upload & Load (POST /api/config/{scope}/table/{table}/upload) ---------------
 /** Result of a successful load. */

@@ -296,9 +296,10 @@ the index without it (see `rbac_setup.sql` §2b).
 
 **S-Studio** (Config Ops → **Config | MISC | S-Studio** tab) is a raw SQL / PL-SQL console for running
 queries, DML, anonymous blocks, and package/procedure deployments against one database. **Doubly
-exclusive AND per-scope**: visible only to a full super admin granted S-Studio **for that config scope**
-via the per-scope `ols_ops_access` flags (`sql_group`/`sql_cib`/`sql_retail`; effective only when the row
-is active AND `can_users='Y'`). Assigned only from the User Management **Manage access** tab (per-scope
+exclusive AND per-scope**: visible only to an operator granted S-Studio **for that config scope** via the
+per-scope `ols_ops_access` flags (`sql_group`/`sql_cib`/`sql_retail`; effective on any **active** row,
+**independent of `can_users`** — so an S-Studio operator need not have User Management). Assigned only from
+the User Management **Manage access** tab (per-scope
 checkboxes → `/admin/ops` `sql_scope_on`/`sql_scope_off`); snapshot carries `sql_scopes`, gated by
 `rbac.canSql(scope)` and re-checked per scope server-side (`fetch_sql_scope`). DB dropdown = the config
 scope's databases from `db_configs` (prefix-filtered, so `cib` shows batch + reporting; auto-grows).

@@ -221,15 +221,15 @@ VALUES ('CHANGE_ME','DB','oracle_command_center','retail_batch','DENY','ADMIN','
 --==============================================================================
 -- 7) S-STUDIO (the Config Ops SQL console) — lives in ols_ops_access, NOT ols_app_access
 --==============================================================================
--- S-Studio is PER CONFIG SCOPE and exclusive to FULL super admins: the per-scope flags
--- sql_group / sql_cib / sql_retail only take effect when the row is active AND can_users='Y'. So you
--- cannot give a plain admin S-Studio without User Management. A READ operator also needs a Config Ops
--- grant (section 2) for each scope whose screen hosts the S-Studio tab. Assign from the User Management
--- Manage-access tab (per-scope checkboxes), or by SQL:
+-- S-Studio is PER CONFIG SCOPE and INDEPENDENT of User Management: the per-scope flags
+-- sql_group / sql_cib / sql_retail take effect on any ACTIVE ols_ops_access row, regardless of
+-- can_users. So an operator can have S-Studio without being a super admin. A READ operator also needs a
+-- Config Ops grant (section 2) for each scope whose screen hosts the S-Studio tab. Assign from the User
+-- Management Manage-access tab (per-scope checkboxes), or by SQL:
 --
---   -- Full super admin with S-Studio on CIB only:
+--   -- S-Studio ONLY, on CIB (NOT a super admin — can_users='N'):
 --   INSERT INTO ols_ops_access (username, is_active, can_users, sql_cib)
---   VALUES ('CHANGE_ME','Y','Y','Y');
+--   VALUES ('CHANGE_ME','Y','N','Y');
 --   -- (a READ operator would also need the Config Ops scope grant so the scope screen — and its
 --   --  S-Studio tab — appears; an ADMIN reaches every scope screen already):
 --   INSERT INTO ols_app_access (username, resource_type, resource_scope, resource_key, access_level, granted_by, comments)
