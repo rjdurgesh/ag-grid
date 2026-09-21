@@ -5,7 +5,7 @@ import { NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 
 import { LoaderComponent } from '../../components/loader/loader.component';
-import { DocAudience, DocEntry } from '../../shared/models';
+import { DocAudience, DocEntry, DocFormat } from '../../shared/models';
 import { DocsService } from './docs.service';
 import { DocsRenderService, TocItem } from './docs-render.service';
 
@@ -61,7 +61,9 @@ export class DocsBrowserComponent implements OnInit {
   readonly docHtml = signal<SafeHtml>('');
   readonly toc = signal<TocItem[]>([]);
   readonly docUpdated = signal('');
-  private rawMarkdown = '';
+  private rawContent = '';
+  private docFormat: DocFormat = 'markdown';
+  private docFile = '';
   /** The `?doc=` id we should be showing (from the URL); reconciled against the loaded catalogue. */
   private pendingId: string | null = null;
 
@@ -172,7 +174,9 @@ export class DocsBrowserComponent implements OnInit {
 
   private clearReader(): void {
     this.selected.set(null);
-    this.rawMarkdown = '';
+    this.rawContent = '';
+    this.docFormat = 'markdown';
+    this.docFile = '';
     this.docHtml.set('');
     this.toc.set([]);
   }
@@ -187,12 +191,21 @@ export class DocsBrowserComponent implements OnInit {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (doc) => {
-          this.rawMarkdown = doc.markdown ?? '';
-          const r = this.renderer.render(this.rawMarkdown);
-          // bypass is safe: DocsRenderService escapes ALL source text and emits only a fixed tag
-          // whitelist (no raw HTML passthrough), so there is nothing for the sanitizer to strip.
-          this.docHtml.set(this.sanitizer.bypassSecurityTrustHtml(r.html));
-          this.toc.set(r.toc);
+          this.rawContent = doc.content ?? '';
+          this.docFormat = doc.format ?? 'markdown';
+          this.docFile = doc.file ?? entry.file ?? '';
+          if (this.docFormat === 'text') {
+            // Plain-text ("notepad") view: escape everything, render verbatim in a <pre>. No TOC.
+            this.docHtml.set(this.sanitizer.bypassSecurityTrustHtml(
+              `<pre class="doc-plain">${this.escapeHtml(this.rawContent)}</pre>`));
+            this.toc.set([]);
+          } else {
+            const r = this.renderer.render(this.rawContent);
+            // bypass is safe: DocsRenderService escapes ALL source text and emits only a fixed tag
+            // whitelist (no raw HTML passthrough), so there is nothing for the sanitizer to strip.
+            this.docHtml.set(this.sanitizer.bypassSecurityTrustHtml(r.html));
+            this.toc.set(r.toc);
+          }
           this.docUpdated.set(doc.updated ?? entry.updated ?? '');
           this.docLoading.set(false);
         },
@@ -204,7 +217,17 @@ export class DocsBrowserComponent implements OnInit {
   }
 
   badge(entry: DocEntry): string {
-    return entry.type === 'wiki' ? 'Wiki' : 'Doc';
+    if (entry.type === 'wiki') {
+      return 'Wiki';
+    }
+    const ext = (entry.file?.split('.').pop() ?? '').toLowerCase();
+    if (ext === 'docx' || ext === 'doc') {
+      return 'Word';
+    }
+    if (entry.format === 'text') {
+      return (ext || 'text').toUpperCase();
+    }
+    return 'Doc';
   }
 
   /** The small mono line under a card title: the filename for a doc, the host for a wiki. */
@@ -255,20 +278,37 @@ export class DocsBrowserComponent implements OnInit {
       });
   }
 
-  /** Download the raw markdown (client-side blob — no backend endpoint needed). */
+  /** Download the doc content (client-side blob — no backend endpoint needed). Text files keep their
+   *  original name/extension; a `.docx` (converted to markdown for reading) downloads as `.md`. */
   downloadRaw(): void {
     const entry = this.selected();
     if (!entry) {
       return;
     }
-    const blob = new Blob([this.rawMarkdown], { type: 'text/markdown;charset=utf-8' });
+    let name = this.docFile || entry.file || entry.id;
+    let mime = 'text/plain;charset=utf-8';
+    if (this.docFormat === 'markdown') {
+      mime = 'text/markdown;charset=utf-8';
+      name = /\.docx$/i.test(name) ? name.replace(/\.docx$/i, '.md') : name;
+      if (!/\.(md|markdown)$/i.test(name)) {
+        name = `${entry.id}.md`;
+      }
+    } else if (!/\.[a-z0-9]+$/i.test(name)) {
+      name = `${entry.id}.txt`;
+    }
+    const blob = new Blob([this.rawContent], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${entry.id}.md`;
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  /** Minimal HTML escape for the plain-text ("notepad") view (content sits inside a &lt;pre&gt;). */
+  private escapeHtml(s: string): string {
+    return (s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 }

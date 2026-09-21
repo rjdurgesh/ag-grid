@@ -518,31 +518,42 @@ export interface RegressionActivityRow {
 
 /** Which audience a doc targets — drives grouping AND role-based visibility. */
 export type DocAudience = 'user' | 'technical';
-/** How a doc opens: an external wiki link (new tab) or a local markdown file (in-app reader). */
+/** How a doc opens: an external wiki link (new tab) or a local file (in-app reader). */
 export type DocType = 'wiki' | 'markdown';
+/** How the reader renders a local doc's content: `markdown` → the safe markdown renderer (`.md` and
+ *  `.docx` converted server-side); `text` → verbatim monospace "notepad" view (`.txt`/`.json`/…). */
+export type DocFormat = 'markdown' | 'text';
 
-/** One catalogue entry — a wiki link or a local `.md` file. Markdown docs are addressed by an opaque
- *  `id` (never a filesystem path); wikis carry an external `url`. */
+/** One catalogue entry — a wiki link or a local file (`.md` / `.docx` / text). Local docs are addressed
+ *  by an opaque `id` (never a filesystem path); wikis carry an external `url`. */
 export interface DocEntry {
   id: string;
   title: string;
   description?: string;
   type: DocType;
+  /** For local docs (`type: 'markdown'`), how the reader should render the content. */
+  format?: DocFormat;
   audience: DocAudience;
   tags?: string[];
-  /** ISO date — file mtime for markdown, or the catalogue for a wiki. */
+  /** ISO date — file mtime for a local doc, or the catalogue for a wiki. */
   updated?: string;
-  /** Source filename (markdown only), e.g. "RBAC_DESIGN.md" — shown on the card. */
+  /** Source filename (local docs only), e.g. "RBAC_DESIGN.md" / "runbook.docx" — shown on the card. */
   file?: string;
   /** External URL (wiki only). */
   url?: string;
 }
 
-/** The raw markdown of one local doc (rendered + sanitized client-side). */
+/** The content of one local doc (rendered + sanitized client-side). `content` is markdown when
+ *  `format` is `markdown`, or raw text when `format` is `text`. */
 export interface DocContent {
   id: string;
   title: string;
-  markdown: string;
+  content: string;
+  format: DocFormat;
+  /** Source filename, used for the Download button's extension. */
+  file?: string;
+  /** @deprecated Back-compat alias for `content` when `format === 'markdown'`. */
+  markdown?: string;
   updated?: string;
 }
 

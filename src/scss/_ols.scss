@@ -866,6 +866,15 @@
   padding: 16px 18px;
   margin-bottom: 16px;
   background: var(--cui-tertiary-bg, #f7f8fa);
+  /* On short screens (small laptops) the modal body is a flex column with `overflow:hidden`; the grid
+     below has a min-height, so flexbox would otherwise SHRINK this panel to a sliver (a line or two) and
+     the rest — target dates, the Process button, the result table — would be unreachable. `flex-shrink:0`
+     stops the squeeze; the max-height caps the panel to the viewport and lets IT scroll, so every control
+     stays reachable. On tall screens the content fits and no scrollbar appears. */
+  flex-shrink: 0;
+  max-height: 78vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .ols-roll__head {

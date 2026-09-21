@@ -10,7 +10,10 @@ Run (from the ``backend/`` directory)::
     uvicorn app:app --reload --port 8000
 """
 
+import asyncio
 import os
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +21,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import time
 
 import env_loader  # noqa: F401  — loads backend/.env into os.environ before we read APP_ENV etc.
+import config_loader
 import db_errors   # maps DB busy/timeout errors → HTTP 503/504 (see DEPLOYMENT.md "Concurrency…")
+import housekeeping
 import oracle_cc_api
 from access_api import router as access_router
 from infrastructure_health_api import router as infra_health_router
@@ -40,7 +45,29 @@ logger = get_logger(__name__)
 # a default if unset). It travels with the deploy the same way APP_ENV does.
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0").strip()
 
-app = FastAPI(title="OLS Dashboard API", version=APP_VERSION)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """App startup/shutdown. Starts the log-housekeeping background task (auto-purge of old batch logs);
+    it runs once immediately, then on its configured interval, and is cancelled cleanly on shutdown."""
+    hk_task = None
+    hk_cfg = config_loader.housekeeping_config()
+    if hk_cfg.get("enabled"):
+        hk_task = asyncio.create_task(housekeeping.housekeeping_loop(hk_cfg))
+    else:
+        logger.info("housekeeping: disabled (LOG_HOUSEKEEP_ENABLED=0)")
+    try:
+        yield
+    finally:
+        if hk_task is not None:
+            hk_task.cancel()
+            try:
+                await hk_task
+            except asyncio.CancelledError:
+                pass
+
+
+app = FastAPI(title="OLS Dashboard API", version=APP_VERSION, lifespan=lifespan)
 app.state.app_version = APP_VERSION
 
 

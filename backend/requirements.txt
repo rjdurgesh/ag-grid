@@ -12,3 +12,8 @@ psutil>=5.9
 # and `cryptography` backs RS256/ES256. Imported LAZILY in auth_token.py, so the backend still
 # runs without this package while AUTH_VALIDATE_TOKEN is off (dev / dummy auth). See AUTH_SETUP.md.
 PyJWT[crypto]>=2.8,<3.0
+# Reading Microsoft Word (.docx) files in the Documentation Center. Imported LAZILY in
+# utils/docx_reader.py, so the backend runs without it — only OPENING a .docx needs it (a .docx then
+# shows an "install python-docx" note instead of rendering). .md and text files never need this. See
+# docs_api.py / DOCS_DESIGN.md.
+python-docx>=1.1,<2.0

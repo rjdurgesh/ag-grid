@@ -72,7 +72,9 @@ SCREEN_CATALOGUE = [
     {"key": "oracle_command_center", "label": "Oracle Command Center", "write_capable": True},
     # "User access" tab of User Management — grant this to let a user hand out access to others.
     # The "Manage access" tab (the ops-admin table itself) stays gated by ols_ops_access, NOT a grant.
-    {"key": "user_management", "label": "User Management — User access", "write_capable": False},
+    # Write-capable: using this screen IS a write capability (you grant / revoke other users' access),
+    # so the grant picker offers WRITE. The gate itself is level-agnostic (any non-DENY grant lets in).
+    {"key": "user_management", "label": "User Management — User access", "write_capable": True},
     # Documentation Center — two read-only, grant-driven screens (User Guide / Technical Guide).
     {"key": "docs", "label": "Docs — User Guide", "write_capable": False},
     {"key": "docs_technical", "label": "Docs — Technical Guide", "write_capable": False},

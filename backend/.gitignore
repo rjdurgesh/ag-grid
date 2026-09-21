@@ -20,3 +20,9 @@ config_ops/*.json
 !config_ops/*.example.json
 docs/*.json
 !docs/*.example.json
+
+# Runtime batch logs — auto-housekept; keep the folder, never commit the log files themselves.
+Logs/**
+!Logs/
+!Logs/**/
+!Logs/**/.gitkeep

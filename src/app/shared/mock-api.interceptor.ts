@@ -847,7 +847,7 @@ function umSeed(): void {
   ]);
   umStore.grants.set('RPATEL', [
     { username: 'RPATEL', resource_type: 'TABLE_CATEGORY', resource_scope: 'config_ops:group', resource_key: 'OMT-BOTH', access_level: 'WRITE' },
-    { username: 'RPATEL', resource_type: 'SCREEN', resource_scope: 'user_management', resource_key: '*', access_level: 'READ' }
+    { username: 'RPATEL', resource_type: 'SCREEN', resource_scope: 'user_management', resource_key: '*', access_level: 'WRITE' }
   ]);
   umStore.grants.set('AKHAN', [
     { username: 'AKHAN', resource_type: 'SCREEN', resource_scope: '*', resource_key: '*', access_level: 'READ' }
@@ -1614,7 +1614,7 @@ function mockCatalogue(): Record<string, unknown> {
     screens: [
       { key: 'service_console', label: 'Service Console', write_capable: true },
       { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true },
-      { key: 'user_management', label: 'User Management — User access', write_capable: false },
+      { key: 'user_management', label: 'User Management — User access', write_capable: true },
       { key: 'docs', label: 'Docs — User Guide', write_capable: false },
       { key: 'docs_technical', label: 'Docs — Technical Guide', write_capable: false }
     ],
@@ -1653,7 +1653,11 @@ function mockCatalogue(): Record<string, unknown> {
 // links. `audience` drives BOTH grouping and RBAC — technical docs are only returned to a technical
 // user (ADMIN / ops-admin / S-Studio). Mirrors docs_api.py (auto-discovered md + config wikis).
 
-interface MockMd { title: string; audience: 'user' | 'technical'; description: string; tags: string[]; updated: string; markdown: string; }
+interface MockMd { title: string; audience: 'user' | 'technical'; description: string; tags: string[]; updated: string; markdown: string;
+  /** How the reader renders it — 'markdown' (default; .md / converted .docx) or 'text' (notepad view). */
+  format?: 'markdown' | 'text';
+  /** Source filename shown on the card (default `${id}.md`) — drives the type badge (Word / TXT / …). */
+  file?: string; }
 
 const DOCS_MD: Record<string, MockMd> = {
   'getting-started': {
@@ -1778,6 +1782,53 @@ const DOCS_MD: Record<string, MockMd> = {
       '> Force-completing a step is logged with your name — use it only when you understand why the step failed.',
       ''
     ].join('\n')
+  },
+  'batch-recovery-word': {
+    title: 'Batch Recovery Runbook (Word)', audience: 'technical', updated: '2026-09-18',
+    description: 'Example of a Microsoft Word (.docx) document rendered in-app.',
+    tags: ['runbook', 'word'], file: 'batch-recovery.docx',   // format defaults to 'markdown' (converted server-side)
+    markdown: [
+      '# Batch Recovery Runbook',
+      '',
+      'This document is sourced from a **Microsoft Word** file. The backend converts it to markdown, so it',
+      'reads with full formatting — headings, **bold**, *italic*, lists and tables.',
+      '',
+      '## Steps',
+      '',
+      '1. Check the batch status table.',
+      '2. Identify the failed step.',
+      '3. Re-run from the failed step.',
+      '',
+      '## Contacts',
+      '',
+      '| Team | Channel |',
+      '| --- | --- |',
+      '| L1 Support | #ols-support |',
+      '| DBA | #ols-dba |',
+      ''
+    ].join('\n')
+  },
+  'nightly-batch-log': {
+    title: 'Nightly Batch Log', audience: 'technical', updated: '2026-09-20',
+    description: 'A plain-text (.log) file shown verbatim in the notepad view.',
+    tags: ['logs', 'batch'], format: 'text', file: 'nightly-batch-2026-09-20.log',
+    markdown: [
+      'OLS NIGHTLY BATCH - RUN LOG',
+      '===========================',
+      '',
+      '2026-09-20 01:00:02  INFO   Batch started (run_no=48213)',
+      '2026-09-20 01:04:14  INFO   Step refresh    complete   00:04:12',
+      '2026-09-20 01:05:51  INFO   Step apply      complete   00:01:37',
+      '2026-09-20 01:05:52  WARN   Step filecopy   retrying   (attempt 2/3)',
+      '2026-09-20 01:09:30  ERROR  Step filecopy   failed     source path unavailable',
+      '',
+      'STEP        STATUS      DURATION',
+      'refresh     complete    00:04:12',
+      'apply       complete    00:01:37',
+      'filecopy    failed      --',
+      '',
+      '# This is NOT markdown — the leading # and | characters render literally.'
+    ].join('\n')
   }
 };
 
@@ -1808,13 +1859,15 @@ function mockDocsCatalog(): DocEntry[] {
   const can = docsAllowed();
   const md: DocEntry[] = Object.entries(DOCS_MD).map(([id, d]) => ({
     id, title: d.title, description: d.description, type: 'markdown',
-    audience: d.audience, tags: d.tags, updated: d.updated, file: `${id}.md`
+    format: d.format ?? 'markdown',
+    audience: d.audience, tags: d.tags, updated: d.updated, file: d.file ?? `${id}.md`
   }));
   return [...md, ...DOCS_WIKIS].filter((e) =>
     (e.audience === 'user' && can.user) || (e.audience === 'technical' && can.technical));
 }
 
-function mockDocContent(id: string): { id: string; title: string; markdown: string; updated: string } | null {
+function mockDocContent(id: string):
+    { id: string; title: string; content: string; format: 'markdown' | 'text'; file: string; markdown: string; updated: string } | null {
   const d = DOCS_MD[id];
   if (!d) {
     return null;
@@ -1823,5 +1876,7 @@ function mockDocContent(id: string): { id: string; title: string; markdown: stri
   if ((d.audience === 'technical' && !can.technical) || (d.audience === 'user' && !can.user)) {
     return null;   // RBAC re-check on content (not just catalogue)
   }
-  return { id, title: d.title, markdown: d.markdown, updated: d.updated };
+  const format = d.format ?? 'markdown';
+  return { id, title: d.title, content: d.markdown, format, file: d.file ?? `${id}.md`,
+    markdown: format === 'markdown' ? d.markdown : '', updated: d.updated };
 }

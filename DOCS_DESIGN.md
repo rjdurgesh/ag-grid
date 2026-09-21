@@ -73,45 +73,57 @@ interface DocEntry {
   title: string;
   description?: string;
   type: 'wiki' | 'markdown';        // how it opens: external tab vs in-app reader
+  format?: 'markdown' | 'text';     // local docs only: HOW the reader renders the content
   audience: 'user' | 'technical';   // grouping + RBAC
   tags?: string[];
-  updated?: string;                 // ISO date (from file mtime for md, or docs.json for wiki)
+  updated?: string;                 // ISO date (from file mtime for local docs, or docs.json for wiki)
+  file?: string;                    // local docs only: source filename (drives the type badge)
   // exactly one of:
   url?: string;                     // wiki
-  // path is server-side only; the client references markdown docs by `id`
+  // path is server-side only; the client references local docs by `id`
 }
 ```
 
-- `type` = *how you open it*: `wiki` → new tab (`target=_blank`, `rel="noopener noreferrer"`); `markdown` → in-app reader.
+- `type` = *how you open it*: `wiki` → new tab (`target=_blank`, `rel="noopener noreferrer"`); `markdown` → in-app reader (every local file, whatever its extension).
+- `format` = *how the reader renders it*: `markdown` (a `.md`/`.markdown` file, or a `.docx` converted server-side) → the safe Markdown renderer; `text` (`.txt`/`.json`/`.log`/…) → a verbatim monospace "notepad" pane (escaped; no markup runs).
 - `audience` = the **Technical vs User** split; drives both the UI grouping and RBAC filtering.
-- The client **never** sees or sends a filesystem path — markdown is addressed by opaque `id` only.
+- The client **never** sees or sends a filesystem path — local docs are addressed by opaque `id` only.
 
-## 4. Configuration (`backend/config/docs.json`)
+**Supported file types** (auto-discovered): `.md` / `.markdown` (rendered); `.docx` (Microsoft Word → markdown, via `utils/docx_reader.py` using `python-docx`); and text shown verbatim — `.txt .json .log .yml .yaml .xml .ini .conf .cfg .properties .csv .tsv .sql .sh .ps1 .bat .cmd .env`.
 
-Follows the existing `config_loader.py` convention (JSON → env → default; per-process cache — edit = restart backend). No secrets here.
+## 4. Configuration (`backend/docs/docs.json`)
+
+Follows the existing `config_loader.py` convention (JSON → env → default; per-process cache — edit = restart backend). No secrets here. The real `docs.json` is git-ignored; commit only `docs.example.json`.
 
 ```jsonc
 {
-  "base_dir": "D:\\ols\\docs",          // DOCS_BASE_DIR env fallback; where .md files live
+  "base_dir": "document_repo",          // DEFAULT: backend/document_repo (portable). A relative path
+                                        // resolves against the backend dir; absolute is used as-is.
+                                        // DOCS_BASE_DIR env is the fallback (JSON wins if both set).
   "wikis": [                            // external links (config-only, no file access)
     { "id": "wiki-batch-runbook", "title": "Batch Recovery Runbook",
       "description": "Step-by-step batch failure recovery.",
       "url": "https://wiki.internal/…", "audience": "user",
       "tags": ["runbook","batch"] }
   ],
-  "overrides": {                        // optional metadata for discovered .md files, keyed by relpath
-    "regression/regression-engine.md": {
-      "title": "Regression Engine Internals", "audience": "technical",
-      "description": "sqlplus engine, git pull, per-date roll.", "order": 10 }
+  "overrides": {                        // optional metadata for discovered files, keyed by relpath
+    "technical/runbook.docx": {
+      "title": "Batch Recovery Runbook (Word)", "audience": "technical",
+      "description": "A Word runbook rendered in-app.", "order": 10 }
   }
 }
 ```
 
-**Hybrid discovery:** the backend lists every `.md` under `base_dir` (recursively) via
-`fs_browser.list_dir`. For each file it emits a `DocEntry`:
-- `title` from the override, else the file's first `# heading`, else a title-cased filename;
-- `audience` from the override, else default **`technical`** (safer default: hidden from regular users);
-- `updated` from the file mtime; `id` = a hash/slug of the relpath.
+`base_dir` defaults to the portable **`backend/document_repo`** so Docs works out of the box on every
+server — drop files in and they appear. Put files under `<base_dir>/user/` (User Guide) or
+`<base_dir>/technical/` (Technical Guide).
+
+**Hybrid discovery:** the backend lists every allow-listed file under `base_dir` (recursively). For each
+it emits a `DocEntry`:
+- `title` from the override, else (for text/markdown) the file's first `# heading`, else a title-cased filename;
+- `format` from the extension (`.md`/`.docx` → `markdown`; text extensions → `text`);
+- `audience` from the override, else the top-level folder (`user/` → user, `technical/` → technical), else default **`technical`** (safer: hidden from regular users);
+- `updated` from the file mtime; `id` = a slug of the relpath; `file` = the source filename.
 Files needing no polish just appear. `wikis[]` are merged in as `type: 'wiki'`.
 
 ## 5. Backend (`backend/docs_api.py` — new thin router)
@@ -122,9 +134,15 @@ next to the others. **Reuse `backend/utils/fs_browser.py`** — do not hand-roll
 
 | Endpoint | Returns | Notes |
 |----------|---------|-------|
-| `GET /api/docs/catalog` | `DocEntry[]` (RBAC-filtered) | Merges `wikis[]` + discovered `.md`. Technical entries omitted for non-technical users. |
-| `GET /api/docs/content?id=<id>` | `{ id, title, markdown, updated }` | Server maps `id`→path, validates with `resolve_within_bases()`, reads via `read_file_all()`. RBAC re-checked. |
-| `GET /api/docs/download?id=<id>` | streamed `.md` | Optional "download raw", reuses the existing streamed-download pattern. |
+| `POST /api/docs/catalog` | `DocEntry[]` (RBAC-filtered) | Merges `wikis[]` + discovered files. Technical entries omitted for non-technical users. |
+| `POST /api/docs/content` `{id}` | `{ id, title, content, format, file, updated }` | Server maps `id`→path, validates with `resolve_within_bases()`. `.md`/text read via `read_file_all()`; `.docx` converted via `utils/docx_reader.docx_to_markdown()`. RBAC re-checked. (`markdown` is kept as a back-compat alias of `content` when `format==='markdown'`.) |
+
+**Download** is client-side (a Blob built from the fetched `content`), so no server endpoint is needed —
+text files keep their name/extension; a `.docx` (read as markdown) downloads as `.md`.
+
+**`.docx` support:** `utils/docx_reader.py` converts Word → markdown (headings, **bold**/*italic*, lists,
+tables) so it flows through the SAME safe renderer as `.md`. It imports `python-docx` **lazily** — the
+backend still runs without the package; a `.docx` then shows an "install python-docx" note instead of a 500.
 
 **Security (every request):**
 1. Reference by **opaque id**; resolve to a path server-side only; validate inside `base_dir` with `resolve_within_bases()`.

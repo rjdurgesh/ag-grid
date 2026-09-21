@@ -137,13 +137,39 @@ def config_ops_config() -> dict:
 
 # --- Documentation Center ----------------------------------------------------
 def docs_config() -> dict:
-    """Documentation Center settings: where the local ``.md`` files live, the external wiki links, and
-    optional per-file metadata overrides. All non-secret → committed as ``docs.example.json``."""
+    """Documentation Center settings: where the local doc files live (``.md`` / ``.docx`` / text), the
+    external wiki links, and optional per-file metadata overrides. All non-secret → committed as
+    ``docs.example.json``.
+
+    ``base_dir`` defaults to ``backend/document_repo`` so Docs works out of the box on every server (drop
+    files in and they appear). A relative ``base_dir`` (from JSON or ``DOCS_BASE_DIR``) is resolved against
+    the backend dir, so the same config is portable everywhere; an absolute path is used as-is."""
     j = _load("docs")
+    base_dir = _pick(j, "base_dir", "DOCS_BASE_DIR", "document_repo")
+    if base_dir and not os.path.isabs(base_dir):
+        base_dir = str(_BACKEND_DIR / base_dir)
     return {
-        "base_dir": _pick(j, "base_dir", "DOCS_BASE_DIR", ""),
+        "base_dir": base_dir,
         "wikis": j.get("wikis", []) if isinstance(j.get("wikis"), list) else [],
         "overrides": j.get("overrides", {}) if isinstance(j.get("overrides"), dict) else {},
+    }
+
+
+# --- Log housekeeping --------------------------------------------------------
+def housekeeping_config() -> dict:
+    """Auto-purge settings for the batch-log directory (see ``housekeeping.py``). Primary source is
+    ``backend/.env`` (the age is meant to be tuned there); an optional ``config/housekeeping.json`` can
+    override. A relative ``log_dir`` is resolved against the backend dir so it is portable across servers."""
+    j = _load("housekeeping")
+    log_dir = _pick(j, "log_dir", "LOG_HOUSEKEEP_DIR", "Logs/BatchLogs")
+    if log_dir and not os.path.isabs(log_dir):
+        log_dir = str(_BACKEND_DIR / log_dir)
+    return {
+        "enabled": _pick(j, "enabled", "LOG_HOUSEKEEP_ENABLED", True),
+        "log_dir": log_dir,
+        "max_age_days": _pick(j, "max_age_days", "LOG_HOUSEKEEP_MAX_DAYS", 30),
+        "keep_min": _pick(j, "keep_min", "LOG_HOUSEKEEP_KEEP_MIN", 2),
+        "interval_hours": _pick(j, "interval_hours", "LOG_HOUSEKEEP_INTERVAL_HOURS", 24),
     }
 
 

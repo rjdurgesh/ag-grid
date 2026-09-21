@@ -1012,27 +1012,34 @@ Second date format via dropdown (if needed). Per-row server-side reject persiste
 
 An in-app documentation portal that replaced the old hardcoded external "Docs" nav link. It has
 **two screens** — **User Guide** (`/docs/user-guide`) and **Technical Guide** (`/docs/technical-guide`)
-— and each holds **both** wiki links (open in a new tab) *and* local `.md` files (rendered in-app),
-sub-grouped into *Guides* + *Wikis & Runbooks*. Full design: `DOCS_DESIGN.md`.
+— and each holds **both** wiki links (open in a new tab) *and* local files (rendered in-app): Markdown
+(`.md`), **Microsoft Word** (`.docx`) and plain-text (`.txt`/`.json`/`.log`/…), sub-grouped into
+*Guides* + *Wikis & Runbooks*. Full design: `DOCS_DESIGN.md`.
 
 | Method & path | Request | Response |
 | --- | --- | --- |
 | POST `/api/docs/catalog` | `{ caller, app_env }` | `{ status, entries: DocEntry[] }` — already RBAC-filtered |
-| POST `/api/docs/content` | `{ caller, id }` | `{ status, doc: { id, title, markdown, updated } }` |
+| POST `/api/docs/content` | `{ caller, id }` | `{ status, doc: { id, title, content, format, file, updated } }` |
 
-`DocEntry = { id, title, description?, type:'wiki'|'markdown', audience:'user'|'technical', tags?, updated?, url? }`.
-Markdown docs are addressed by an **opaque `id`** (never a filesystem path); wikis carry an external `url`.
+`DocEntry = { id, title, description?, type:'wiki'|'markdown', format?:'markdown'|'text', audience:'user'|'technical', tags?, updated?, file?, url? }`.
+Local docs are addressed by an **opaque `id`** (never a filesystem path); wikis carry an external `url`.
+`format` tells the reader how to render: `markdown` (a `.md`, or a `.docx` converted server-side) → the
+safe Markdown renderer; `text` (`.txt`/`.json`/…) → a verbatim monospace **notepad** view.
 
-- **Backend** (`docs_api.py`) is a thin file server: it auto-discovers every `.md` under a configured
-  base dir — **hybrid discovery**. **Audience is set by the top-level subfolder**: a file under
-  `<base_dir>/user/` shows in the User Guide, `<base_dir>/technical/` in the Technical Guide (anything
-  else defaults to technical); an `overrides` entry (keyed by the path relative to `base_dir`) wins and
-  can also set title/description/tags/order. Title falls back to the file's first `#` heading. It reuses
-  the hardened `utils/fs_browser.py` (`resolve_within_bases`, `read_file_all`), whitelists `.md`, and
-  re-checks RBAC on **both** endpoints. Config lives in **`backend/config/docs.json`** (`base_dir` /
-  `wikis` / `overrides`) via `config_loader.docs_config()` (JSON → `DOCS_BASE_DIR` env → default).
-  `base_dir` is a **backend** setting (the server reads the files off disk) — **not** `environment.ts`.
-  Wiki links are config-only entries in `wikis[]` (external `url`, no file).
+- **Backend** (`docs_api.py`) is a thin file server: it auto-discovers every **allow-listed** file under a
+  configured base dir — **hybrid discovery**. Supported: `.md`/`.markdown`, `.docx` (Word → markdown via
+  `utils/docx_reader.py`, which imports `python-docx` **lazily/optionally**), and text (`.txt .json .log
+  .yml .yaml .xml .ini .conf .cfg .properties .csv .tsv .sql .sh .ps1 .bat .cmd .env`). **Audience is set
+  by the top-level subfolder**: a file under `<base_dir>/user/` shows in the User Guide,
+  `<base_dir>/technical/` in the Technical Guide (anything else defaults to technical); an `overrides`
+  entry (keyed by the path relative to `base_dir`) wins and can also set title/description/tags/order.
+  Title falls back to the file's first `#` heading (text/markdown). It reuses the hardened
+  `utils/fs_browser.py` (`resolve_within_bases`, `read_file_all`) and re-checks RBAC on **both** endpoints.
+  Config lives in **`backend/docs/docs.json`** (`base_dir` / `wikis` / `overrides`) via
+  `config_loader.docs_config()` (JSON → `DOCS_BASE_DIR` env → default). **`base_dir` defaults to the
+  portable `backend/document_repo`** (a relative path resolves against the backend dir, so the same config
+  works on every server); an absolute path is used as-is. `base_dir` is a **backend** setting (the server
+  reads the files off disk) — **not** `environment.ts`. Wiki links are config-only entries in `wikis[]`.
 - **RBAC (grant-based):** both screens are **opt-in `SCREEN` grants** — a user with **no docs grant sees
   no Docs at all** (the whole sidebar group is hidden). **User Guide** = `SCREEN / docs`, **Technical
   Guide** = `SCREEN / docs_technical`; **ADMIN / full-access (`SCREEN / * / *`) sees both**. Assign either
@@ -1045,6 +1052,10 @@ Markdown docs are addressed by an **opaque `id`** (never a filesystem path); wik
   schemes → raw HTML in a `.md` renders as text, never markup). Supports headings (+ auto TOC & slug
   anchors), lists, tables, fenced code (with copy button), blockquotes, links, images. Swapping in
   `markdown-it` + `DOMPurify` later is a single-file change (keep `render()`'s signature).
+  **`format: 'text'`** docs bypass the renderer entirely — the component escapes the raw text and shows it
+  verbatim in a `<pre class="doc-plain">` (monospace, whitespace preserved, no TOC). **`.docx`** is
+  converted to markdown on the backend, so it uses the same markdown path. **Download** is a client-side
+  Blob of the fetched content (text keeps its extension; a `.docx` downloads as `.md`).
 - **Nav/route:** sidebar "Docs" group with two children — User Guide + Technical Guide (`_nav.ts`).
   The parent `/docs` lazy-loads `views/docs/route.ts`, whose two child routes carry `rbacGuard` +
   `data.screen` (`docs` / `docs_technical`). Screen keys are in `rbac.config.ts`. **Each guide is its own
@@ -1059,6 +1070,30 @@ Markdown docs are addressed by an **opaque `id`** (never a filesystem path); wik
   catalogue (scenarios `docs_user_only` / `docs_technical_only` / `defaults_only` exercise the grants;
   ADMIN sees both). To serve **real `.md` files** from `base_dir` in local dev, run the backend and set
   `'/api/docs': false` in `environment.ts` `apiMocks` — the app then calls the live `/api/docs/*`.
+
+### Log housekeeping (auto-purge of batch logs)
+
+A backend background task keeps the batch-log directory from growing forever. It **deletes files older
+than a configurable age**, but **always keeps at least the newest N files** — so a quiet period (no new
+logs written for a long time) can **never empty the folder**.
+
+- **Module** `backend/housekeeping.py` — `purge_old_logs(dir, max_age_days, keep_min)` sorts files
+  newest-first, protects the newest `keep_min` (the safety floor), and deletes the rest that are older
+  than `max_age_days`. Only regular files **directly** in the dir are considered; sub-folders and
+  dotfiles (e.g. `.gitkeep`) are ignored; each delete is guarded (idempotent — safe under multiple
+  workers). `housekeeping_loop()` runs it once at startup, then every `interval_hours`.
+- **Wiring** `app.py` starts the loop from a FastAPI **lifespan** (cancelled cleanly on shutdown); the
+  blocking file work runs in a thread so the event loop is free.
+- **Config** — `config_loader.housekeeping_config()` (JSON `config/housekeeping.json` → `.env` → default).
+  Tune it in **`backend/.env`**:
+
+  | Var | Default | Meaning |
+  | --- | --- | --- |
+  | `LOG_HOUSEKEEP_ENABLED` | `1` | Turn the scheduled purge on/off |
+  | `LOG_HOUSEKEEP_DIR` | `Logs/BatchLogs` | Dir to housekeep (relative → resolved against the backend dir) |
+  | `LOG_HOUSEKEEP_MAX_DAYS` | `30` | Delete files older than this many days |
+  | `LOG_HOUSEKEEP_KEEP_MIN` | `2` | Always keep at least this many newest files, regardless of age |
+  | `LOG_HOUSEKEEP_INTERVAL_HOURS` | `24` | How often the task runs |
 
 ### Infrastructure Pulse — see section 5 for the full flow
 

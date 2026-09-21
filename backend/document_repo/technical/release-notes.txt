@@ -1,0 +1,17 @@
+OLS DASHBOARD - RELEASE NOTES (sample plain-text document)
+==========================================================
+
+This .txt file is shown verbatim in a monospace "notepad" view - no
+markdown formatting is applied, so log files and config dumps read exactly
+as they are on disk.
+
+v1.0.0
+  - Documentation Center: read .md, .docx and plain-text files.
+  - Logs housekeeping: auto-purge of Logs/BatchLogs older than 30 days
+    (keeps at least the 2 newest files as a safety floor).
+
+    Column-aligned text stays aligned:
+        STEP        STATUS      DURATION
+        refresh     complete    00:04:12
+        apply       complete    00:01:37
+        filecopy    running     --

@@ -563,6 +563,22 @@ span.docs-crumb__link { cursor: default; }
 .doc-code:hover .doc-copy,
 .doc-copy:focus-visible { opacity: 1; }
 
+// Plain-text ("notepad") view — .txt / .json / .log / … shown verbatim, monospace, whitespace kept.
+.doc-plain {
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--cui-border-color);
+  background: color-mix(in srgb, var(--cui-body-color) 4%, var(--cui-body-bg));
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12.8px;
+  line-height: 1.6;
+  color: var(--cui-body-color);
+  white-space: pre-wrap;      // wrap long lines (no page-wide horizontal scroll) …
+  overflow-wrap: anywhere;    // … but keep every space/indent exactly as on disk
+  tab-size: 4;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .docs-card,
   .docs-card::before,

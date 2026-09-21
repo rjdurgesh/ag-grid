@@ -1,16 +1,23 @@
 """Documentation Center API (see DOCS_DESIGN.md).
 
-Serves the doc **catalogue** (external wiki links from config + local ``.md`` files auto-discovered under
-a configured base dir) and one doc's raw **markdown**. The frontend renders + sanitizes the markdown
-client-side; this module is a thin, security-hardened file server.
+Serves the doc **catalogue** (external wiki links from config + local files auto-discovered under a
+configured base dir) and one doc's **content**. The frontend renders + sanitizes it client-side; this
+module is a thin, security-hardened file server.
 
-Design decisions (locked): role-based audience gating (technical docs → ADMIN / ops-admin / S-Studio),
-hybrid discovery (auto-discover ``.md`` + optional ``config/docs.json`` overrides), client-side render.
+Formats served (each carries a ``format`` the client renders by):
+  * ``.md`` / ``.markdown``        → ``markdown`` — rendered by the client's safe Markdown renderer.
+  * ``.docx``                      → ``markdown`` — converted server-side (``utils.docx_reader``) so a
+                                     Word doc flows through the SAME renderer as ``.md``.
+  * ``.txt`` / ``.json`` / ``.log`` / ``.yml`` / ``.csv`` / ``.sql`` / … → ``text`` — shown verbatim in a
+                                     monospace "notepad" pane (the client escapes it; no markup runs).
+
+Design decisions (locked): role-based audience gating (technical docs → full-access / ops-admin /
+S-Studio), hybrid discovery (auto-discover files + optional ``docs.json`` overrides), client-side render.
 
 Security:
   * Docs are addressed by an OPAQUE id; the id→path mapping is server-side only and every resolved path
     is confirmed INSIDE ``base_dir`` via ``fs_browser.resolve_within_bases`` (no path traversal).
-  * Only ``.md`` files are discovered/served.
+  * Only the allow-listed extensions below are discovered/served (never executables, images, archives).
   * RBAC is re-checked on BOTH the catalogue and the content fetch — technical docs are never returned
     to a non-technical user (UI hiding is never the boundary).
 """
@@ -28,7 +35,7 @@ from pydantic import BaseModel
 import config_loader
 import database
 from auth_token import resolve_caller  # OIDC: caller from validated token / AUTH_DEV_USER (see AUTH_SETUP.md)
-from utils import fs_browser
+from utils import docx_reader, fs_browser
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,6 +48,30 @@ DOCS_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
 _CFG = config_loader.docs_config()
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+
+# --- discoverable file types --------------------------------------------------
+# Markdown-rendered formats (flow through the client's safe Markdown renderer).
+_MD_EXTS = {"md", "markdown"}
+_DOCX_EXTS = {"docx"}
+# Plain-text ("notepad") formats — shown verbatim, escaped, no markup interpreted.
+_TEXT_EXTS = {
+    "txt", "log", "json", "yml", "yaml", "xml", "ini", "conf", "cfg", "properties",
+    "csv", "tsv", "sql", "sh", "ps1", "bat", "cmd", "env", "text",
+}
+_ALLOWED_EXTS = _MD_EXTS | _DOCX_EXTS | _TEXT_EXTS
+
+
+def _ext_of(name: str) -> str:
+    return name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
+def _format_for_ext(ext: str) -> str | None:
+    """The client ``format`` for a file extension, or ``None`` if the file is not served at all."""
+    if ext in _MD_EXTS or ext in _DOCX_EXTS:
+        return "markdown"   # .docx is converted to markdown on read
+    if ext in _TEXT_EXTS:
+        return "text"
+    return None
 
 
 class CatalogBody(BaseModel):
@@ -114,10 +145,12 @@ def _title_from_name(stem: str) -> str:
     return re.sub(r"[_-]+", " ", stem).strip().title()
 
 
-def _scan_markdown() -> list[dict]:
-    """Auto-discover every ``.md`` under ``base_dir`` and merge ``config/docs.json`` overrides. Each entry
-    carries an internal ``_relpath`` used to resolve content; ids are stable within a scan. Files with no
-    override default to the ``technical`` audience (safer: hidden from regular users)."""
+def _scan_docs() -> list[dict]:
+    """Auto-discover every allow-listed file under ``base_dir`` and merge ``docs.json`` overrides. Each
+    entry carries an internal ``_relpath`` used to resolve content and the ``format`` the client renders
+    by; ids are stable within a scan. Files with no override default to the ``technical`` audience (safer:
+    hidden from regular users). ``type`` is ``markdown`` for every local file (i.e. "opens in the in-app
+    reader"), distinct from ``wiki`` (external link); the ``format`` field tells the reader HOW to render."""
     base_dir = str(_CFG.get("base_dir") or "").strip()
     if not base_dir:
         return []
@@ -129,14 +162,22 @@ def _scan_markdown() -> list[dict]:
     overrides: dict = _CFG.get("overrides") or {}
     used: set[str] = set()
     entries: list[dict] = []
-    for f in sorted(base.rglob("*.md"), key=lambda p: str(p).lower()):
+    for f in sorted(base.rglob("*"), key=lambda p: str(p).lower()):
+        if not f.is_file():
+            continue
+        ext = _ext_of(f.name)
+        fmt = _format_for_ext(ext)
+        if fmt is None:
+            continue                       # not an allow-listed doc type — skip silently
         # Defence-in-depth: confirm each file really sits inside the base (rejects symlink escapes).
         resolved = fs_browser.resolve_within_bases([base_dir], str(f))
         if resolved is None or not resolved.is_file():
             continue
         rel = fs_browser.to_posix(f.relative_to(base))
         ov = overrides.get(rel, {}) if isinstance(overrides.get(rel), dict) else {}
-        title = str(ov.get("title") or "").strip() or _first_heading(f) or _title_from_name(f.stem)
+        # Title: override → first markdown heading (text/markdown files only) → prettified filename.
+        heading = _first_heading(f) if (ext in _MD_EXTS or ext in _TEXT_EXTS) else None
+        title = str(ov.get("title") or "").strip() or heading or _title_from_name(f.stem)
         # Audience resolution: an explicit override wins; else the top-level folder name
         # (user*/technical*) decides — so dropping a file under <base>/user/ shows it in the User Guide
         # and <base>/technical/ in the Technical Guide; anything else defaults to technical.
@@ -154,13 +195,15 @@ def _scan_markdown() -> list[dict]:
             "id": _slugify(rel.rsplit(".", 1)[0], used),
             "title": title,
             "description": str(ov.get("description") or "").strip(),
-            "type": "markdown",
+            "type": "markdown",     # local file → opens in the in-app reader (vs "wiki" external link)
+            "format": fmt,          # "markdown" (.md/.docx) or "text" (.txt/.json/…) — how it renders
             "audience": audience,
             "tags": ov.get("tags") if isinstance(ov.get("tags"), list) else [],
             "updated": updated,
             "file": f.name,        # the actual filename, e.g. "RBAC_DESIGN.md" (shown on the card)
             "order": ov.get("order") if isinstance(ov.get("order"), int) else 1000,
             "_relpath": rel,
+            "_ext": ext,
         })
     return entries
 
@@ -206,20 +249,21 @@ def docs_catalog(request: Request, body: CatalogBody) -> dict:
         aud = e.get("audience")
         return (aud == "user" and can_user) or (aud == "technical" and can_tech)
 
-    entries = [e for e in (_scan_markdown() + _wiki_entries()) if allowed(e)]
+    entries = [e for e in (_scan_docs() + _wiki_entries()) if allowed(e)]
     entries.sort(key=lambda e: (e.get("order", 1000), e.get("title", "").lower()))
     return {"status": "success", "entries": [_public_entry(e) for e in entries]}
 
 
 @router.post("/content")
 def docs_content(request: Request, body: ContentBody) -> dict:
-    """Raw markdown for one local doc (addressed by opaque id). RBAC re-checked; path confirmed inside
-    the base dir before reading."""
+    """Content of one local doc (addressed by opaque id). RBAC re-checked; path confirmed inside the base
+    dir before reading. ``.md`` is returned verbatim, ``.docx`` is converted to markdown, and text files
+    are returned as-is — each with the ``format`` the client should render by."""
     body.caller = resolve_caller(request, body.caller)  # OIDC: real caller from token (401 if OIDC on + no token)
     can_user, can_tech = _docs_access(request, body.caller, getattr(request.app.state, "app_env", "PROD"))
     if not (can_user or can_tech):
         raise HTTPException(status_code=403, detail="No Documentation access.")
-    entry = next((e for e in _scan_markdown() if e["id"] == body.id), None)
+    entry = next((e for e in _scan_docs() if e["id"] == body.id), None)
     if entry is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     aud = entry.get("audience")
@@ -230,7 +274,28 @@ def docs_content(request: Request, body: ContentBody) -> dict:
     resolved = fs_browser.resolve_within_bases([base_dir], f"{fs_browser.to_posix(base_dir)}/{entry['_relpath']}")
     if resolved is None or not resolved.is_file():
         raise HTTPException(status_code=404, detail="Document file is missing.")
-    markdown = fs_browser.read_file_all(resolved, fs_browser.MAX_READ_BYTES)
+
+    ext = entry.get("_ext", "")
+    fmt = entry.get("format", "markdown")
+    if ext in _DOCX_EXTS:
+        # Word doc → markdown (same renderer as .md). A missing python-docx degrades to a clear message
+        # instead of a 500, so the rest of Docs keeps working until the package is installed.
+        try:
+            content = docx_reader.docx_to_markdown(resolved)
+        except docx_reader.DocxUnavailable:
+            logger.warning("docs: python-docx not installed — cannot render %s", entry["file"])
+            content = (f"# {entry['title']}\n\n> This is a Microsoft Word document (`{entry['file']}`).\n>\n"
+                       "> To read `.docx` files in-app, install **python-docx** on the API server:\n>\n"
+                       "> ```\n> pip install python-docx\n> ```")
+        except ValueError as exc:
+            logger.warning("docs: could not read Word doc %s: %s", entry["file"], exc)
+            raise HTTPException(status_code=415, detail="This Word document could not be read.") from exc
+    else:
+        content = fs_browser.read_file_all(resolved, fs_browser.MAX_READ_BYTES)
+
     return {"status": "success", "doc": {
-        "id": entry["id"], "title": entry["title"], "markdown": markdown, "updated": entry.get("updated", ""),
+        "id": entry["id"], "title": entry["title"], "content": content, "format": fmt,
+        # Back-compat alias: older clients read `markdown`; populated only when the format IS markdown.
+        "markdown": content if fmt == "markdown" else "",
+        "file": entry.get("file", ""), "updated": entry.get("updated", ""),
     }}

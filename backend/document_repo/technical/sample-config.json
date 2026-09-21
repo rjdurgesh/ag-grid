@@ -1,0 +1,14 @@
+{
+  "_comment": "Sample .json document - rendered verbatim in the notepad view.",
+  "service": "ols-dashboard-api",
+  "environment": "PROD",
+  "housekeeping": {
+    "logs_dir": "Logs/BatchLogs",
+    "max_age_days": 30,
+    "keep_min_files": 2
+  },
+  "docs": {
+    "base_dir": "document_repo",
+    "formats": ["md", "docx", "txt", "json", "log", "yml", "csv", "sql"]
+  }
+}

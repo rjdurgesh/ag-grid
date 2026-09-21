@@ -1,9 +1,12 @@
 {
-  "_comment": "Documentation Center config. Copy to docs.json and edit per server (gitignored). base_dir may also come from the DOCS_BASE_DIR env var. See DOCS_DESIGN.md / GUIDE.md.",
+  "_comment": "Documentation Center config. Copy to docs.json and edit per server (docs.json is gitignored). Every value is OPTIONAL. See DOCS_DESIGN.md / GUIDE.md.",
 
-  "base_dir": "D:\\ols\\docs",
+  "_base_dir_note": "base_dir defaults to the portable 'document_repo' folder under backend/. A relative path is resolved against the backend dir (portable to every server — recommended); an absolute path (e.g. D:/ols/docs) is used as-is. Can also be set via the DOCS_BASE_DIR env var; the JSON value wins if both are set.",
+  "base_dir": "document_repo",
 
-  "_audience_note": "Audience is decided by the top-level SUBFOLDER under base_dir: files under user/ show in the User Guide, files under technical/ in the Technical Guide. Files elsewhere default to technical. An 'overrides' entry (keyed by the path relative to base_dir) always wins and can also set title/description/tags/order. Example layout: base_dir/user/getting-started.md, base_dir/technical/architecture.md.",
+  "_formats_note": "Discovery is automatic. Supported file types: .md/.markdown (rendered), .docx (Word → rendered), and text files shown verbatim in a notepad view: .txt .json .log .yml .yaml .xml .ini .conf .cfg .properties .csv .tsv .sql .sh .ps1 .bat .cmd .env",
+
+  "_audience_note": "Audience is decided by the top-level SUBFOLDER under base_dir: files under user/ show in the User Guide, files under technical/ in the Technical Guide. Files elsewhere default to technical. An 'overrides' entry (keyed by the path relative to base_dir) always wins and can also set title/description/tags/order.",
 
   "wikis": [
     {
@@ -38,6 +41,11 @@
       "description": "How the UI, API and data layers fit together.",
       "tags": ["architecture", "internals"],
       "order": 10
+    },
+    "technical/runbook.docx": {
+      "title": "Batch Recovery Runbook (Word)",
+      "description": "A Microsoft Word runbook rendered in-app.",
+      "tags": ["runbook", "word"]
     }
   }
 }

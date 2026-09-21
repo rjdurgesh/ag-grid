@@ -11,7 +11,7 @@
         </nav>
         <div class="docs-reader__actions">
           @if (docUpdated()) { <span class="docs-reader__updated">Updated {{ docUpdated() }}</span> }
-          <button type="button" class="docs-btn" (click)="downloadRaw()" [disabled]="docLoading()" title="Download the raw .md file">
+          <button type="button" class="docs-btn" (click)="downloadRaw()" [disabled]="docLoading()" title="Download this document">
             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
               <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
