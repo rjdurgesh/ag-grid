@@ -7,8 +7,13 @@ empty the folder.
 Config (in ``backend/config/housekeeping.json`` — copy from ``housekeeping.example.json``; each key may
 still be overridden per-server by the matching ``LOG_HOUSEKEEP_*`` env var, then a built-in default):
   * ``enabled``        / ``LOG_HOUSEKEEP_ENABLED``       — turn the scheduled purge on/off (default on).
-  * ``log_dir``        / ``LOG_HOUSEKEEP_DIR``           — the directory to housekeep (default ``Logs/BatchLogs``;
-                                                          a relative path resolves against the backend dir).
+  * ``log_dirs``       / ``LOG_HOUSEKEEP_DIRS``          — the directories to housekeep, as a LIST (each is
+                                                          purged independently — the keep-min floor applies
+                                                          per folder). A single ``log_dir`` /
+                                                          ``LOG_HOUSEKEEP_DIR`` is also accepted. Default
+                                                          ``Logs/BatchLogs``; a relative path resolves
+                                                          against the backend dir. Top level only (files
+                                                          directly in each dir; sub-folders not descended).
   * ``max_age_days``   / ``LOG_HOUSEKEEP_MAX_DAYS``      — delete files older than this many days (default 30).
   * ``keep_min``       / ``LOG_HOUSEKEEP_KEEP_MIN``      — always keep at least this many newest files (default 2).
   * ``interval_hours`` / ``LOG_HOUSEKEEP_INTERVAL_HOURS``— how often the background task runs (default 24).
@@ -93,35 +98,44 @@ def _safe_mtime(path: Path) -> float:
 
 
 def run_housekeeping(cfg: dict) -> dict:
-    """Run one purge from a config dict (see :func:`config_loader.housekeeping_config`) and log a summary."""
-    summary = purge_old_logs(
-        directory=cfg.get("log_dir", ""),
-        max_age_days=int(cfg.get("max_age_days", 30)),
-        keep_min=int(cfg.get("keep_min", 2)),
-    )
-    if summary["status"] == "skipped":
-        logger.info("housekeeping: skipped — %s (%s)", summary.get("reason"), summary["dir"])
-    elif summary["status"] == "error":
-        logger.warning("housekeeping: could not read %s — %s", summary["dir"], summary.get("reason"))
-    else:
-        logger.info(
-            "housekeeping: %s — scanned %d, deleted %d, kept %d newest + %d within age; %d error(s)",
-            summary["dir"], summary["scanned"], len(summary["deleted"]),
-            len(summary["kept_recent"]), summary["kept_fresh"], len(summary["errors"]),
-        )
-        if summary["deleted"]:
-            logger.info("housekeeping: deleted %s", ", ".join(summary["deleted"]))
-        for err in summary["errors"]:
-            logger.warning("housekeeping: could not delete %s — %s", err["file"], err["error"])
-    return summary
+    """Run one purge pass over EVERY configured directory (see :func:`config_loader.housekeeping_config`)
+    and log a per-directory summary. Each directory is independent — the keep-min floor applies per folder.
+    Returns the list of per-directory summaries."""
+    dirs = cfg.get("log_dirs")
+    if not dirs:                                   # back-compat: accept a single log_dir
+        single = cfg.get("log_dir")
+        dirs = [single] if single else []
+    max_age_days = int(cfg.get("max_age_days", 30))
+    keep_min = int(cfg.get("keep_min", 2))
+
+    summaries: list[dict] = []
+    for directory in dirs:
+        summary = purge_old_logs(directory=directory, max_age_days=max_age_days, keep_min=keep_min)
+        summaries.append(summary)
+        if summary["status"] == "skipped":
+            logger.info("housekeeping: skipped — %s (%s)", summary.get("reason"), summary["dir"])
+        elif summary["status"] == "error":
+            logger.warning("housekeeping: could not read %s — %s", summary["dir"], summary.get("reason"))
+        else:
+            logger.info(
+                "housekeeping: %s — scanned %d, deleted %d, kept %d newest + %d within age; %d error(s)",
+                summary["dir"], summary["scanned"], len(summary["deleted"]),
+                len(summary["kept_recent"]), summary["kept_fresh"], len(summary["errors"]),
+            )
+            if summary["deleted"]:
+                logger.info("housekeeping: deleted %s", ", ".join(summary["deleted"]))
+            for err in summary["errors"]:
+                logger.warning("housekeeping: could not delete %s — %s", err["file"], err["error"])
+    return summaries
 
 
 async def housekeeping_loop(cfg: dict) -> None:
     """Background task: run the purge once at startup, then every ``interval_hours``. Cancelled on
     shutdown by the FastAPI lifespan. The blocking file work runs in a thread so the event loop is free."""
     interval = max(1, int(cfg.get("interval_hours", 24))) * 3600
-    logger.info("housekeeping: scheduler started (dir=%s, max_age_days=%s, keep_min=%s, every %sh)",
-                cfg.get("log_dir"), cfg.get("max_age_days"), cfg.get("keep_min"), cfg.get("interval_hours"))
+    dirs = cfg.get("log_dirs") or ([cfg["log_dir"]] if cfg.get("log_dir") else [])
+    logger.info("housekeeping: scheduler started (dirs=%s, max_age_days=%s, keep_min=%s, every %sh)",
+                ", ".join(dirs) or "(none)", cfg.get("max_age_days"), cfg.get("keep_min"), cfg.get("interval_hours"))
     while True:
         try:
             await asyncio.to_thread(run_housekeeping, cfg)

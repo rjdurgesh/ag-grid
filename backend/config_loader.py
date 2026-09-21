@@ -157,17 +157,30 @@ def docs_config() -> dict:
 
 # --- Log housekeeping --------------------------------------------------------
 def housekeeping_config() -> dict:
-    """Auto-purge settings for the batch-log directory (see ``housekeeping.py``). Configured in
+    """Auto-purge settings for the batch-log directories (see ``housekeeping.py``). Configured in
     ``backend/config/housekeeping.json`` (copy from ``housekeeping.example.json``); a ``LOG_HOUSEKEEP_*``
-    env var still overrides the JSON if needed, then a built-in default. A relative ``log_dir`` is
-    resolved against the backend dir so it is portable across servers."""
+    env var still overrides the JSON if needed, then a built-in default.
+
+    **Multiple folders:** give a list in ``log_dirs`` (each is housekept INDEPENDENTLY — the keep-min floor
+    applies PER folder). A single ``log_dir`` (or ``LOG_HOUSEKEEP_DIR`` / comma-separated
+    ``LOG_HOUSEKEEP_DIRS``) is still accepted and normalised into the same list. Each directory is processed
+    at its top level only (files directly inside it; sub-folders are not descended into). A relative path is
+    resolved against the backend dir so config is portable across servers."""
     j = _load("housekeeping")
-    log_dir = _pick(j, "log_dir", "LOG_HOUSEKEEP_DIR", "Logs/BatchLogs")
-    if log_dir and not os.path.isabs(log_dir):
-        log_dir = str(_BACKEND_DIR / log_dir)
+    # Resolve the set of directories, newest-priority source first:
+    #   LOG_HOUSEKEEP_DIRS (env, comma-sep) → log_dirs (JSON list) → log_dir/LOG_HOUSEKEEP_DIR (single) → default
+    env_dirs = os.getenv("LOG_HOUSEKEEP_DIRS")
+    if env_dirs and env_dirs.strip():
+        raw_dirs = [d.strip() for d in env_dirs.split(",") if d.strip()]
+    elif isinstance(j.get("log_dirs"), list) and j.get("log_dirs"):
+        raw_dirs = [str(d).strip() for d in j["log_dirs"] if str(d).strip()]
+    else:
+        single = _pick(j, "log_dir", "LOG_HOUSEKEEP_DIR", "Logs/BatchLogs")
+        raw_dirs = [single] if single else []
+    log_dirs = [d if os.path.isabs(d) else str(_BACKEND_DIR / d) for d in raw_dirs]
     return {
         "enabled": _pick(j, "enabled", "LOG_HOUSEKEEP_ENABLED", True),
-        "log_dir": log_dir,
+        "log_dirs": log_dirs,
         "max_age_days": _pick(j, "max_age_days", "LOG_HOUSEKEEP_MAX_DAYS", 30),
         "keep_min": _pick(j, "keep_min", "LOG_HOUSEKEEP_KEEP_MIN", 2),
         "interval_hours": _pick(j, "interval_hours", "LOG_HOUSEKEEP_INTERVAL_HOURS", 24),

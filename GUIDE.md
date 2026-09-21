@@ -1081,7 +1081,12 @@ logs written for a long time) can **never empty the folder**.
   newest-first, protects the newest `keep_min` (the safety floor), and deletes the rest that are older
   than `max_age_days`. Only regular files **directly** in the dir are considered; sub-folders and
   dotfiles (e.g. `.gitkeep`) are ignored; each delete is guarded (idempotent — safe under multiple
-  workers). `housekeeping_loop()` runs it once at startup, then every `interval_hours`.
+  workers). `run_housekeeping()` loops over **every** configured folder (`log_dirs`), purging each
+  **independently** — so the keep-min floor is **per folder** (a quiet folder is never emptied).
+  `housekeeping_loop()` runs it once at startup, then every `interval_hours`.
+- **Multiple folders:** list each one under `log_dirs` (see below). Because only the top level of each
+  folder is cleaned, list sub-folders explicitly (e.g. `Logs/BatchLogs`, `Logs/AppLogs`) rather than the
+  `Logs` parent.
 - **Wiring** `app.py` starts the loop from a FastAPI **lifespan** (cancelled cleanly on shutdown); the
   blocking file work runs in a thread so the event loop is free.
 - **Config** — `config_loader.housekeeping_config()`, resolved per key as **`config/housekeeping.json` →
@@ -1092,10 +1097,16 @@ logs written for a long time) can **never empty the folder**.
   | JSON key | Env override | Default | Meaning |
   | --- | --- | --- | --- |
   | `enabled` | `LOG_HOUSEKEEP_ENABLED` | `true` | Turn the scheduled purge on/off |
-  | `log_dir` | `LOG_HOUSEKEEP_DIR` | `Logs/BatchLogs` | Dir to housekeep (relative → resolved against the backend dir) |
+  | `log_dirs` | `LOG_HOUSEKEEP_DIRS` (comma-sep) | `["Logs/BatchLogs"]` | **List** of folders to housekeep, each cleaned independently (relative → resolved against the backend dir). A single `log_dir` / `LOG_HOUSEKEEP_DIR` string is also accepted. |
   | `max_age_days` | `LOG_HOUSEKEEP_MAX_DAYS` | `30` | Delete files older than this many days |
-  | `keep_min` | `LOG_HOUSEKEEP_KEEP_MIN` | `2` | Always keep at least this many newest files, regardless of age |
+  | `keep_min` | `LOG_HOUSEKEEP_KEEP_MIN` | `2` | Always keep at least this many newest files **per folder**, regardless of age |
   | `interval_hours` | `LOG_HOUSEKEEP_INTERVAL_HOURS` | `24` | How often the task runs |
+
+  ```jsonc
+  // config/housekeeping.json — clean several folders, each keeping its own newest 2:
+  { "enabled": true, "log_dirs": ["Logs/BatchLogs", "Logs/AppLogs", "Logs/ErrorLogs"],
+    "max_age_days": 30, "keep_min": 2, "interval_hours": 24 }
+  ```
 
 ### Infrastructure Pulse — see section 5 for the full flow
 

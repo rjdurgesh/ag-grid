@@ -1,24 +1,33 @@
 {
   "_readme": [
-    "Log housekeeping — auto-purge of the batch-log directory. Copy this file to 'housekeeping.json'",
-    "(same folder) and edit per server; housekeeping.json is git-ignored. Every value is OPTIONAL —",
+    "Log housekeeping - auto-purge of the batch-log directories. Copy this file to 'housekeeping.json'",
+    "(same folder) and edit per server; housekeeping.json is git-ignored. Every value is OPTIONAL -",
     "anything omitted falls back to the built-in default shown below.",
     "",
     "  enabled        : turn the scheduled purge on/off (default true).",
-    "  log_dir        : directory to housekeep. A relative path is resolved against the backend dir,",
-    "                   so 'Logs/BatchLogs' is portable across servers; an absolute path is used as-is.",
+    "  log_dirs       : LIST of directories to housekeep. Each folder is cleaned INDEPENDENTLY, so the",
+    "                   keep_min floor applies PER folder (a quiet folder never gets emptied). Add as many",
+    "                   as you like. A relative path resolves against the backend dir (portable); an",
+    "                   absolute path is used as-is. Only files DIRECTLY in each folder are touched -",
+    "                   sub-folders are NOT descended into, so list each sub-folder you want cleaned.",
+    "                   (A single 'log_dir': '...' string is also accepted for one folder.)",
     "  max_age_days   : delete files older than this many days (default 30).",
-    "  keep_min       : ALWAYS keep at least this many newest files, regardless of age, so a quiet",
-    "                   period (no new logs for a long time) never empties the folder (default 2).",
+    "  keep_min       : ALWAYS keep at least this many newest files in EACH folder, regardless of age, so",
+    "                   a quiet period (no new logs for a long time) never empties a folder (default 2).",
     "  interval_hours : how often the background task runs (default 24).",
     "",
     "The task runs once at backend startup, then every interval_hours. Change a value here and RESTART",
     "the backend for it to take effect. (Any key can still be overridden per-server by the matching",
-    "LOG_HOUSEKEEP_* env var, but JSON is the intended place — env var wins, then this file, then default.)"
+    "LOG_HOUSEKEEP_* env var - LOG_HOUSEKEEP_DIRS is comma-separated - env var wins, then this file,",
+    "then the default.)"
   ],
 
   "enabled": true,
-  "log_dir": "Logs/BatchLogs",
+  "log_dirs": [
+    "Logs/BatchLogs",
+    "Logs/AppLogs",
+    "Logs/ErrorLogs"
+  ],
   "max_age_days": 30,
   "keep_min": 2,
   "interval_hours": 24
