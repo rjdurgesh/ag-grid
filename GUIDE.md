@@ -1084,16 +1084,18 @@ logs written for a long time) can **never empty the folder**.
   workers). `housekeeping_loop()` runs it once at startup, then every `interval_hours`.
 - **Wiring** `app.py` starts the loop from a FastAPI **lifespan** (cancelled cleanly on shutdown); the
   blocking file work runs in a thread so the event loop is free.
-- **Config** — `config_loader.housekeeping_config()` (JSON `config/housekeeping.json` → `.env` → default).
-  Tune it in **`backend/.env`**:
+- **Config** — `config_loader.housekeeping_config()`, resolved per key as **`config/housekeeping.json` →
+  `LOG_HOUSEKEEP_*` env var → built-in default**. Configure it in **`backend/config/housekeeping.json`**
+  (copy from the committed `housekeeping.example.json`; the real file is git-ignored). Every key is
+  optional — omit one and its default applies. Restart the backend after editing.
 
-  | Var | Default | Meaning |
-  | --- | --- | --- |
-  | `LOG_HOUSEKEEP_ENABLED` | `1` | Turn the scheduled purge on/off |
-  | `LOG_HOUSEKEEP_DIR` | `Logs/BatchLogs` | Dir to housekeep (relative → resolved against the backend dir) |
-  | `LOG_HOUSEKEEP_MAX_DAYS` | `30` | Delete files older than this many days |
-  | `LOG_HOUSEKEEP_KEEP_MIN` | `2` | Always keep at least this many newest files, regardless of age |
-  | `LOG_HOUSEKEEP_INTERVAL_HOURS` | `24` | How often the task runs |
+  | JSON key | Env override | Default | Meaning |
+  | --- | --- | --- | --- |
+  | `enabled` | `LOG_HOUSEKEEP_ENABLED` | `true` | Turn the scheduled purge on/off |
+  | `log_dir` | `LOG_HOUSEKEEP_DIR` | `Logs/BatchLogs` | Dir to housekeep (relative → resolved against the backend dir) |
+  | `max_age_days` | `LOG_HOUSEKEEP_MAX_DAYS` | `30` | Delete files older than this many days |
+  | `keep_min` | `LOG_HOUSEKEEP_KEEP_MIN` | `2` | Always keep at least this many newest files, regardless of age |
+  | `interval_hours` | `LOG_HOUSEKEEP_INTERVAL_HOURS` | `24` | How often the task runs |
 
 ### Infrastructure Pulse — see section 5 for the full flow
 

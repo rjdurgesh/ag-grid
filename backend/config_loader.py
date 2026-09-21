@@ -157,9 +157,10 @@ def docs_config() -> dict:
 
 # --- Log housekeeping --------------------------------------------------------
 def housekeeping_config() -> dict:
-    """Auto-purge settings for the batch-log directory (see ``housekeeping.py``). Primary source is
-    ``backend/.env`` (the age is meant to be tuned there); an optional ``config/housekeeping.json`` can
-    override. A relative ``log_dir`` is resolved against the backend dir so it is portable across servers."""
+    """Auto-purge settings for the batch-log directory (see ``housekeeping.py``). Configured in
+    ``backend/config/housekeeping.json`` (copy from ``housekeeping.example.json``); a ``LOG_HOUSEKEEP_*``
+    env var still overrides the JSON if needed, then a built-in default. A relative ``log_dir`` is
+    resolved against the backend dir so it is portable across servers."""
     j = _load("housekeeping")
     log_dir = _pick(j, "log_dir", "LOG_HOUSEKEEP_DIR", "Logs/BatchLogs")
     if log_dir and not os.path.isabs(log_dir):

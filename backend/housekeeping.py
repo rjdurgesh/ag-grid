@@ -4,13 +4,14 @@ Deletes files older than a configurable age from the logs directory, but ALWAYS 
 newest few files regardless of age — so a quiet period (no new logs written for a long time) can never
 empty the folder.
 
-Config (all in ``backend/.env``, overridable via ``config/housekeeping.json``):
-  * ``LOG_HOUSEKEEP_ENABLED``       — turn the scheduled purge on/off (default on).
-  * ``LOG_HOUSEKEEP_DIR``           — the directory to housekeep (default ``Logs/BatchLogs``; a relative
-                                      path resolves against the backend dir).
-  * ``LOG_HOUSEKEEP_MAX_DAYS``      — delete files older than this many days (default 30).
-  * ``LOG_HOUSEKEEP_KEEP_MIN``      — always keep at least this many newest files (default 2).
-  * ``LOG_HOUSEKEEP_INTERVAL_HOURS``— how often the background task runs (default 24).
+Config (in ``backend/config/housekeeping.json`` — copy from ``housekeeping.example.json``; each key may
+still be overridden per-server by the matching ``LOG_HOUSEKEEP_*`` env var, then a built-in default):
+  * ``enabled``        / ``LOG_HOUSEKEEP_ENABLED``       — turn the scheduled purge on/off (default on).
+  * ``log_dir``        / ``LOG_HOUSEKEEP_DIR``           — the directory to housekeep (default ``Logs/BatchLogs``;
+                                                          a relative path resolves against the backend dir).
+  * ``max_age_days``   / ``LOG_HOUSEKEEP_MAX_DAYS``      — delete files older than this many days (default 30).
+  * ``keep_min``       / ``LOG_HOUSEKEEP_KEEP_MIN``      — always keep at least this many newest files (default 2).
+  * ``interval_hours`` / ``LOG_HOUSEKEEP_INTERVAL_HOURS``— how often the background task runs (default 24).
 
 The purge is idempotent (deleting an already-gone file is ignored), so it is safe even if it happens to
 run in more than one worker process.
