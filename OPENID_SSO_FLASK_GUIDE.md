@@ -21,24 +21,22 @@ In **both** modes: **identity** (username/email/name) is what you show on the pr
 
 One backend switch, in `.env`, selects the mode; the frontend has a matching per-env toggle.
 
+`.env` holds only what's **per-server or secret**. The **OIDC provider values live in
+`config/oidc_config.yml`** (one file, per-env `dev`/`stg`/`prod` sections, chosen by `APP_ENV`) — see §3a.
+
 ```dotenv
-# backend .env
-#   1 = OIDC SSO ON  → require + validate a bearer id_token from the IdP (Mode A). /api/auth/login is off.
-#   0 = OIDC SSO OFF → use Mode B: /api/auth/login issues an app JWT; requests carry that app JWT.
-AUTH_VALIDATE_TOKEN=1
-
-AUTH_DEV_USER=                       # OIDC off only: authenticate AS this fixed UID (blank = use the token/body)
-APP_JWT_SECRET=change-me-long-random # Mode B only: secret used to sign/verify the app's own JWTs (HS256)
+# backend .env  — per-server + secrets ONLY
+APP_ENV=PROD                         # selects the oidc_config.yml section (dev/stg/prod)
+APP_JWT_SECRET=change-me-long-random # SECRET — signs/verifies the app's own JWTs (Mode B, HS256)
 APP_JWT_TTL_MIN=480                  # Mode B token lifetime in minutes
-
-# OIDC (Mode A) provider values:
-OIDC_ISSUER=https://login.example.com
-OIDC_AUDIENCE=your-spa-client-id     # the id_token's `aud` = the SPA client_id (or blank to skip)
-OIDC_JWKS_URL=                       # blank → <issuer>/.well-known/jwks.json
-OIDC_USERNAME_CLAIM=preferred_username
-OIDC_ALGORITHMS=RS256
-OIDC_LEEWAY=30
+# (Optional break-glass overrides of the yml, only if ever needed on one box:)
+# AUTH_VALIDATE_TOKEN=1              # overrides validate_token; 1 = SSO on (Mode A), 0 = REST login (Mode B)
+# AUTH_DEV_USER=                     # overrides dev_user (OIDC off: authenticate AS this fixed UID)
 ```
+
+The on/off switch (`validate_token`) and all provider values (`issuer`, `audience`, `jwks_url`, …) are
+read from the **yml section for `APP_ENV`**, so switching an environment is just `APP_ENV=` + the committed
+yml — no OIDC values in `.env`.
 
 ```ts
 // frontend src/environments/environment.ts
@@ -57,42 +55,99 @@ export const environment = { /* … */ isSsoEnabled: SSO_ENABLED_BY_ENV[RESOLVED
 ## 2. Dependencies
 
 ```bash
-pip install Flask "PyJWT[crypto]" flask-cors python-dotenv
+pip install Flask "PyJWT[crypto]" flask-cors python-dotenv PyYAML
 ```
 
 - `PyJWT[crypto]` — verify RS256 id_tokens (Mode A) and sign/verify HS256 app tokens (Mode B).
+- `PyYAML` — read `config/oidc_config.yml` (the per-env OIDC config; see §3a).
 - `flask-cors` — only needed for **local** cross-origin dev (`ng serve :4200` → API `:5000`). In prod the
   UI and API share one origin (reverse proxy), so CORS isn't needed there.
 - `python-dotenv` — load `.env` (or use your process manager's env).
 
 ---
 
-## 3. Config loader — `config.py`
+### 3a. `config/oidc_config.yml` (committed; one section per env — the OIDC source of truth)
+
+```yaml
+# The section for APP_ENV is used, so .env only needs APP_ENV. These are non-secret provider/discovery
+# values (the SPA uses Auth Code + PKCE — no client secret here), so this file is committed.
+dev:
+  validate_token: false            # OIDC off in dev (Mode B / dev-bypass). true = OIDC on (Mode A).
+  dev_user: ""                     # OIDC off: authenticate AS this UID; blank = body username
+  issuer: "https://login-dev.example.com"
+  audience: ["your-spa-client-id-dev"]   # the id_token's aud = the SPA client_id (or [] to skip)
+  jwks_url: ""                     # blank → <issuer>/.well-known/jwks.json
+  username_claim: "preferred_username"
+  algorithms: ["RS256"]
+  leeway: 30
+stg:  { validate_token: true, issuer: "https://login-stg.example.com", audience: ["your-spa-client-id-stg"] }
+prod: { validate_token: true, issuer: "https://login.example.com",     audience: ["your-spa-client-id"] }
+```
+
+### 3b. Config loader — `config.py` (reads the yml section for APP_ENV; env only overrides)
 
 ```python
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()  # load backend/.env into os.environ
+load_dotenv()  # load backend/.env (APP_ENV + secrets)
 
-def _bool(v, default=False):
-    return str(v).strip().lower() in ("1", "true", "yes", "on") if v not in (None, "") else default
-def _list(v, default):
-    return [x.strip() for x in str(v).split(",") if x.strip()] if v not in (None, "") else list(default)
+APP_ENV = os.getenv("APP_ENV", "PROD").strip().lower()
 
-AUTH_VALIDATE_TOKEN = _bool(os.getenv("AUTH_VALIDATE_TOKEN"), False)   # THE SSO ON/OFF SWITCH
-AUTH_DEV_USER       = os.getenv("AUTH_DEV_USER", "").strip()
+def _load_oidc_section() -> dict:
+    """The oidc_config.yml section for APP_ENV. {} on any problem → fall back to env/defaults."""
+    path = Path(os.getenv("OIDC_CONFIG_FILE", str(Path(__file__).parent / "config" / "oidc_config.yml")))
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    section = data.get(APP_ENV) or data.get(APP_ENV.upper()) or {}
+    return section if isinstance(section, dict) else {}
 
-APP_JWT_SECRET = os.getenv("APP_JWT_SECRET", "")
+_OIDC = _load_oidc_section()
+
+# Precedence per key: env var (break-glass) → yml section → default.
+def _cfg_str(env_key, yaml_key, default=""):
+    v = os.getenv(env_key)
+    if v and v.strip():
+        return v.strip()
+    yv = _OIDC.get(yaml_key)
+    return str(yv).strip() if yv not in (None, "") else default
+def _cfg_bool(env_key, yaml_key, default=False):
+    v = os.getenv(env_key)
+    if v and v.strip():
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    yv = _OIDC.get(yaml_key)
+    return (str(yv).strip().lower() in ("1", "true", "yes", "on")) if yv not in (None, "") else default
+def _cfg_list(env_key, yaml_key, default):
+    v = os.getenv(env_key)
+    if v and v.strip():
+        return [x.strip() for x in v.split(",") if x.strip()]
+    yv = _OIDC.get(yaml_key)
+    if isinstance(yv, (list, tuple)):
+        return [str(x).strip() for x in yv if str(x).strip()]
+    return [x.strip() for x in str(yv).split(",") if x.strip()] if yv not in (None, "") else list(default)
+
+AUTH_VALIDATE_TOKEN = _cfg_bool("AUTH_VALIDATE_TOKEN", "validate_token", False)   # THE SSO ON/OFF SWITCH
+AUTH_DEV_USER       = _cfg_str("AUTH_DEV_USER", "dev_user", "")
+
+# SECRETS stay in .env (never in the committed yml):
+APP_JWT_SECRET  = os.getenv("APP_JWT_SECRET", "")
 APP_JWT_TTL_MIN = int(os.getenv("APP_JWT_TTL_MIN", "480") or 480)
 
-OIDC_ISSUER    = os.getenv("OIDC_ISSUER", "").strip()
-OIDC_AUDIENCE  = _list(os.getenv("OIDC_AUDIENCE"), [])
-OIDC_JWKS_URL  = os.getenv("OIDC_JWKS_URL", "").strip() or (
+OIDC_ISSUER    = _cfg_str("OIDC_ISSUER", "issuer", "")
+OIDC_AUDIENCE  = _cfg_list("OIDC_AUDIENCE", "audience", [])
+OIDC_JWKS_URL  = _cfg_str("OIDC_JWKS_URL", "jwks_url", "") or (
     f"{OIDC_ISSUER.rstrip('/')}/.well-known/jwks.json" if OIDC_ISSUER else "")
-OIDC_USERNAME_CLAIM = os.getenv("OIDC_USERNAME_CLAIM", "preferred_username") or "preferred_username"
-OIDC_ALGORITHMS = _list(os.getenv("OIDC_ALGORITHMS"), ["RS256"])
-OIDC_LEEWAY     = int(os.getenv("OIDC_LEEWAY", "30") or 30)
+OIDC_USERNAME_CLAIM = _cfg_str("OIDC_USERNAME_CLAIM", "username_claim", "preferred_username") or "preferred_username"
+OIDC_ALGORITHMS = _cfg_list("OIDC_ALGORITHMS", "algorithms", ["RS256"])
+OIDC_LEEWAY     = int(_cfg_str("OIDC_LEEWAY", "leeway", "30") or 30)
 ```
+
+> Add `PyYAML` to the deps for this: `pip install PyYAML`.
 
 ---
 
