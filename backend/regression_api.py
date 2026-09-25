@@ -69,6 +69,13 @@ class RefreshBody(Caller):
     dbs: list[str] = []            # databases to refresh (all 5 selectable)
 
 
+class JenkinsOpenBody(Caller):
+    run_id: int
+    app: str                       # the deployment app key/name that was opened
+    kind: str = "deploy"           # "build" | "deploy"
+    url: str = ""                  # the Jenkins URL opened (for the audit record)
+
+
 class CompleteBody(Caller):
     run_id: int
     status: str = "complete"
@@ -81,6 +88,7 @@ class UnlockBody(Caller):
 
 class PullBody(Caller):
     branch: str
+    run_id: int | None = None      # set on a mid-run re-pull → audited against the run
 
 
 class StartBody(Caller):
@@ -186,9 +194,19 @@ def _db_config(request: Request, db_key: str):
     return cfg
 
 
+def _require_run(run_id: int | None) -> None:
+    """Guard every run-scoped step: a real run must exist. Turns a missing/bogus run_id (e.g. a run that was
+    never actually created, so the UI is holding run_id 0/None) into a clear 400 instead of the downstream
+    'internal error' 500 you get when the run_id is fed straight into a query."""
+    if not run_id or int(run_id) <= 0:
+        raise HTTPException(status_code=400,
+                            detail="No active regression run (missing run id). Start a fresh regression run first.")
+
+
 def _require_step_free(cfg: Any, run_id: int, step_key: str) -> None:
     """Concurrency lock — reject if this step is already running (in_progress and not stale), so two
     operators can't trigger the same step at once. A stale (likely-stuck) step does NOT block."""
+    _require_run(run_id)          # no run → clear 400, not a 500 from querying step state with a bad id
     if cfg is None:
         return
     st = database.regression_step_state(cfg, run_id, step_key)
@@ -238,12 +256,26 @@ def run_start(request: Request, body: StartBody) -> dict:
                             detail=f"No release folder '{body.release_date or ''}' in the pulled branch. Available: {shown}")
     env = request.app.state.app_env
     rid = database.regression_run_start(cfg, env, body.caller, body.branch, body.release_date, change_number=chg)
-    return {"status": "success", **(database.regression_run_current(cfg, env) or {"run": {"run_id": rid}, "steps": {}})}
+    # Fail LOUDLY if the run wasn't really created. The insert can silently no-op (e.g. a package proc that
+    # doesn't return the id, or a missing COMMIT) and still look OK — we must NOT report success then, or the
+    # UI advances to the task page with no run behind it. Require both a valid id AND that the run loads back.
+    if not rid or int(rid) <= 0:
+        raise HTTPException(status_code=502,
+                            detail="The regression run was not created — the database returned no run id. "
+                                   "Nothing has been started; please retry. (Check the ols_regression_run "
+                                   "insert / that the run-start proc RETURNs the new id and COMMITs.)")
+    current = database.regression_run_current(cfg, env)
+    if not current or not (current.get("run") or {}).get("run_id"):
+        raise HTTPException(status_code=502,
+                            detail="The regression run could not be loaded after creation — it may not have "
+                                   "committed. Nothing has been started; please retry.")
+    return {"status": "success", **current}
 
 
 @router.post("/step/mark")
 def step_mark(request: Request, body: MarkBody) -> dict:
     cfg = _require_regression(request, body)
+    _require_run(body.run_id)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -262,6 +294,7 @@ def step_unlock(request: Request, body: UnlockBody) -> dict:
     """Clear a stuck in_progress step (crash/drop between start and result) so the run isn't
     deadlocked. Logged as an 'unlock' with who did it; the step becomes re-runnable (status error)."""
     cfg = _require_regression(request, body)
+    _require_run(body.run_id)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -290,6 +323,47 @@ def refresh_databases(request: Request, body: Caller) -> dict:
         dbs = [{"key": n, "label": n, "category": cat} for cat, names in groups.items() for n in names]
         return {"status": "success", "databases": dbs}
     return {"status": "success", "databases": config_loader.regression_scope_config(body.scope)["refresh_databases"]}
+
+
+@router.post("/jenkins-deployments")
+def jenkins_deployments(request: Request, body: Caller) -> dict:
+    """This scope's deployable applications — each an existing Jenkins pipeline (build optional + deploy URL).
+    The operator picks per release which to deploy (not every release deploys all). Env-specific (per-server
+    config). `{deployments: [{key, name, build_url, deploy_url}]}`."""
+    _require_regression(request, body)
+    if REGRESSION_USE_DUMMY:
+        base = "https://jenkins.example/job"
+        canned = {
+            "cib": [
+                {"key": "bm", "name": "Balance Management (BM)", "build_url": f"{base}/cib-bm-build/", "deploy_url": f"{base}/cib-bm-deploy/"},
+                {"key": "client", "name": "Client", "build_url": f"{base}/cib-client-build/", "deploy_url": f"{base}/cib-client-deploy/"},
+                {"key": "extractor", "name": "Extractor", "build_url": "", "deploy_url": f"{base}/cib-extractor-deploy/"},
+            ],
+            "retail": [
+                {"key": "bm", "name": "Balance Management (BM)", "build_url": f"{base}/ret-bm-build/", "deploy_url": f"{base}/ret-bm-deploy/"},
+                {"key": "client", "name": "Client", "build_url": f"{base}/ret-client-build/", "deploy_url": f"{base}/ret-client-deploy/"},
+            ],
+            "group": [{"key": "bm", "name": "Balance Management (BM)", "build_url": "", "deploy_url": f"{base}/grp-bm-deploy/"}],
+        }
+        return {"status": "success", "deployments": canned.get(body.scope, canned["cib"])}
+    return {"status": "success", "deployments": config_loader.regression_scope_config(body.scope)["jenkins_deployments"]}
+
+
+@router.post("/jenkins-open")
+def jenkins_open(request: Request, body: JenkinsOpenBody) -> dict:
+    """Audit that a Jenkins build/deploy link was opened for this run (who deployed what). The link opens in
+    the operator's browser (a new tab) — this just records it in the regression log. Not a gate; the step is
+    completed separately via /step/mark."""
+    cfg = _require_regression(request, body)
+    _require_run(body.run_id)
+    if REGRESSION_USE_DUMMY:
+        return {"status": "success"}
+    kind = "deploy" if str(body.kind).lower() == "deploy" else "build"
+    now = datetime.now()
+    database.regression_log_write(cfg, body.run_id, "jenkins_deploy", f"open_{kind}", "in_progress", body.caller,
+                                  comments=json.dumps({"app": body.app, "kind": kind, "url": body.url}),
+                                  start_time=now, end_time=now)
+    return {"status": "success"}
 
 
 # All databases the app is initialised with (every scope in app.state.db_configs) — used by the
@@ -388,6 +462,7 @@ def refresh_db(request: Request, body: RefreshBody) -> dict:
 def run_complete(request: Request, body: CompleteBody) -> dict:
     """Close out a run once every step is complete/forced — log the completion + mark it finished."""
     cfg = _require_regression(request, body)
+    _require_run(body.run_id)
     if REGRESSION_USE_DUMMY:
         return {"status": "success"}
     now = datetime.now()
@@ -411,13 +486,25 @@ def git_branches(request: Request, body: Caller) -> dict:
 
 @router.post("/git/pull")
 def git_pull(request: Request, body: PullBody) -> dict:
-    _require_regression(request, body)
+    """Pull a release branch to its LATEST commit (fetch + hard-reset to origin/<branch>). Used both to pull
+    before starting a run AND to RE-PULL mid-run when a fix lands on the branch after the run started; on a
+    re-pull the client passes ``run_id`` so it's recorded in the run's activity log."""
+    dbcfg = _require_regression(request, body)
     if REGRESSION_USE_DUMMY:
         return {"status": "success", "scripts": ["reset/reset_batches.sql", "trigger/trigger_all.sql"],
                 "release_dates": ["20260910", "20260815", "20260710"]}
     cfg = config_loader.regression_scope_config(body.scope)
     try:
         ops.git_pull_branch(cfg, body.branch)
+        # Audit a mid-run re-pull so the trail shows the code was refreshed (and by whom) during the run.
+        if body.run_id:
+            try:
+                now = datetime.now()
+                database.regression_log_write(dbcfg, body.run_id, "git_pull", "repull", "complete", body.caller,
+                                              comments=f"Re-pulled '{body.branch}' to latest (origin/{body.branch}).",
+                                              start_time=now, end_time=now)
+            except Exception:  # noqa: BLE001 — auditing must never fail the pull
+                pass
         # release_dates → the run-start date hint + validation source (folders in THIS pulled branch)
         return {"status": "success", "scripts": ops.list_branch_scripts(cfg),
                 "release_dates": ops.list_release_dates(cfg)}

@@ -1,0 +1,20 @@
+{
+  "_readme": [
+    "OSHIVA PII / secret redaction (see AI_PII_REDACTION.md). Copy to 'redaction.json' (same folder;",
+    "git-ignored) only if you need to extend it — the built-in defaults already redact DB passwords,",
+    "connection strings, tokens, and personal data (first/sur/last name, email, username, GUID, account",
+    "number). This file can only ADD to those lists, never shrink them.",
+    "",
+    "  enabled           : master on/off (default true). Leave true.",
+    "  placeholder       : the marker that replaces a sensitive value.",
+    "  redact_values     : also mask value patterns (emails, inline 'password=...') in free text.",
+    "  extra_secret_keys : extra column/field names to treat as SECRETS (value fully removed).",
+    "  extra_pii_keys    : extra column/field names to treat as PII."
+  ],
+
+  "enabled": true,
+  "placeholder": "[redacted]",
+  "redact_values": true,
+  "extra_secret_keys": [],
+  "extra_pii_keys": []
+}

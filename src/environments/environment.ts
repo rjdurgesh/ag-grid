@@ -155,5 +155,6 @@ export const environment: AppEnvironment = {
     '/api/oracle_cc':       false, // Oracle Command Center   → live backend
     '/api/config':          true,  // Config Ops Console      → in-app mock
     '/api/docs':            false, // Documentation Center    → live backend (real .md files from base_dir)
+    '/api/assistant':       false, // OLS Assistant (AI)      → live backend (SSE stream; run the backend, stub brain by default)
   } : {},
 };

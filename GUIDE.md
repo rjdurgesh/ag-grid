@@ -359,9 +359,20 @@ newest first), Pull it, then choose the **release date** with a
 **date picker** (native `type=date`, auto-converted to the canonical `YYYYMMDD` folder name). The pulled branch's
 actual release folders are listed as a hint, and **Start is disabled unless a CHG is set AND the chosen date is a real
 folder** in that branch (`canStart = chgOk && pulled && dateKnown`); the run/start endpoint **re-validates server-side**
-too (a missing CHG or an absent date → 400, no run created). CHG + branch + date are stored on `ols_regression_run`
+too (a missing CHG or an absent date → 400, no run created). **Start is atomic:** `/run/start` returns success **only**
+when a real run_id was created AND the run loads back — if the insert silently no-ops (e.g. a run-start package proc
+that doesn't RETURN the id or doesn't COMMIT) it returns **502** and the UI stays on the start panel (it also guards on
+`s.run?.run_id` client-side), so you never get a task page with no run behind it. Any run-scoped step called without a
+valid run_id returns a clear **400** ("No active regression run…") via `_require_run`, not a generic 500. CHG + branch
++ date are stored on `ols_regression_run`
 (`change_number`, `git_branch`, `release_date`) and shown in the run header + the Regression Activity grid — one CHG per
-release (a CHG may span several run ids), so a month with two releases yields two clearly-labelled runs. Steps: Refresh
+release (a CHG may span several run ids), so a month with two releases yields two clearly-labelled runs.
+**Mid-run "Pull latest code":** a fix pushed to the release branch *after* the run started can be brought in without
+abandoning the run — the run header has a **Pull latest code** button (while the run is in progress) that re-pulls
+the current run's branch (reuses `/git/pull` → `fetch` + `reset --hard origin/<branch>`, so it's always the newest
+commit), then re-scans everything that reads from the branch (Apply chg files, Reset/Trigger scripts, file-copy +
+cleanup manifests). The re-pull is audited to the activity log (`git_pull`/`repull`, "Re-pulled '<branch>' to
+latest", with the caller); completed steps are untouched — re-run any step whose scripts changed. Steps: Refresh
 DB (a **grouped multi-select dropdown** of this **scope's own databases for the current env** — DEV/STG can have many,
 grouped **BATCH / REPORTING**; loaded from `refresh_databases` in `regression.json` via
 `/api/regression/refresh-databases`, with per-group + global Select-all — a dropdown, not a chip list, so 10-12 servers stay compact.
@@ -403,10 +414,23 @@ returning `{scripts:[…]}`. There is **no auto per-DB mapping**: the operator d
 **initialized databases** it runs on — each file row has a
 **DB-checkbox strip** (+ per-file All/Clear) — and the **run sequence** across the participating files (▲▼; a file joins
 the sequence when it gets its first DB, leaves when its last DB is cleared). So `chg1.sql` can target Group+CIB Batch,
-`chg2.sql` only CIB Reporting, `chg3.sql` nothing — fully operator-controlled. Running builds an **ordered
-`executions:[{script,db}]`** list (each file × its ticked DBs, in sequence) sent to `run-sql-stream`; a **refresh** icon
-re-scans the folder (preserving your per-file picks). Each execution streams to the console; the run-summary popup lists
-every script→DB execution in **Run order**) → File copy (the **manifest lives in
+`chg2.sql` only CIB Reporting, `chg3.sql` nothing — fully operator-controlled. **Sequencing is two-level:** the file
+order (▲▼) **and** a **database run order** — a `Database run order` strip lists the participating DBs with ▲▼ so you
+choose which DB goes first. Execution is **DB-major**: for each database in that order, its ticked files run in file
+order (one DB finished before the next). A read-only **Execution plan** panel shows the exact hierarchy — *database →
+its scripts, numbered* — before you hit Apply, so even non-technical operators can see what runs where and in what
+order. Running builds an **ordered `executions:[{script,db}]`** list (DB-major) sent to `run-sql-stream`; a **refresh**
+icon re-scans the folder (preserving your per-file picks). Each execution streams to the console; the run-summary popup
+lists every script→DB execution in **Run order**) → **Jenkins deployment** (a gated step **before File copy** for deploying
+the release's applications via their **existing Jenkins pipelines**. The scope's deployable apps come from a config
+**catalogue** — `jenkins_deployments` in `regression.json` (per scope, env-keyable), each `{key, name, deploy_url, build_url?}`
+pointing at a Jenkins pipeline (deploy required, build optional) — served by `/api/regression/jenkins-deployments`. **Not
+every release deploys all of them**, so the release manager **ticks per release which apps to deploy** (this is the answer
+to "deploy BM+Client now, Extractor+Client next" — a per-release checkbox selection over a stable catalogue, **no config
+edit per release**). **Build (optional)** and **Deploy** each open the pipeline in a **new tab** (`window.open`,
+`noopener`); the open is audited to `ols_regression_log` via `/api/regression/jenkins-open` (who deployed what). Since
+completion is external, **Mark deployment done** logs the chosen apps (or "none required") and unlocks File copy — gated
+like the other steps, Force-complete also works) → File copy (the **manifest lives in
 the release repo** — `filecopy_manifest_<release_date>.json` under each Scripts folder for the release, discovered via
 `/api/regression/file-copy/manifests` and shown as a **labelled dropdown per folder** that has one. Discovery is
 **config-driven**: it scans every `script_roots` folder for the scope — now that each scope uses a **single Scripts
@@ -439,8 +463,11 @@ free space** — and shows a green/amber panel (Source · Dest · Space ✓/✗ 
 read-only path or full disk is caught **before** the copy runs, not mid-way) → Reset → Trigger (tick `.sql` from the
 scope's **single RegressionTesting folder** = `batch_db_script_roots["*"]` (cib←`sql/RegressionTesting`), listed via
 `/api/regression/batch-db-scripts`, with a **checkbox + sequence** picker like Apply, **AND** tick the target
-**database(s)** — this scope's own DBs (cib→`cib_*`, retail→`retail_*`) — as a shared multi-select: **every ticked
-script runs on every ticked database, in the chosen sequence** (built as a scripts×DBs `executions` list for run-sql).
+**database(s)** — this scope's own DBs (cib→`cib_*`, retail→`retail_*`). Like Apply, both Reset and Trigger now also
+expose a **database run order** (▲▼ on the ticked DBs) and a read-only **execution plan** (database → its scripts, in
+run order). Execution is **DB-major**: **every ticked script runs on every ticked database, one database at a time, in
+the chosen database order** (built as a DB-major `executions:[{script,db}]` list for run-sql — frontend-only, no backend
+change; `_run_sql_combos` already honours an explicit `executions` list).
 **The DB list is backend-driven, never hardcoded in the UI:** `/api/regression/databases` returns every database the app
 was initialised with (from `app.state.db_configs`, each `{key, label, name}` — `name` = the real SID via
 `database.fetch_instance_name`), loaded into the component's `databases()` signal on entry; the Apply strip shows the full
@@ -487,7 +514,9 @@ log) — so multiple operators can share a run without stepping on each other. A
 default, then **Monitoring Batches**): **Monitoring Batches** (a
 `database.fetch_batch_monitor` query — returns the whole result set, capped only by `REGRESSION_BATCH_MAX_ROWS`
 (default 100k); shown in an **AG-Grid with pagination + per-column filter + sort**, fixed to **OLS CIB Batch**
-(no DB dropdown); icon **Refresh** + a live **"Last refreshed <ts> · N sec ago"** line) and
+(no DB dropdown); icon **Refresh** + a live **"Last refreshed <ts> · N sec ago"** line. An **error column** (name
+matches `error`/`err_desc`/`error_message`) truncates with … and is **click-to-read**: clicking a non-empty cell
+opens a popup with the full message (`errorDetail` signal + `.rg-errtext`)) and
 **Regression Activity** (the `ols_regression_log` audit — also an **AG-Grid** with pagination/filter/sort, icon
 Refresh + the same live last-refreshed line; columns: **Action Date · Release Date · Change # · Step · Action · Status ·
 Action performed By · Start Date · End Date · Duration · Comments** — Change # + Release Date are joined from the run,
@@ -547,6 +576,16 @@ ADMIN role also stands in for the ops-admin gate, so User Management is reachabl
 **To go live:** wire `app.state.app_db_config` (the app DB holding `ols_users` + `ols_app_access`),
 set `ACCESS_USE_DUMMY=0`, ensure `/api/config/{scope}/tables` returns `TABLE_CATEGORY`, and
 **re-check every write server-side from the SSO token** (RBAC_DESIGN.md §9 — UI hiding is not security).
+
+**Config table OMT-category filter:** the config catalogue is filtered per user by `TABLE_CATEGORY` (values
+`OMT-TECHNICAL` / `OMT-FUNCTIONAL` / `OMT-BOTH`). The `/tables` API must return `TABLE_CATEGORY` as a **named
+column in `cols`** (not just a trailing row value — the grid maps by column name); it is used for filtering and
+**hidden from the grid** (`config-scope.base.ts` drops it from the displayed columns). The rule
+(`rbac.service.categoryMatches`): a user granted a category sees tables of that category **plus** `OMT-BOTH`
+tables; `OMT-BOTH` tables are visible to anyone with `OMT-TECHNICAL` **or** `OMT-FUNCTIONAL`; a full-access
+(`config.all`) user sees all; a table the user has no matching category/table grant for is filtered out
+(`configTableAccess(...) === 'none'`). This filter is **client-side (UX)** — for true confidentiality the
+`/tables` API should also filter server-side from the caller's grants (UI hiding is not security).
 
 **Data Reconciliation** (Config Ops → **Data Reconciliation** tab, on **all three scopes incl. Group**,
 **DEV/STG only** AND granted per scope via an `ols_app_access` **`RECONCILIATION`** grant —
@@ -1108,6 +1147,92 @@ logs written for a long time) can **never empty the folder**.
     "max_age_days": 30, "keep_min": 2, "interval_hours": 24 }
   ```
 
+### OSHIVA — AI assistant (Phase 2, scaffold)
+
+OSHIVA (OLS Hybrid Intelligence Virtual Assistant) — an in-app AI chat assistant (floating widget in the
+default layout). Full design + primer: **`ai-learning/AI_AGENT_DESIGN.md`**; target architecture + code
+layout: **`ai-learning/AI_ARCHITECTURE.md`** (all AI/bot learning docs live in **`ai-learning/`** — start
+with its `README.md`). Phase 2.0 is a scaffold: a **stub brain** drives a real tool-calling loop over
+**mock** read-tools, so the whole chat pipeline runs with no model. Wire the real private **GPT-OSS**
+later by implementing `oshiva/llm/client._complete_real` and setting `use_stub:false`.
+
+| Method & path | Request | Response |
+| --- | --- | --- |
+| POST `/api/assistant/available` | `{ caller }` | `{ enabled }` — drives whether the launcher shows |
+| POST `/api/assistant/chat` | `{ caller, message, conversation_id?, history? }` | **SSE stream** of agent events (`start`/`route`/`tool`/`token`/`final`/`done`) |
+| POST `/api/assistant/feedback` | `{ caller, conversation_id, message_id, vote, comment? }` | `{ status }` |
+| POST `/api/assistant/reset` | `{ caller, conversation_id }` | `{ status }` — expires server-side memory (New chat) |
+| GET `/api/assistant/export/{file}` | — (unguessable token filename) | serves a CSV that `export_config` wrote (capability URL; data bypasses the model) |
+
+- **Backend** `backend/oshiva/` — a package grouped by concern (HTTP path stays `/api/assistant/*`):
+  `api.py` (router), `agents/` (`coordinator.py` routes a turn → `runner.py` runs one agent's tool loop;
+  `registry.py` = `Agent`/`AGENTS`/`route()`, **per-domain agents: infra · database · config_ops**),
+  `tools/` (**one module per screen** — `infra_pulse.py` `list_servers`+`service_status` wired to the live
+  Infra/Service Console (`list_servers` filters: scope/os/RAM/CPU/disk-drive/health-state; `service_status`
+  server+service+status; `list_services` cross-server by status; `list_shares` NAS utilization — all
+  READ-ONLY: start/stop/restart is politely refused with a link to the Service Console screen);
+  `oracle_command_center.py` (OCC read tools: `blocking_sessions`/`top_tables`/`top_indexes`/`unusable_indexes`/
+  `list_sessions`/`mviews`/`sql_detail` — reads render as aligned tables; plan & SQL-monitor return a download link; writes kill/gather/refresh/rebuild/
+  compress/apply-fix are refused with a link to the OCC screen. **DB targets come from `app.state.db_configs`
+  (real per-env), not hardcoded; OCC has 5 DBs so the bot asks for an exact one if ambiguous.** **SQL exposure (OCC-only):**
+  the six read-report tools take `include_sql` — the *actual* SQL that ran is returned **only** to a caller with
+  **WRITE** access on that OCC DB (or `all` DBs at WRITE), and **only** when they explicitly ask ("show me the query" /
+  "what SQL did you run"). Read-only users get a polite refusal; a read-only path never even builds the SQL string.
+  The data layer captures SQL via an optional `sql_out` list threaded through the `database.fetch_*` fns; the tool's
+  `_with_sql()` gate (via `access_api.build_snapshot` → `oracle` grants, fail-closed) decides `query` /
+  `query_denied` / `query_note`, and `llm/client._occ_sql_suffix()` renders it in a ```sql block. `sql_detail` is
+  excluded (its plan/monitor/overview output already *is* the SQL analysis for the sql_id).);
+  `config_ops_console.py`
+  `list_config_tables`/`get_config`/`describe_config_table`/`query_table` (parameterized lookup + count,
+  secret cols dropped — SQL in `database.config_query_table`) + `find_tables_with_column` (schema lookup, no
+  table name needed) + `export_config` (CSV download, data bypasses the model; **COB/date-partitioned tables
+  require a business date/range — too large to dump whole**; unknown table/column → "did you mean?"
+  suggestions) + `roll_config` (**WRITE**, confirm-gated preview→execute, WRITE-level authz); `regression.py` read-only
+  `regression_status`/`activity`/`batch_status`/`downstream_extract` (CIB-only, DEV/STG); `base.py` shared helpers;
+  `registry.py` aggregates + `run_tool()`), tools run **as the caller**, `auth/` (`gate.py` screen gate +
+  `scope_access.py` per-business-line tool authz), `security/redaction.py` (PII/secret scrub),
+  `memory/sessions.py` (conversation history + TTL), `llm/client.py` (stub ↔ real GPT-OSS),
+  `observability/audit.py` (append-only JSONL under `Logs/assistant/`), `eval/` (evaluation suite — see below).
+  Config `config/assistant.json` (copy
+  from `.example.json`); model API key is a secret in `.env` (`ASSISTANT_API_KEY`). Runtime data:
+  `assistant_data/sessions/`, `Logs/assistant/`. Tool realness follows each screen's own `*_USE_DUMMY` flag
+  (dev = dummy, prod = live), independent of the assistant stub.
+- **Observability + cost:** every turn is appended to `Logs/assistant/audit-YYYYMMDD.jsonl` with route/agent,
+  tool calls (each with `ms`), **tokens** (`LlmResponse.usage` — exact from the real model, estimated + flagged
+  for the stub), **cost** (`observability/metrics.cost_of` using `cost_per_1k_input/output` config; 0 for
+  self-hosted), `steps`, latency — written AFTER redaction. Roll up a day with `python -m oshiva.observability`
+  (`metrics.summarise_day`). Learner doc: `ai-learning/AI_OBSERVABILITY.md`.
+- **Rate limiting (edge):** `oshiva/auth/rate_limit.py` caps chat turns per caller per minute
+  (`rate_limit_per_min`, default 20; 0 disables), enforced in `api.py` before a turn runs → HTTP 429 +
+  `Retry-After`. In-memory per-process (Redis-back for multi-worker later; same `check()` seam). Learner doc:
+  `ai-learning/AI_RATE_LIMIT.md`.
+- **Evaluation suite:** `oshiva/eval/` — a golden-Q&A + guardrail harness that drives the real pipeline
+  (`agents.coordinator.run`) and asserts on route / tool + args / answer. Run `python -m oshiva.eval`
+  (optionally a category filter like `write_guard`, `-v`, or `--real` to grade the live GPT-OSS). In stub +
+  mock mode it's **deterministic** (the harness hard-pins every `*_USE_DUMMY` flag on, so it never touches a
+  real system even on PROD), so it gates CI (exit 0 only if all pass). Categories: routing · tool+args · authz
+  (cross-line refusal, no leak) · write_guard (read-only refuse + nav link, no tool) · confirm_gate (roll
+  previews + asks) · grounding (no fabrication) · redaction (secret/PII canaries). Add a case = append an
+  `EvalCase` in `eval/cases.py`. Learner doc: `ai-learning/AI_EVALS.md`.
+- **Model:** `llm/client.py` runs a built-in **stub** brain by default. To use the real self-hosted
+  **GPT-OSS**, set `ASSISTANT_BASE_URL` / `ASSISTANT_MODEL` / `ASSISTANT_API_KEY` (secret) / `ASSISTANT_TIMEOUT`
+  in `.env` and `ASSISTANT_USE_STUB=false` — `_complete_real` posts to an OpenAI-compatible
+  `{base}/v1/chat/completions` with native tool-calling. No other code changes; the agent loop is identical.
+- **Access:** two layers — (1) **screen gate** `oshiva.auth.gate.require_assistant`: `enabled` master switch +
+  `allowed_users` (default `["B27886"]` private-beta pin, `[]` = managed by an RBAC `SCREEN/assistant` grant);
+  (2) **tool authz** `oshiva.auth.scope_access.allowed_scopes`: which business lines (group/cib/retail) the
+  caller may query, so a tool never surfaces data the user couldn't see in the UI (see
+  `ai-learning/AI_TOOL_AUTHZ.md`).
+  Frontend shows the launcher only when `/available` returns `enabled`.
+- **PII / secret redaction:** `oshiva/security/redaction.py`, applied centrally in `agents/runner.py`, scrubs
+  DB passwords / connection strings / tokens and personal data (name/email/username/GUID/account number) from
+  every tool result **before it reaches the model or the audit log**. Config in `config/redaction.json` (copy
+  from `.example.json`; built-in lists always apply). See `ai-learning/AI_PII_REDACTION.md`.
+- **Frontend** `src/app/oshiva/` — `oshiva.service.ts` (`OshivaService`, SSE via `fetch`),
+  `oshiva-widget.component.*` (`OshivaWidgetComponent` `<app-oshiva-widget>` — launcher + drawer, streaming,
+  route line, tool trace, 👍/👎), `oshiva-robot.component.*` (the mascot), mounted once in the default layout.
+  `/api/assistant` is `false` in `apiMocks` → it always hits the live backend (run it; stub brain by default).
+
 ### Infrastructure Pulse — see section 5 for the full flow
 
 **Infrastructure Health** (new contract — every call POST under `/api/infra_health`, so the
@@ -1151,7 +1276,11 @@ Kill/Deep-dive buttons stay reachable no matter how many columns the payload add
 
 The OCC ribbon shows a **live instance indicator**: `{instance} instance` with a status dot —
 green = reachable (a section query returned), red = can't contact the DB (all sections
-errored), amber = connecting. It's derived client-side from the section load/error signals
+errored), amber = connecting. **The `instance` name is the ACTUAL connected instance per
+environment** — resolved at request time from `app.state.db_configs` via a live
+`SYS_CONTEXT` read (`oracle_cc_api._instance` → `database.fetch_instance_name`, cached per
+scope), so dev shows the dev instance and staging the staging instance. `TARGET_META`'s
+hardcoded `instance` is only a fallback (dummy mode / unreachable / lookup error). It's derived client-side from the section load/error signals
 (`instanceStatus()`), no extra endpoint. When the active DB is unreachable (all sections error)
 a red "database unreachable" banner appears above the sections; the other tabs are unaffected.
 (The Diagnostics-Pack concept was removed entirely — there is no pack gating anywhere now.)
@@ -1162,7 +1291,7 @@ down DB still gets a tab (grey) and its sections show read errors — the app ne
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **One tab per catalogued DB**; each carries `reachable` (green dot = up, grey = down) computed from `app.state.db_configs` (real: scope has a truthy connection; dummy: always true). A down DB still gets a (grey) tab. `TARGET_META` (in `oracle_cc_api.py`) adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, reachable }` where `key == connection ==` the db_configs scope. |
+| `GET /api/oracle_cc/targets` | — | `{ status, data: OracleTarget[] }` — the DB tabs to render. **One tab per catalogued DB**; each carries `reachable` (green dot = up, grey = down) computed from `app.state.db_configs` (real: scope has a truthy connection; dummy: always true). A down DB still gets a (grey) tab. `TARGET_META` (in `oracle_cc_api.py`) adds display metadata per scope, from which `TARGET_CATALOG` is built. Each target: `{ key, label, sub?, instance, connection, reachable }` where `key == connection ==` the db_configs scope. **`instance` is resolved live per environment** (`_instance` → `database.fetch_instance_name` on the scope's `db_configs` connection, cached; `TARGET_META.instance` is only the dummy/unreachable fallback). |
 | `GET /api/oracle_cc/overview` | — | `{ status, data: OracleOverview[] }` — compact per-DB snapshot (storage %, blocking, active sessions, top segment) powering the **Home 'Oracle Databases' strip**; one call for the whole strip. |
 | `POST /api/oracle_cc/{db}/space` | `{}` | Section 1 — per-tablespace space. Gauge `summary` (**Total/Used/Free Alloc (GB)**) is **physical-allocation** based: `total=Σ physical_alloc`, `used=Σ used`, `free=total−used`, `used% = used/physical`. Per-row columns also carry the autoextend view: **Alloc max (GB)** (`Σ DECODE(autoextensible,'NO',bytes,maxbytes)`) and **Total Free (GB)** (`alloc_max − used`). |
 | `POST /api/oracle_cc/{db}/top_segments` | `{}` | Section 2 — top-10 tables by **data-segment** bytes as a real **3-level tree** (Table → Partition → Subpartition via `__children`), each node with its own stale-stats chip. `database.fetch_top_segments` → `{tables, stats, partitions, subpartitions}`. **Tuned (2026-09-18):** partition/subpartition sizes no longer JOIN `dba_tab_subpartitions`↔`dba_segments` or use window functions (that join was the bottleneck) — now TWO cheap scoped scans (a scoped `dba_segments` GROUP BY + a scoped `dba_tab_subpartitions` scan) rolled up + top-N-per-parent picked in **Python**. Partition size = its own `TABLE PARTITION` segment **or**, for composite tables (no partition-level segment), the roll-up of its `TABLE SUBPARTITION` segments (subpartition→parent partition comes from `dba_tab_subpartitions`, since `dba_segments` has no parent-partition column). Only query 1 (top-N tables) is still an owner-wide `dba_segments` aggregation — if slow, gather **dictionary + fixed-object stats** (see the docstring). Stats keyed `(table, partition, subpartition)`; longer timeout via `OCC_TOPSEG_TIMEOUT_MS`. |

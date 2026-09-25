@@ -7,8 +7,8 @@ import { environment } from '../../../../../environments/environment';
 import { RbacService } from '../../../../auth/rbac.service';
 import {
   BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
-  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDownstreamExtractRow,
-  RegressionState, RunSqlResult
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDeployment,
+  RegressionDownstreamExtractRow, RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
 /** Live-stream callbacks for a run-sql-stream (Apply / Reset / Trigger). */
@@ -62,6 +62,12 @@ export class OlsCibRegressionService {
   refreshDatabases(): Observable<{ databases: RegressionDb[] }> {
     return this.api.post(API.regression.refreshDatabases, { caller: this.caller(), scope: this.scope });
   }
+  jenkinsDeployments(): Observable<{ deployments: RegressionDeployment[] }> {
+    return this.api.post(API.regression.jenkinsDeployments, { caller: this.caller(), scope: this.scope });
+  }
+  jenkinsOpen(run_id: number, app: string, kind: 'build' | 'deploy', url: string): Observable<{ status: string }> {
+    return this.api.post(API.regression.jenkinsOpen, { caller: this.caller(), scope: this.scope, run_id, app, kind, url });
+  }
   refreshDb(run_id: number, dbs: string[]): Observable<{ result: { status: string; message: string; details: string } }> {
     return this.api.post(API.regression.refreshDb, { caller: this.caller(), scope: this.scope, run_id, dbs });
   }
@@ -71,8 +77,8 @@ export class OlsCibRegressionService {
   gitBranches(): Observable<{ branches: string[] }> {
     return this.api.post(API.regression.gitBranches, { caller: this.caller(), scope: this.scope });
   }
-  gitPull(branch: string): Observable<{ scripts: string[]; release_dates: string[] }> {
-    return this.api.post(API.regression.gitPull, { caller: this.caller(), scope: this.scope, branch });
+  gitPull(branch: string, runId?: number): Observable<{ scripts: string[]; release_dates: string[] }> {
+    return this.api.post(API.regression.gitPull, { caller: this.caller(), scope: this.scope, branch, run_id: runId ?? null });
   }
   gitScripts(): Observable<{ scripts: string[] }> {
     return this.api.post(API.regression.gitScripts, { caller: this.caller(), scope: this.scope });

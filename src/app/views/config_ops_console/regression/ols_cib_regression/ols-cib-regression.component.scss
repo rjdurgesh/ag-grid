@@ -550,6 +550,52 @@
     &:disabled { opacity: 0.35; cursor: not-allowed; }
   }
 }
+/* database run order (DB-major execution) */
+.rg-dborder {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+  margin: 0.5rem 0 0.15rem; padding: 0.4rem 0.5rem;
+  border: 1px solid var(--cui-border-color, #d6dae1); border-radius: 8px;
+  background: var(--cui-tertiary-bg, #f6f8fb);
+}
+.rg-dborder__lbl { font-size: 0.72rem; font-weight: 700; color: var(--cui-secondary-color, #6b7280); }
+.rg-dborder__item {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.4rem; border: 1px solid var(--cui-border-color, #d6dae1);
+  border-radius: 999px; background: var(--cui-body-bg, #fff);
+}
+.rg-dborder__name { font-size: 0.78rem; font-weight: 600; }
+.rg-dborder__cnt { font-size: 0.68rem; color: var(--cui-secondary-color, #6b7280); }
+
+/* quick-view execution plan (read-only hierarchy: database → its scripts, in run order) */
+.rg-plan {
+  margin: 0.4rem 0 0.15rem; padding: 0.5rem 0.6rem; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--rg-accent) 30%, var(--cui-border-color, #d6dae1));
+  background: color-mix(in srgb, var(--rg-accent) 6%, var(--cui-body-bg, #fff));
+}
+.rg-plan__hd { font-size: 0.72rem; font-weight: 700; color: var(--rg-accent); margin-bottom: 0.35rem; }
+.rg-plan__db { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 0.35rem; padding: 0.2rem 0; }
+.rg-plan__dbname { font-size: 0.8rem; font-weight: 700; }
+.rg-plan__arrow { color: var(--cui-secondary-color, #6b7280); }
+.rg-plan__files { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.rg-plan__file {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.1rem 0.4rem; border-radius: 6px; font-size: 0.74rem; font-variant-numeric: tabular-nums;
+  background: var(--cui-body-bg, #fff); border: 1px solid var(--cui-border-color, #d6dae1);
+}
+.rg-plan__step {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 0.95rem; height: 0.95rem; border-radius: 999px; font-size: 0.6rem; font-weight: 700;
+  background: color-mix(in srgb, var(--rg-accent) 20%, transparent); color: var(--rg-accent);
+}
+
+/* full batch-error message popup (Monitoring Batches ERROR_DESC cell → click) */
+.rg-errtext {
+  margin: 0; max-height: 55vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: Consolas, "Courier New", monospace; font-size: 0.82rem; line-height: 1.5;
+  color: var(--cui-body-color); background: var(--cui-tertiary-bg, #f6f8fb);
+  border: 1px solid var(--cui-border-color, #d6dae1); border-radius: 8px; padding: 0.7rem 0.85rem;
+}
+
 /* step collapse/expand toggle — a proper bordered icon button */
 .rg-step__caret {
   display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; margin-right: 4px;

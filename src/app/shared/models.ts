@@ -399,6 +399,13 @@ export interface RegressionDb {
   label: string;
   category?: string;              // BATCH / REPORTING / … — groups the dropdown
 }
+/** A deployable application (an existing Jenkins pipeline) for the Jenkins-deployment step. */
+export interface RegressionDeployment {
+  key: string;
+  name: string;
+  deploy_url: string;             // required — opens the deploy pipeline in a new tab
+  build_url?: string;             // optional — opens the build pipeline in a new tab
+}
 /** The run + per-step status map. */
 export interface RegressionState {
   run: RegressionRun | null;
@@ -488,12 +495,16 @@ export interface BatchMonitorResult {
 }
 /** One downstream extract row from ols_extract. */
 export interface RegressionDownstreamExtractRow {
+  // The date column may be business_date / cob_dt / reporting_dt and the line column business_line /
+  // business_lines depending on the environment, so the grid is built from the ACTUAL keys returned. These
+  // are the common ones for reference; the index signature allows any column the query yields.
   business_date?: string;
   post_dt?: string;
   load_id?: string | number;
   business_line?: string;
   filename?: string;
   filerowcount?: number;
+  [column: string]: unknown;
 }
 /** One regression audit-log row (Regression Activity grid). */
 export interface RegressionActivityRow {

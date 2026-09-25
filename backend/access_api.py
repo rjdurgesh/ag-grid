@@ -53,7 +53,7 @@ ACCESS_USE_DUMMY = env_bool("ACCESS_USE_DUMMY", True)
 # non-config screens (a `SCREEN` grant here, or a `SERVER` grant for log_analytics, reveals it).
 # Config Ops is revealed by config-scope grants; Home appears whenever the user has ≥1 feature.
 SCREEN_KEYS = ["log_analytics", "infra_health", "service_console", "oracle_command_center",
-               "user_management", "docs", "docs_technical"]
+               "user_management", "docs", "docs_technical", "assistant"]
 # The three Config Ops sub-screens (scopes).
 CONFIG_SCOPES = ["group", "cib", "retail"]
 # Screens that actually have write actions (so a SCREEN/WRITE grant is meaningful).
@@ -78,6 +78,10 @@ SCREEN_CATALOGUE = [
     # Documentation Center — two read-only, grant-driven screens (User Guide / Technical Guide).
     {"key": "docs", "label": "Docs — User Guide", "write_capable": False},
     {"key": "docs_technical", "label": "Docs — Technical Guide", "write_capable": False},
+    # OSHIVA (AI assistant) — grant this to let a user open the assistant. Explicit-grant only (NOT auto-
+    # granted by the full-access wildcard), and additionally pinned to an allow-list while in private beta
+    # (see assistant_api._is_allowed / config/assistant.json).
+    {"key": "assistant", "label": "OSHIVA — AI Assistant", "write_capable": False},
 ]
 CONFIG_SCOPE_CATALOGUE = [
     {"key": "group", "label": "OLS GROUP"},
@@ -532,7 +536,7 @@ def build_snapshot(identity: dict | None, grants: list[dict], app_env: str,
     # Full-access wildcard populates everything EXCEPT User Management (which stays explicit — an
     # ops-admin, or a SCREEN/user_management grant) and S-Studio (per-scope, ops_access only).
     if full_read:
-        granted_screens.update(k for k in SCREEN_KEYS if k != "user_management")
+        granted_screens.update(k for k in SCREEN_KEYS if k not in ("user_management", "assistant"))
         all_servers = all_infra_apps = all_service_apps = all_dbs = True
         config_all = True
         config_scopes.update(CONFIG_SCOPES)

@@ -26,3 +26,6 @@ Logs/**
 !Logs/
 !Logs/**/
 !Logs/**/.gitkeep
+
+# OSHIVA runtime data (per-conversation session store) — never commit.
+assistant_data/

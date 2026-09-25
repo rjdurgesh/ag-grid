@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 760" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="OSHIVA routing flow: user message to coordinator route to agent to model tool choice to tool dispatch to answer">
+  <title>OSHIVA routing flow — Coordinator to Agent to Tool to server</title>
+  <desc>A user message enters api.py, the coordinator's route() picks one agent (our code), the agent is shown only its own tools, the model picks the tool and arguments, run_tool dispatches to the per-screen module (server), the result is redacted and fed back, and the final answer is streamed to the UI.</desc>
+
+  <!-- palette -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a855f7"/>
+    </marker>
+  </defs>
+
+  <style>
+    .box  { rx:10; ry:10; stroke-width:1.5; }
+    .plumb{ fill:#f1f5f9; stroke:#cbd5e1; }
+    .ours { fill:#e0edff; stroke:#3b82f6; }
+    .agent{ fill:#e6fbf4; stroke:#14b8a6; }
+    .model{ fill:#f3e8ff; stroke:#a855f7; }
+    .done { fill:#e7f7e9; stroke:#22c55e; }
+    .t    { fill:#0f172a; font-size:15px; font-weight:600; }
+    .s    { fill:#475569; font-size:12px; }
+    .code { fill:#1e293b; font-size:12px; font-family:Consolas, "Courier New", monospace; }
+    .badge{ font-size:11px; font-weight:700; }
+    .line { stroke:#64748b; stroke-width:1.6; fill:none; }
+    .loop { stroke:#a855f7; stroke-width:1.6; fill:none; stroke-dasharray:5 4; }
+  </style>
+
+  <text x="24" y="30" class="t" font-size="18">How one turn is routed</text>
+  <text x="24" y="50" class="s">Two separate decisions: our code picks the AGENT · the model picks the TOOL</text>
+
+  <!-- legend -->
+  <g transform="translate(560,20)">
+    <rect x="0"  y="0" width="14" height="14" class="box ours"/>  <text x="20" y="12" class="s">our code decides</text>
+    <rect x="0"  y="20" width="14" height="14" class="box model"/> <text x="20" y="32" class="s">the model decides</text>
+    <rect x="150" y="0" width="14" height="14" class="box agent"/> <text x="170" y="12" class="s">agent scope</text>
+    <rect x="150" y="20" width="14" height="14" class="box plumb"/> <text x="170" y="32" class="s">plumbing</text>
+  </g>
+
+  <!-- 1. user -->
+  <rect x="300" y="72" width="280" height="46" class="box plumb"/>
+  <text x="440" y="93" text-anchor="middle" class="t">USER message</text>
+  <text x="440" y="110" text-anchor="middle" class="s">“list CIB servers with RAM over 70%”</text>
+
+  <!-- 2. api -->
+  <rect x="300" y="146" width="280" height="52" class="box plumb"/>
+  <text x="440" y="167" text-anchor="middle" class="code">api.py — POST /api/assistant/chat</text>
+  <text x="440" y="186" text-anchor="middle" class="s">builds caller · scopes · ctx (db configs, env)</text>
+
+  <!-- 3. coordinator / route -->
+  <rect x="270" y="226" width="340" height="66" class="box ours"/>
+  <text x="288" y="214" class="badge" fill="#2563eb">DECISION 1 · which agent?</text>
+  <text x="440" y="252" text-anchor="middle" class="code">coordinator.run() → registry.route()</text>
+  <text x="440" y="272" text-anchor="middle" class="s">keyword scoring (whole-word) · highest score wins</text>
+  <text x="440" y="287" text-anchor="middle" class="s">“server”,“ram” → Infra agent · emits route event</text>
+
+  <!-- 4. agent scope -->
+  <rect x="270" y="320" width="340" height="60" class="box agent"/>
+  <text x="440" y="344" text-anchor="middle" class="code">runner.run_agent_loop → agent.tool_schemas()</text>
+  <text x="440" y="364" text-anchor="middle" class="s">agent is shown ONLY its 4 tools (can’t see others)</text>
+
+  <!-- 5. model picks tool -->
+  <rect x="270" y="408" width="340" height="66" class="box model"/>
+  <text x="288" y="400" class="badge" fill="#9333ea">DECISION 2 · which tool + args?</text>
+  <text x="440" y="434" text-anchor="middle" class="code">llm/client.complete()  (GPT-OSS · stub now)</text>
+  <text x="440" y="454" text-anchor="middle" class="s">returns tool_call:</text>
+  <text x="440" y="469" text-anchor="middle" class="code">list_servers { scope:"cib", min_ram_percent:70 }</text>
+
+  <!-- 6. dispatch / server -->
+  <rect x="230" y="502" width="420" height="72" class="box plumb"/>
+  <text x="440" y="524" text-anchor="middle" class="s">runner guard: tool ∈ agent.tool_names?  ✓</text>
+  <text x="440" y="543" text-anchor="middle" class="code">tools/registry.run_tool() → _DISPATCH[name]</text>
+  <text x="440" y="562" text-anchor="middle" class="code">→ infra_pulse._list_servers(...)   ← the “server”</text>
+
+  <!-- 7. redact -->
+  <rect x="300" y="602" width="280" height="48" class="box plumb"/>
+  <text x="440" y="623" text-anchor="middle" class="code">security/redaction.redact(result)</text>
+  <text x="440" y="640" text-anchor="middle" class="s">scrub secrets + PII before the model sees it</text>
+
+  <!-- 8. answer -->
+  <rect x="300" y="690" width="280" height="48" class="box done"/>
+  <text x="440" y="711" text-anchor="middle" class="t">Final answer → streamed to UI</text>
+  <text x="440" y="728" text-anchor="middle" class="s">table of CIB servers with RAM ≥ 70%</text>
+
+  <!-- arrows down -->
+  <path class="line" d="M440 118 L440 144"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 198 L440 224"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 292 L440 318"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 380 L440 406"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 474 L440 500"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 574 L440 600"  marker-end="url(#arrow)"/>
+  <path class="line" d="M440 650 L440 688"  marker-end="url(#arrow)"/>
+
+  <!-- loop: redact back up to the brain (another tool, or finish) -->
+  <path class="loop" d="M580 626 C 720 626, 720 441, 612 441" marker-end="url(#arrowLoop)"/>
+  <text x="726" y="536" text-anchor="middle" class="s" fill="#9333ea" transform="rotate(90 726 536)">loop: next tool, or finish (max_steps=6)</text>
+</svg>

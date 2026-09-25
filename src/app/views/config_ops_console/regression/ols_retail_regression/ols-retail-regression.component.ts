@@ -14,7 +14,7 @@ import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
 import {
   BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
-  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDownstreamExtractRow,
+  FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDeployment, RegressionDownstreamExtractRow,
   RegressionState, RunSqlResult
 } from '../../../../shared/models';
 
@@ -43,6 +43,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     { key: 'refresh_db', title: 'Refresh DB' },
     { key: 'space_cleanup', title: 'Server Space Cleanup' },
     { key: 'apply_db', title: 'Apply DB changes' },
+    { key: 'jenkins_deploy', title: 'Jenkins deployment' },
     { key: 'file_copy', title: 'File copy' },
     { key: 'reset', title: 'Reset batches' },
     { key: 'trigger', title: 'Trigger batches' }
@@ -61,6 +62,12 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly refreshDbList = signal<RegressionDb[]>([]);
   readonly refreshDbs = signal<string[]>([]);
   readonly refreshOpen = signal(false);                // grouped multi-select dropdown open/closed
+  // Jenkins deployment step — the scope's catalogue of deployable apps (existing Jenkins pipelines); the
+  // operator ticks which to deploy THIS release (not every release deploys all). Selection is transient +
+  // logged; the links open in a new tab (Jenkins takes it from there).
+  readonly deployApps = signal<RegressionDeployment[]>([]);
+  readonly deploySelected = signal<string[]>([]);       // app keys ticked for this release
+  readonly loadingDeployments = signal(false);
   /** refreshDbList grouped by category (BATCH / REPORTING / …), first-seen order preserved. */
   readonly refreshGroups = computed(() => {
     const groups: { category: string; dbs: RegressionDb[] }[] = [];
@@ -116,10 +123,17 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly applyScripts = signal<string[]>([]);                 // flat chg list from the single folder
   readonly applyFileDbs = signal<Record<string, string[]>>({}); // file → target DB keys (empty = not run)
   readonly applyOrder = signal<string[]>([]);                   // run sequence of the files that have ≥1 DB ticked
+  readonly applyDbOrder = signal<string[]>([]);                 // run sequence of the DATABASES (DB-major execution)
   readonly loadingApply = signal(false);
   readonly applyResults = signal<RunSqlResult[]>([]);
   /** Total (script × DB) executions queued across all files. */
   readonly applyExecCount = computed(() => this.applyOrder().reduce((n, f) => n + (this.applyFileDbs()[f]?.length || 0), 0));
+  /** DB-major execution plan for the quick-view: each database (in run order) → its ticked chg files (in file order). */
+  readonly applyPlan = computed(() => this.applyDbOrder().map((db) => ({
+    db,
+    label: this.databases().find((x) => x.key === db)?.label ?? db,
+    files: this.applyOrder().filter((f) => this.applyDbsOf(f).includes(db)).map((f) => this.applyFileName(f)),
+  })).filter((g) => g.files.length));
   // Collapsible workflow steps (key → collapsed?).
   readonly stepCollapsed = signal<Record<string, boolean>>({});
 
@@ -221,6 +235,15 @@ export class OlsRetailRegressionComponent implements OnInit {
   readonly triggerDbs = signal<string[]>(['retail_batch']); // target DB(s) — every trigger script runs on each
   readonly triggerScripts = signal<string[]>([]);
   readonly triggerResults = signal<RunSqlResult[]>([]);
+  // DB-major execution plans (each database, in run order, runs every ticked script in script order).
+  readonly resetPlan = computed(() => this.resetDbs().map((db) => ({
+    db, label: this.dbDisplay(db), files: this.resetSelected().map((s) => this.applyFileName(s)),
+  })).filter((g) => g.files.length));
+  readonly triggerPlan = computed(() => this.triggerDbs().map((db) => ({
+    db, label: this.dbDisplay(db), files: this.triggerSelected().map((s) => this.applyFileName(s)),
+  })).filter((g) => g.files.length));
+  readonly resetExecCount = computed(() => this.resetDbs().length * this.resetSelected().length);
+  readonly triggerExecCount = computed(() => this.triggerDbs().length * this.triggerSelected().length);
 
   // Release-branch browser (collapsible)
   readonly browserOpen = signal(false);
@@ -262,7 +285,29 @@ export class OlsRetailRegressionComponent implements OnInit {
     return this.colorMode.getPrefersColorScheme() === 'dark';
   }
   readonly batchColDefs = computed<ColDef[]>(() =>
-    (this.batchResult()?.columns ?? []).map((c) => ({ field: c, headerName: c })));
+    (this.batchResult()?.columns ?? []).map((c) => {
+      const def: ColDef = { field: c, headerName: c };
+      // An error column (e.g. ERROR_DESC) can hold a long message — truncate with … (AG-Grid clips the cell),
+      // show the full text on hover, and make a non-empty cell clickable to open the full-message popup.
+      if (this.isErrorCol(c)) {
+        def.tooltipField = c;
+        def.minWidth = 220;
+        def.cellClassRules = { 'rg-cell--link': (p) => !!String(p.value ?? '').trim() };
+      }
+      return def;
+    }));
+  /** True for a batch column that holds an error message (→ … + click-to-read popup). */
+  private isErrorCol(name: string): boolean {
+    return /error|err[_-]?(desc|description|msg|message)/i.test(name || '');
+  }
+  /** Full-error popup for the Monitoring Batches grid. */
+  readonly errorDetail = signal<{ column: string; value: string } | null>(null);
+  onBatchCellClicked(e: { colDef?: { field?: string }; value?: unknown }): void {
+    const field = e.colDef?.field;
+    const val = String(e.value ?? '').trim();
+    if (field && this.isErrorCol(field) && val) { this.errorDetail.set({ column: field, value: val }); }
+  }
+  closeErrorDetail(): void { this.errorDetail.set(null); }
   readonly batchRowData = computed<Record<string, unknown>[]>(() => {
     const br = this.batchResult();
     if (!br) { return []; }
@@ -276,6 +321,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     paginationPageSize: 50,
     paginationPageSizeSelector: [25, 50, 100, 500],
     enableCellTextSelection: true, ensureDomOrder: true,   // let the user select + copy cell text
+    onCellClicked: (e: { colDef?: { field?: string }; value?: unknown }) => this.onBatchCellClicked(e),
   };
   readonly activityGridOptions = {
     defaultColDef: { resizable: true, sortable: true, filter: true, floatingFilter: true, minWidth: 120 },
@@ -292,23 +338,35 @@ export class OlsRetailRegressionComponent implements OnInit {
     paginationPageSizeSelector: [50, 100, 500, 1000],
     enableCellTextSelection: true, ensureDomOrder: true,
   };
+  /** Downstream-extract columns. The date + line columns are SOURCE-FLEXIBLE via `valueGetter`: the value is
+   *  taken from whichever variant the extract query returns — date: business_date / cob_dt / reporting_dt;
+   *  line: business_line / business_lines — so the layout + headers stay stable whatever the table calls them.
+   *  Add a new variant by appending its column name to the candidate list below. */
   readonly extractColDefs: ColDef[] = [
-    { field: 'business_date', headerName: 'BUSINESS_DATE', maxWidth: 160 },
-    { field: 'post_dt', headerName: 'POST_DT', maxWidth: 180 },
-    { field: 'load_id', headerName: 'LOAD_ID', maxWidth: 140 },
-    { field: 'business_line', headerName: 'BUSINESS_LINE', maxWidth: 170 },
+    { colId: 'business_date', headerName: 'BUSINESS_DATE', width: 160,
+      valueGetter: (p) => this.pickField(p.data, ['business_date', 'cob_dt', 'reporting_dt']) },
+    { field: 'post_dt', headerName: 'POST_DT', width: 180 },
+    { field: 'load_id', headerName: 'LOAD_ID', width: 140 },
+    { colId: 'business_line', headerName: 'BUSINESS_LINE', width: 170,
+      valueGetter: (p) => this.pickField(p.data, ['business_line', 'business_lines']) },
     { field: 'filename', headerName: 'FILENAME', flex: 2, minWidth: 240 },
-    { field: 'filerowcount', headerName: 'FILEROWCOUNT', maxWidth: 170, type: 'numericColumn',
+    { field: 'filerowcount', headerName: 'FILEROWCOUNT', width: 170, type: 'numericColumn',
       valueFormatter: (p) => this.formatCount(p.value) },
   ];
+  /** First non-empty value among candidate column names — lets a column read whichever variant the query returns. */
+  private pickField(row: unknown, keys: string[]): unknown {
+    const r = (row ?? {}) as Record<string, unknown>;
+    for (const k of keys) { const v = r[k]; if (v !== undefined && v !== null && v !== '') { return v; } }
+    return '';
+  }
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
-    { field: 'load_dt', headerName: 'Action Date', maxWidth: 130 },
-    { field: 'release_date', headerName: 'Release Date', maxWidth: 130 },
-    { field: 'change_number', headerName: 'Change #', maxWidth: 150 },
+    { field: 'load_dt', headerName: 'Action Date', width: 130 },
+    { field: 'release_date', headerName: 'Release Date', width: 130 },
+    { field: 'change_number', headerName: 'Change #', width: 150 },
     { field: 'step_key', headerName: 'Step', valueFormatter: (p) => this.stepLabel(p) },
     { field: 'action', headerName: 'Action', minWidth: 180, valueFormatter: (p) => this.activityActionLabel(p) },
-    { field: 'status', headerName: 'Status', maxWidth: 130,
+    { field: 'status', headerName: 'Status', width: 130,
       cellClassRules: {
         'rg-cell--ok': (p) => p.value === 'complete',
         'rg-cell--err': (p) => p.value === 'error',
@@ -317,7 +375,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     { field: 'performed_by', headerName: 'Action performed By' },
     { field: 'start_time', headerName: 'Start Date' },
     { field: 'end_time', headerName: 'End Date' },
-    { field: 'task_completion_time', headerName: 'Duration', maxWidth: 120, valueFormatter: (p) => this.fmtDuration(p.value as number) },
+    { field: 'task_completion_time', headerName: 'Duration', width: 120, valueFormatter: (p) => this.fmtDuration(p.value as number) },
     { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220,
       valueFormatter: (p) => this.activityCommentsLabel(p),
       cellClassRules: { 'rg-cell--link': (p) => this.isDetailRow(p.data as RegressionActivityRow) } },
@@ -372,7 +430,8 @@ export class OlsRetailRegressionComponent implements OnInit {
   stepLabel(p: { value?: unknown }): string {
     const map: Record<string, string> = {
       refresh_db: 'Refresh DB', space_cleanup: 'Server Space Cleanup', apply_db: 'Apply DB changes',
-      file_copy: 'File copy', reset: 'Reset batches', trigger: 'Trigger batches'
+      jenkins_deploy: 'Jenkins deployment', file_copy: 'File copy', reset: 'Reset batches',
+      trigger: 'Trigger batches', git_pull: 'Code pull'
     };
     const k = String(p.value ?? '');
     return map[k] ?? k;
@@ -388,6 +447,7 @@ export class OlsRetailRegressionComponent implements OnInit {
           : r.status === 'partial' ? 'Copy Operation — Partially Completed' : 'Copy Operation';
       }
     }
+    if (r?.step_key === 'git_pull') { return 'Code pull — latest from release branch'; }
     // Apply / Reset / Trigger run .sql files via sqlplus → a Started → Completed/Error narrative per script.
     if (r?.step_key === 'apply_db' || r?.step_key === 'reset' || r?.step_key === 'trigger') {
       if (r.action === 'start') { return 'SQL Script Execution — Started'; }
@@ -579,6 +639,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     });
     this.loadDatabases();        // backend-driven DB list for Apply / Reset / Trigger pickers
     this.loadRefreshDatabases(); // env-specific DBs for this scope's Refresh-DB picker
+    this.loadDeployments();      // scope's Jenkins deployment catalogue (before File copy)
     this.loadActivity();         // Regression Activity is the default monitoring tab
     this.loadBatches();          // preload batch status too — don't make the user click Refresh
     // Tick every second so the "N sec ago" last-refreshed labels stay live.
@@ -714,9 +775,17 @@ export class OlsRetailRegressionComponent implements OnInit {
     this.svc.runStart(b, d, chg).subscribe({
       next: (s) => {
         this.starting.set(false);
+        // Guard: never advance to the task page without a real run behind it. If the server reports success
+        // but there's no run_id (e.g. the run-insert silently didn't happen), stay on the start panel and
+        // show a clear error instead of a half-started run.
+        if (!s?.run?.run_id) {
+          this.toast.set({ kind: 'err', text: 'The regression run was not created (no run id was returned). Nothing has been started — please retry.' });
+          return;
+        }
         this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for ${chg} · release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
-        this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyResults.set([]);
+        this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyDbOrder.set([]); this.applyResults.set([]);
+        this.deploySelected.set([]);
         this.manifestLocations.set([]); this.selectedManifestPath.set(''); this.manifest.set([]);
         this.cleanupLocations.set([]); this.selectedCleanupPath.set(''); this.cleanupManifest.set([]);
         this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
@@ -740,7 +809,8 @@ export class OlsRetailRegressionComponent implements OnInit {
     this.pulled.set(false); this.tree.set([]); this.scripts.set([]); this.repoBranch.set(''); this.repoWorkdir.set('');
     this.chgNumber.set(''); this.branches.set([]);
     this.selectedBranch.set(''); this.releaseDate.set(''); this.availableDates.set([]);
-    this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyResults.set([]);
+    this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyDbOrder.set([]); this.applyResults.set([]);
+    this.deploySelected.set([]);
   }
 
   /** Close out the run once every step is complete/forced — logs completion + marks it finished. */
@@ -820,6 +890,49 @@ export class OlsRetailRegressionComponent implements OnInit {
       error: (e) => this.fail(e, 'Could not load the databases')
     });
   }
+
+  // --- Jenkins deployment step ----------------------------------------------
+  /** Load this scope's Jenkins deployment catalogue (config-driven; env-specific). Selection stays empty —
+   *  the operator picks which apps to deploy this release. */
+  loadDeployments(): void {
+    this.loadingDeployments.set(true);
+    this.svc.jenkinsDeployments().subscribe({
+      next: (r) => { this.deployApps.set(r.deployments ?? []); this.loadingDeployments.set(false); },
+      error: (e) => { this.loadingDeployments.set(false); this.fail(e, 'Could not load the deployment list'); }
+    });
+  }
+  deployAppOn(key: string): boolean { return this.deploySelected().includes(key); }
+  toggleDeployApp(key: string): void { this.deploySelected.set(this.toggle(this.deploySelected(), key)); }
+  toggleAllDeploy(): void {
+    const all = this.deployApps().map((a) => a.key);
+    this.deploySelected.set(this.deploySelected().length === all.length ? [] : all);
+  }
+  /** Open a Jenkins build/deploy pipeline in a NEW TAB and log that it was opened (audit: who deployed what).
+   *  The link comes from trusted config; Jenkins takes it forward from there. */
+  openDeploy(app: RegressionDeployment, kind: 'build' | 'deploy'): void {
+    const url = kind === 'build' ? app.build_url : app.deploy_url;
+    if (!url) { return; }
+    window.open(url, '_blank', 'noopener,noreferrer');
+    if (!this.deployAppOn(app.key)) { this.deploySelected.set([...this.deploySelected(), app.key]); }
+    this.svc.jenkinsOpen(this.runId, app.name, kind, url).subscribe({ error: () => { /* audit is best-effort */ } });
+  }
+  /** Mark the Jenkins deployment step done (logged with the apps chosen), unlocking File copy. Works whether
+   *  or not any app was selected — not every release deploys something. */
+  async markJenkinsComplete(): Promise<void> {
+    const picked = this.deployApps().filter((a) => this.deployAppOn(a.key)).map((a) => a.name);
+    const note = picked.length
+      ? `Jenkins deployment done for: ${picked.join(', ')}.`
+      : 'No Jenkins deployment required for this release.';
+    const ok = await this.confirm.ask({
+      title: 'Jenkins deployment', message: `${note} Mark this step complete?`,
+      confirmLabel: 'Mark complete', tone: 'primary'
+    });
+    if (!ok) { return; }
+    this.svc.markStep(this.runId, 'jenkins_deploy', 'complete', false, note).subscribe({
+      next: () => { this.toast.set({ kind: 'ok', text: 'Jenkins deployment marked complete.' }); this.reloadState(); this.loadActivity(); },
+      error: (e) => this.fail(e, 'Could not mark the step complete')
+    });
+  }
   toggleRefreshDb(d: string): void { this.refreshDbs.set(this.toggle(this.refreshDbs(), d)); }
   toggleRefreshOpen(): void { this.refreshOpen.set(!this.refreshOpen()); }
   closeRefreshMenu(): void { this.refreshOpen.set(false); }
@@ -885,6 +998,41 @@ export class OlsRetailRegressionComponent implements OnInit {
     });
   }
 
+  readonly repulling = signal(false);
+  /** Re-pull the CURRENT run's release branch to its latest commit — for a fix pushed AFTER the run started
+   *  (git_pull_branch hard-resets to origin/<branch>, so this brings the newest code). Then re-scan everything
+   *  that reads from the branch (Apply chg files, Reset/Trigger scripts, file-copy + cleanup manifests) so the
+   *  new code appears, and log the re-pull to the activity trail. Already-completed step states are untouched —
+   *  re-run any step whose scripts changed. */
+  async repull(): Promise<void> {
+    const run = this.state().run;
+    if (!run?.git_branch || this.repulling()) { return; }
+    const ok = await this.confirm.ask({
+      title: 'Pull latest code',
+      message: `Pull the latest code for ${run.git_branch}? This updates the working copy to the newest commit `
+             + `and re-scans scripts & manifests. Completed steps aren't affected — re-run any step whose scripts changed.`,
+      confirmLabel: 'Pull latest', tone: 'primary'
+    });
+    if (!ok) { return; }
+    this.repulling.set(true);
+    this.svc.gitPull(run.git_branch, this.runId).subscribe({
+      next: (r) => {
+        this.repulling.set(false);
+        this.pulled.set(true);
+        this.repoBranch.set(run.git_branch!);
+        this.availableDates.set(r.release_dates ?? []);
+        this.tree.set([]);                                  // drop the stale branch tree; reloads on demand
+        if (this.browserOpen()) { this.loadTree(); }
+        this.loadReleaseScripts();                          // Apply chg files
+        this.loadResetScripts(); this.loadTriggerScripts(); // Reset / Trigger RegressionTesting scripts
+        this.loadManifests(); this.loadCleanupManifests();  // file-copy + cleanup manifests
+        this.loadActivity();
+        this.toast.set({ kind: 'ok', text: `Pulled the latest code for ${run.git_branch} — scripts & manifests re-scanned.` });
+      },
+      error: (e) => { this.repulling.set(false); this.fail(e, 'Could not pull the latest code'); }
+    });
+  }
+
   // --- release-branch browser -----------------------------------------------
   toggleBrowser(): void {
     const open = !this.browserOpen();
@@ -943,7 +1091,7 @@ export class OlsRetailRegressionComponent implements OnInit {
    *  per file, which DB(s) to run it on (+ the sequence). A re-scan preserves your existing per-file picks. */
   loadReleaseScripts(): void {
     const d = this.state().run?.release_date;
-    if (!d) { this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); return; }
+    if (!d) { this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyDbOrder.set([]); return; }
     const seq = ++this.applyLoadSeq;   // guard: only the newest load may apply its result
     this.loadingApply.set(true);
     this.svc.releaseScripts(d).subscribe({
@@ -957,6 +1105,7 @@ export class OlsRetailRegressionComponent implements OnInit {
         for (const [f, dbs] of Object.entries(this.applyFileDbs())) { if (list.includes(f) && dbs.length) { keep[f] = dbs; } }
         this.applyFileDbs.set(keep);
         this.applyOrder.set(this.applyOrder().filter((f) => keep[f]?.length));
+        this.reconcileApplyDbOrder();
       },
       error: (e) => { if (seq === this.applyLoadSeq) { this.loadingApply.set(false); } this.fail(e, 'Could not load release scripts'); }
     });
@@ -977,6 +1126,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     map[file] = this.applyOrderDbs(cur);
     this.applyFileDbs.set(map);
     this.syncApplyOrder(file, map[file].length > 0, had);
+    this.reconcileApplyDbOrder();
   }
   /** Select all / clear the 5 DBs for one file. */
   toggleApplyFileAllDbs(file: string): void {
@@ -986,6 +1136,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     map[file] = (map[file]?.length || 0) === all.length ? [] : [...all];
     this.applyFileDbs.set(map);
     this.syncApplyOrder(file, map[file].length > 0, had);
+    this.reconcileApplyDbOrder();
   }
   applyFileAllDbsOn(file: string): boolean { return this.applyDbsOf(file).length === this.databases().length; }
   private syncApplyOrder(file: string, hasDbs: boolean, hadDbs: boolean): void {
@@ -997,15 +1148,33 @@ export class OlsRetailRegressionComponent implements OnInit {
   applyFileIsFirst(file: string): boolean { return this.applyFileOrder(file) <= 1; }
   applyFileIsLast(file: string): boolean { return this.applyFileOrder(file) >= this.applyOrder().length; }
 
+  // --- DB run-order (DB-major execution) ------------------------------------
+  /** Keep the DB run-order in sync with which DBs currently have ≥1 file ticked: drop DBs no longer used,
+   *  append newly-used ones (in the fixed `databases` order) at the end, preserving the user's chosen order. */
+  private reconcileApplyDbOrder(): void {
+    const participating = new Set<string>();
+    for (const dbs of Object.values(this.applyFileDbs())) { for (const k of dbs) { participating.add(k); } }
+    const kept = this.applyDbOrder().filter((k) => participating.has(k));
+    const added = this.databases().map((x) => x.key).filter((k) => participating.has(k) && !kept.includes(k));
+    this.applyDbOrder.set([...kept, ...added]);
+  }
+  applyDbLabel(db: string): string { return this.databases().find((x) => x.key === db)?.label ?? db; }
+  applyDbFileCount(db: string): number { return this.applyOrder().filter((f) => this.applyDbsOf(f).includes(db)).length; }
+  applyDbPos(db: string): number { return this.applyDbOrder().indexOf(db) + 1; }
+  moveApplyDb(db: string, dir: -1 | 1): void { this.moveInList(this.applyDbOrder, db, dir); }
+  applyDbIsFirst(db: string): boolean { return this.applyDbPos(db) <= 1; }
+  applyDbIsLast(db: string): boolean { return this.applyDbPos(db) >= this.applyDbOrder().length; }
+
   async runApply(): Promise<void> {
     const d = this.state().run?.release_date;
     if (!d) { await this.notifyRequired('This run has no release date.'); return; }
-    // Ordered (script → DB) executions: each file in sequence, on each of its ticked DBs.
-    const executions = this.applyOrder().flatMap((f) => this.applyDbsOf(f).map((db) => ({ script: f, db })));
+    // DB-major executions: each database in the chosen DB order, running its ticked files in file order.
+    const executions = this.applyDbOrder().flatMap((db) =>
+      this.applyOrder().filter((f) => this.applyDbsOf(f).includes(db)).map((f) => ({ script: f, db })));
     if (!executions.length) { await this.notifyRequired('Tick at least one database for at least one chg file.'); return; }
-    const dbCount = new Set(executions.map((e) => e.db)).size;
+    const dbCount = this.applyDbOrder().length;
     const ok = await this.confirmStepRun(this.step('apply_db'),
-      `Run ${this.applyOrder().length} chg file(s) — ${executions.length} execution(s) across ${dbCount} database(s) — for release ${d}, in the listed order?`, 'Apply');
+      `Run ${this.applyOrder().length} chg file(s) — ${executions.length} execution(s) across ${dbCount} database(s) — for release ${d}, one database at a time in the listed order?`, 'Apply');
     if (!ok) { return; }
     this.applyResults.set([]);
     this.busy.set('apply_db');
@@ -1448,6 +1617,15 @@ export class OlsRetailRegressionComponent implements OnInit {
   toggleTriggerDb(db: string): void { this.triggerDbs.set(this.toggle(this.triggerDbs(), db)); }
   resetDbOn(db: string): boolean { return this.resetDbs().includes(db); }
   triggerDbOn(db: string): boolean { return this.triggerDbs().includes(db); }
+  // DB run-order (DB-major execution) — reorder the ticked databases with ▲▼.
+  moveResetDb(db: string, dir: -1 | 1): void { this.moveInList(this.resetDbs, db, dir); }
+  moveTriggerDb(db: string, dir: -1 | 1): void { this.moveInList(this.triggerDbs, db, dir); }
+  resetDbPos(db: string): number { return this.resetDbs().indexOf(db) + 1; }
+  triggerDbPos(db: string): number { return this.triggerDbs().indexOf(db) + 1; }
+  resetDbIsFirst(db: string): boolean { return this.resetDbPos(db) <= 1; }
+  resetDbIsLast(db: string): boolean { return this.resetDbPos(db) >= this.resetDbs().length; }
+  triggerDbIsFirst(db: string): boolean { return this.triggerDbPos(db) <= 1; }
+  triggerDbIsLast(db: string): boolean { return this.triggerDbPos(db) >= this.triggerDbs().length; }
 
   async runReset(): Promise<void> {
     const scripts = this.resetSelected(); const dbs = this.resetDbs();
@@ -1455,9 +1633,10 @@ export class OlsRetailRegressionComponent implements OnInit {
     if (!dbs.length) { await this.notifyRequired('Tick at least one target database.'); return; }
     const names = dbs.map((d) => this.dbDisplay(d)).join(', ');
     const ok = await this.confirmStepRun(this.step('reset'),
-      `Run ${scripts.length} reset script(s) on ${dbs.length} database(s) — ${names} — in the listed order?`, 'Reset');
+      `Run ${scripts.length} reset script(s) across ${dbs.length} database(s) — ${names} — one database at a time in the listed order?`, 'Reset');
     if (!ok) { return; }
-    this.runSqlStep('reset', scripts, dbs, this.resetResults);
+    // DB-major: each database in the chosen DB order runs every ticked script in the script order.
+    this.runSqlStep('reset', [], [], this.resetResults, this.dbMajor(dbs, scripts));
   }
   async runTrigger(): Promise<void> {
     const scripts = this.triggerSelected(); const dbs = this.triggerDbs();
@@ -1465,13 +1644,18 @@ export class OlsRetailRegressionComponent implements OnInit {
     if (!dbs.length) { await this.notifyRequired('Tick at least one target database.'); return; }
     const names = dbs.map((d) => this.dbDisplay(d)).join(', ');
     const ok = await this.confirmStepRun(this.step('trigger'),
-      `Run ${scripts.length} trigger script(s) on ${dbs.length} database(s) — ${names} — in the listed order?`, 'Trigger');
+      `Run ${scripts.length} trigger script(s) across ${dbs.length} database(s) — ${names} — one database at a time in the listed order?`, 'Trigger');
     if (!ok) { return; }
-    this.runSqlStep('trigger', scripts, dbs, this.triggerResults);
+    this.runSqlStep('trigger', [], [], this.triggerResults, this.dbMajor(dbs, scripts));
+  }
+  /** Build a DB-major executions list: for each database (in order), each script (in order). */
+  private dbMajor(dbs: string[], scripts: string[]): { script: string; db: string }[] {
+    return dbs.flatMap((db) => scripts.map((s) => ({ script: s, db })));
   }
 
   /** Run a step LIVE: open the console immediately and stream sqlplus output into it as it prints. */
-  private runSqlStep(stepKey: string, scripts: string[], dbs: string[], sink: { set: (v: RunSqlResult[]) => void }): void {
+  private runSqlStep(stepKey: string, scripts: string[], dbs: string[], sink: { set: (v: RunSqlResult[]) => void },
+                     executions: { script: string; db: string }[] = []): void {
     this.busy.set(stepKey);
     this.viewerKind.set('console');
     this.consoleCollapsed.set(false); this.consoleMax.set(false); this.consoleRunning.set(true);
@@ -1492,7 +1676,7 @@ export class OlsRetailRegressionComponent implements OnInit {
         this.reloadState();
       },
       error: (e) => { this.busy.set(''); this.consoleRunning.set(false); this.fail(e, 'Run failed'); }
-    });
+    }, undefined, executions);
   }
 
   // --- sqlplus console / file viewer -----------------------------------------

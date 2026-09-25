@@ -16,6 +16,12 @@
         <button type="button" class="rg-iconbtn" (click)="refreshState()" title="Refresh state from the server (e.g. after a dropped connection)" aria-label="Refresh state">
           <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
+        @if (run.git_branch && run.status !== 'complete') {
+          <button type="button" class="rg-btn rg-btn--sm" [disabled]="repulling()" (click)="repull()"
+                  title="Pull the latest code from this release branch (e.g. a fix pushed after the run started), then re-scan scripts &amp; manifests">
+            {{ repulling() ? 'Pulling…' : 'Pull latest code' }}
+          </button>
+        }
       </div>
     }
   </header>
@@ -401,7 +407,45 @@
                         </div>
                       }
                     </div>
-                    <p class="rg-hint rg-hint--order">Files with a database ticked run in the numbered order — use ▲▼ to change it. Each file runs on every database you tick for it.</p>
+                    <p class="rg-hint rg-hint--order">For each file, tick its database(s) and set the file order with ▲▼. Then set the <strong>database run order</strong> below — Apply runs <strong>one database at a time</strong> in that order, executing each database's ticked files in the file order.</p>
+
+                    <!-- Database run order (DB-major execution) -->
+                    @if (applyDbOrder().length) {
+                      <div class="rg-dborder">
+                        <span class="rg-dborder__lbl">Database run order:</span>
+                        @for (db of applyDbOrder(); track db) {
+                          <span class="rg-dborder__item">
+                            <span class="rg-order" title="Database run order">{{ applyDbPos(db) }}</span>
+                            <span class="rg-dborder__name">{{ applyDbLabel(db) }}</span>
+                            <span class="rg-dborder__cnt">{{ applyDbFileCount(db) }} file(s)</span>
+                            <span class="rg-ordctl">
+                              <button type="button" [disabled]="applyDbIsFirst(db)" (click)="moveApplyDb(db, -1)" title="Run this database earlier" aria-label="Move database up">▲</button>
+                              <button type="button" [disabled]="applyDbIsLast(db)" (click)="moveApplyDb(db, 1)" title="Run this database later" aria-label="Move database down">▼</button>
+                            </span>
+                          </span>
+                        }
+                      </div>
+                    }
+
+                    <!-- Quick-view execution plan (read-only hierarchy: database → its scripts, in run order) -->
+                    @if (applyPlan().length) {
+                      <div class="rg-plan">
+                        <div class="rg-plan__hd">Execution plan — {{ applyDbOrder().length }} database(s), {{ applyExecCount() }} execution(s)</div>
+                        @for (g of applyPlan(); track g.db) {
+                          <div class="rg-plan__db">
+                            <span class="rg-order">{{ applyDbPos(g.db) }}</span>
+                            <span class="rg-plan__dbname">{{ g.label }}</span>
+                            <span class="rg-plan__arrow" aria-hidden="true">→</span>
+                            <span class="rg-plan__files">
+                              @for (f of g.files; track f; let i = $index) {
+                                <span class="rg-plan__file"><span class="rg-plan__step">{{ i + 1 }}</span>{{ f }}</span>
+                              }
+                            </span>
+                          </div>
+                        }
+                      </div>
+                    }
+
                     <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'apply_db' || !applyExecCount()" (click)="runApply()">
                       {{ busy() === 'apply_db' ? 'Applying…' : 'Apply DB Changes (' + applyExecCount() + ')' }}
                     </button>
@@ -409,6 +453,39 @@
                   } @else {
                     <p class="rg-warn">No <code>chg*.sql</code> found for release {{ state().run?.release_date }} in the Scripts folder. <button type="button" class="rg-link rg-link--inline" (click)="loadReleaseScripts()">Reload</button></p>
                   }
+                }
+
+                @case ('jenkins_deploy') {
+                  <p class="rg-hint">Deploy this release's applications through their Jenkins pipelines. Below is the full catalogue of deployable applications for this environment — <strong>select only the applications this release requires</strong> (deployments are on-demand; a release rarely needs all of them). For each selected application, optionally run <strong>Build</strong> first, then <strong>Deploy</strong> — each opens that application's Jenkins pipeline in a new browser tab, where you review and run it. When every required deployment has been triggered, choose <strong>Mark deployment done</strong> to record the applications deployed and unlock the next step.</p>
+                  @if (loadingDeployments()) {
+                    <p class="rg-hint">Loading the deployment list…</p>
+                  } @else if (deployApps().length) {
+                    <div class="rg-row rg-row--tools">
+                      <span class="rg-hint">{{ deploySelected().length }} of {{ deployApps().length }} application(s) selected for this release</span>
+                      <button type="button" class="rg-link rg-link--inline" (click)="toggleAllDeploy()">{{ deploySelected().length === deployApps().length ? 'Clear' : 'All' }}</button>
+                    </div>
+                    <div class="rg-applylist">
+                      @for (app of deployApps(); track app.key) {
+                        <div class="rg-applyfile" [class.is-on]="deployAppOn(app.key)">
+                          <div class="rg-applyfile__hd">
+                            <label class="rg-fileopt" [class.is-on]="deployAppOn(app.key)">
+                              <input type="checkbox" [checked]="deployAppOn(app.key)" (change)="toggleDeployApp(app.key)" />
+                              <span class="rg-applyfile__name">{{ app.name }}</span>
+                            </label>
+                            <span class="rg-spacer"></span>
+                            @if (app.build_url) {
+                              <button type="button" class="rg-btn rg-btn--sm" (click)="openDeploy(app, 'build')" title="Open this app's build pipeline in a new tab">Build ↗ <span class="rg-force__opt">optional</span></button>
+                            }
+                            <button type="button" class="rg-btn rg-btn--primary rg-btn--sm" (click)="openDeploy(app, 'deploy')" title="Open this app's deploy pipeline in a new tab">Deploy ↗</button>
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  } @else {
+                    <p class="rg-warn">No Jenkins deployments are configured for this scope. Add them under <code>jenkins_deployments</code> in the regression config, or mark the step complete if none are needed this release.</p>
+                  }
+                  <p class="rg-hint rg-hint--order">Opening a link is logged (who deployed what). Marking complete records the apps you selected and unlocks File copy.</p>
+                  <button type="button" class="rg-btn rg-btn--primary" (click)="markJenkinsComplete()">Mark deployment done</button>
                 }
 
                 @case ('file_copy') {
@@ -541,7 +618,7 @@
                 }
 
                 @case ('reset') {
-                  <p class="rg-hint">Tick the reset script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on — every ticked script runs on every ticked database, in the same sequence.</p>
+                  <p class="rg-hint">Tick the reset script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on. Set the <strong>database run order</strong> below — each database runs every ticked script (in script order), <strong>one database at a time</strong>. The execution plan shows exactly what will run.</p>
                   <div class="rg-pick">
                     <div class="rg-pick__label">Databases</div>
                     <div class="rg-chips">
@@ -577,11 +654,47 @@
                       <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
                     </div>
                   } @else { <p class="rg-hint">No scripts in the RegressionTesting folder.</p> }
+
+                  <!-- Database run order (DB-major execution) -->
+                  @if (resetDbs().length) {
+                    <div class="rg-dborder">
+                      <span class="rg-dborder__lbl">Database run order:</span>
+                      @for (db of resetDbs(); track db) {
+                        <span class="rg-dborder__item">
+                          <span class="rg-order" title="Database run order">{{ resetDbPos(db) }}</span>
+                          <span class="rg-dborder__name">{{ dbDisplay(db) }}</span>
+                          <span class="rg-ordctl">
+                            <button type="button" [disabled]="resetDbIsFirst(db)" (click)="moveResetDb(db, -1)" title="Run this database earlier" aria-label="Move database up">▲</button>
+                            <button type="button" [disabled]="resetDbIsLast(db)" (click)="moveResetDb(db, 1)" title="Run this database later" aria-label="Move database down">▼</button>
+                          </span>
+                        </span>
+                      }
+                    </div>
+                  }
+                  <!-- Quick-view execution plan (database → its scripts, in run order) -->
+                  @if (resetPlan().length) {
+                    <div class="rg-plan">
+                      <div class="rg-plan__hd">Execution plan — {{ resetDbs().length }} database(s), {{ resetExecCount() }} execution(s)</div>
+                      @for (g of resetPlan(); track g.db) {
+                        <div class="rg-plan__db">
+                          <span class="rg-order">{{ resetDbPos(g.db) }}</span>
+                          <span class="rg-plan__dbname">{{ g.label }}</span>
+                          <span class="rg-plan__arrow" aria-hidden="true">→</span>
+                          <span class="rg-plan__files">
+                            @for (f of g.files; track f; let i = $index) {
+                              <span class="rg-plan__file"><span class="rg-plan__step">{{ i + 1 }}</span>{{ f }}</span>
+                            }
+                          </span>
+                        </div>
+                      }
+                    </div>
+                  }
+
                   <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'reset' || !resetSelected().length || !resetDbs().length" (click)="runReset()">{{ busy() === 'reset' ? 'Running…' : 'Reset (' + resetSelected().length + ')' }}</button>
                   @if (resetResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: resetResults() }" /> }
                 }
                 @case ('trigger') {
-                  <p class="rg-hint">Tick the "trigger all" and/or per-business-line script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on — every ticked script runs on every ticked database, in the same sequence.</p>
+                  <p class="rg-hint">Tick the "trigger all" and/or per-business-line script(s) from the <code>RegressionTesting</code> folder (they run in the numbered order) and tick the database(s) to run them on. Set the <strong>database run order</strong> below — each database runs every ticked script (in script order), <strong>one database at a time</strong>. The execution plan shows exactly what will run.</p>
                   <div class="rg-pick">
                     <div class="rg-pick__label">Databases</div>
                     <div class="rg-chips">
@@ -617,6 +730,42 @@
                       <p class="rg-hint rg-hint--order">Ticked scripts run in the numbered order — use ▲▼ to change the order.</p>
                     </div>
                   } @else { <p class="rg-hint">No scripts in the RegressionTesting folder.</p> }
+
+                  <!-- Database run order (DB-major execution) -->
+                  @if (triggerDbs().length) {
+                    <div class="rg-dborder">
+                      <span class="rg-dborder__lbl">Database run order:</span>
+                      @for (db of triggerDbs(); track db) {
+                        <span class="rg-dborder__item">
+                          <span class="rg-order" title="Database run order">{{ triggerDbPos(db) }}</span>
+                          <span class="rg-dborder__name">{{ dbDisplay(db) }}</span>
+                          <span class="rg-ordctl">
+                            <button type="button" [disabled]="triggerDbIsFirst(db)" (click)="moveTriggerDb(db, -1)" title="Run this database earlier" aria-label="Move database up">▲</button>
+                            <button type="button" [disabled]="triggerDbIsLast(db)" (click)="moveTriggerDb(db, 1)" title="Run this database later" aria-label="Move database down">▼</button>
+                          </span>
+                        </span>
+                      }
+                    </div>
+                  }
+                  <!-- Quick-view execution plan (database → its scripts, in run order) -->
+                  @if (triggerPlan().length) {
+                    <div class="rg-plan">
+                      <div class="rg-plan__hd">Execution plan — {{ triggerDbs().length }} database(s), {{ triggerExecCount() }} execution(s)</div>
+                      @for (g of triggerPlan(); track g.db) {
+                        <div class="rg-plan__db">
+                          <span class="rg-order">{{ triggerDbPos(g.db) }}</span>
+                          <span class="rg-plan__dbname">{{ g.label }}</span>
+                          <span class="rg-plan__arrow" aria-hidden="true">→</span>
+                          <span class="rg-plan__files">
+                            @for (f of g.files; track f; let i = $index) {
+                              <span class="rg-plan__file"><span class="rg-plan__step">{{ i + 1 }}</span>{{ f }}</span>
+                            }
+                          </span>
+                        </div>
+                      }
+                    </div>
+                  }
+
                   <button type="button" class="rg-btn rg-btn--primary" [disabled]="busy() === 'trigger' || !triggerSelected().length || !triggerDbs().length" (click)="runTrigger()">{{ busy() === 'trigger' ? 'Running…' : 'Trigger (' + triggerSelected().length + ')' }}</button>
                   @if (triggerResults().length) { <ng-container [ngTemplateOutlet]="resultList" [ngTemplateOutletContext]="{ $implicit: triggerResults() }" /> }
                 }
@@ -821,6 +970,21 @@
           } @else {
             <p class="rg-hint">The script has just started — the log becomes available once it finishes.</p>
           }
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (errorDetail(); as err) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="Batch error detail">
+      <div class="rg-modal__backdrop" (click)="closeErrorDetail()"></div>
+      <div class="rg-modal__panel">
+        <div class="rg-modal__head">
+          <strong>{{ err.column }}</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeErrorDetail()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <pre class="rg-errtext">{{ err.value }}</pre>
         </div>
       </div>
     </div>

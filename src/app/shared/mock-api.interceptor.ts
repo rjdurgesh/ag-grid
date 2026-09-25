@@ -806,6 +806,7 @@ function umFeatureLabel(g: UmGrant): string | null {
   }
   if (rs === 'user_management') { return 'User access'; }
   if (rs === 'docs' || rs === 'docs_technical') { return 'Docs'; }
+  if (rs === 'assistant') { return 'OSHIVA'; }
   if (rs === 'log_analytics' || rt === 'SERVER') { return 'Log Analytics'; }
   if (rs === 'infra_health') { return 'Infra Health'; }
   if (rt === 'REGRESSION') { return 'Regression'; }
@@ -1140,6 +1141,25 @@ function mockRegression(path: string, body: Record<string, unknown>): Record<str
       const dbs = Object.entries(groups).flatMap(([category, names]) => names.map((n) => ({ key: n, label: n, category })));
       return { status: 'success', databases: dbs };
     }
+    case '/api/regression/jenkins-deployments': {
+      // This scope's deployable apps (existing Jenkins pipelines). Mirrors the backend dummy path.
+      const base = 'https://jenkins.example/job';
+      const canned: Record<string, { key: string; name: string; build_url?: string; deploy_url: string }[]> = {
+        cib: [
+          { key: 'bm', name: 'Balance Management (BM)', build_url: `${base}/cib-bm-build/`, deploy_url: `${base}/cib-bm-deploy/` },
+          { key: 'client', name: 'Client', build_url: `${base}/cib-client-build/`, deploy_url: `${base}/cib-client-deploy/` },
+          { key: 'extractor', name: 'Extractor', deploy_url: `${base}/cib-extractor-deploy/` },
+        ],
+        retail: [
+          { key: 'bm', name: 'Balance Management (BM)', build_url: `${base}/ret-bm-build/`, deploy_url: `${base}/ret-bm-deploy/` },
+          { key: 'client', name: 'Client', deploy_url: `${base}/ret-client-deploy/` },
+        ],
+        group: [{ key: 'bm', name: 'Balance Management (BM)', deploy_url: `${base}/grp-bm-deploy/` }],
+      };
+      return { status: 'success', deployments: canned[curScope] ?? canned['cib'] };
+    }
+    case '/api/regression/jenkins-open':
+      return { status: 'success' };
     case '/api/regression/refresh-db': {
       const rdbs = (body['dbs'] as string[]) ?? [];
       const fmtTs = (dt: Date) => dt.toISOString().slice(0, 19).replace('T', ' ');
@@ -1616,7 +1636,8 @@ function mockCatalogue(): Record<string, unknown> {
       { key: 'oracle_command_center', label: 'Oracle Command Center', write_capable: true },
       { key: 'user_management', label: 'User Management — User access', write_capable: true },
       { key: 'docs', label: 'Docs — User Guide', write_capable: false },
-      { key: 'docs_technical', label: 'Docs — Technical Guide', write_capable: false }
+      { key: 'docs_technical', label: 'Docs — Technical Guide', write_capable: false },
+      { key: 'assistant', label: 'OSHIVA — AI Assistant', write_capable: false }
     ],
     config: {
       scopes: [{ key: 'group', label: 'OLS GROUP' }, { key: 'cib', label: 'OLS CIB' }, { key: 'retail', label: 'OLS RETAIL' }],

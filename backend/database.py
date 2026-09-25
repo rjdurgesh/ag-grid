@@ -241,7 +241,15 @@ def fetch_space(db_config: Any) -> list[dict]:
 # Section 2 — top table storage consumers (table → top-N partitions)
 # =============================================================================
 
-def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int) -> dict:
+def _exec(cursor, sql_out, sql, binds=None):
+    """Run a query, optionally capturing its text into ``sql_out`` (a list). Lets a caller (the OCC tools,
+    for a write-access user who asked for it) see the ACTUAL statement — no fabricated SQL."""
+    if sql_out is not None:
+        sql_out.append(sql.strip() if isinstance(sql, str) else str(sql))
+    return cursor.execute(sql, binds or {})
+
+
+def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int, sql_out: list | None = None) -> dict:
     """Return {tables, stats, partitions, subpartitions} for the 3-level tree (Table → Partition →
     Subpartition), all scoped to the top-N table names so the scans never touch the whole schema.
     Composite tables keep no bytes at the partition level, so a partition's size is rolled up from its
@@ -266,7 +274,7 @@ def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int)
         cursor = connection.cursor()
 
         # 1) Top-N tables by total data-segment bytes.
-        cursor.execute("""
+        _exec(cursor, sql_out, """
             SELECT segment_name, ROUND(SUM(bytes)/1024/1024/1024, 2) AS size_gb
               FROM dba_segments
              WHERE owner = :owner
@@ -374,7 +382,7 @@ def fetch_top_segments(db_config: Any, owner: str, top_n: int, child_limit: int)
 # Section 3 — top index storage consumers (index → top-N partitions)
 # =============================================================================
 
-def fetch_top_indexes(db_config: Any, owner: str, top_n: int, child_limit: int) -> dict:
+def fetch_top_indexes(db_config: Any, owner: str, top_n: int, child_limit: int, sql_out: list | None = None) -> dict:
     connection = None
     cursor = None
     try:
@@ -387,7 +395,7 @@ def fetch_top_indexes(db_config: Any, owner: str, top_n: int, child_limit: int) 
         # segment (all partitions/subpartitions) in the schema, then aggregated: the join, not
         # the size scan, was the cost. segment_name is unique per owner, so grouping by it alone
         # is equivalent to the old (segment_name, table_name, index_type) group.
-        cursor.execute("""
+        _exec(cursor, sql_out, """
             SELECT s.index_name, i.table_name, i.index_type AS kind, s.size_gb
               FROM (
                     SELECT segment_name AS index_name,
@@ -440,13 +448,13 @@ def fetch_top_indexes(db_config: Any, owner: str, top_n: int, child_limit: int) 
 # Section 4 — index health & stability
 # =============================================================================
 
-def fetch_index_health(db_config: Any, owner: str) -> list[dict]:
+def fetch_index_health(db_config: Any, owner: str, sql_out: list | None = None) -> list[dict]:
     connection = None
     cursor = None
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute("""
+        _exec(cursor, sql_out, """
             SELECT index_name, table_name,
                    CASE WHEN status = 'UNUSABLE' THEN 'UNUSABLE'
                         WHEN visibility = 'INVISIBLE' THEN 'INVISIBLE'
@@ -530,7 +538,7 @@ def fetch_locks(db_config: Any) -> list[dict]:
 # Section 6 — blocking sessions (flat blocker↔victim pairs)
 # =============================================================================
 
-def fetch_blocking(db_config: Any) -> list[dict]:
+def fetch_blocking(db_config: Any, sql_out: list | None = None) -> list[dict]:
     """One row per blocking relationship: the blocker (+ its SQL and the object it holds) and the
     victim it's blocking (+ its SQL). Blocker SQL_ID is often NULL (idle in transaction)."""
     connection = None
@@ -538,7 +546,7 @@ def fetch_blocking(db_config: Any) -> list[dict]:
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute("""
+        _exec(cursor, sql_out, """
             SELECT blocker.sid          AS blocker_sid,
                    blocker.serial#      AS blocker_serial,
                    blocker.username     AS blocker_user,
@@ -654,7 +662,7 @@ def _sess_col_type(desc_type: Any) -> str:
     return "text"
 
 
-def fetch_sessions(db_config: Any, status: str) -> dict:
+def fetch_sessions(db_config: Any, status: str, sql_out: list | None = None) -> dict:
     """Rich session inventory (filtered active|inactive|killed|all) + per-state counts. The SQL lives
     in the DB proc **``ols_util.occ_sessions``** (see sql/occ_sessions_setup.sql) — a DBA can tune it
     or add/remove columns without an app redeploy. The proc returns two ``SYS_REFCURSOR``s (the list +
@@ -673,6 +681,8 @@ def fetch_sessions(db_config: Any, status: str) -> dict:
         cursor = connection.cursor()
         rows_var = cursor.var(oracledb.DB_TYPE_CURSOR)
         counts_var = cursor.var(oracledb.DB_TYPE_CURSOR)
+        if sql_out is not None:
+            sql_out.append(f"BEGIN ols_util.occ_sessions(:status => '{status}', :rows => ..., :counts => ...); END;")
         cursor.callproc("ols_util.occ_sessions", [status, rows_var, counts_var])
 
         rows_rc = rows_var.getvalue()
@@ -892,7 +902,7 @@ def fetch_session_stats(db_config: Any, owner: str, sql_id: str | None) -> list:
 # on its own. Reference DDL: sql/occ_actions_setup.sql.
 # =============================================================================
 
-def fetch_mviews(db_config: Any, owner: str) -> list[dict]:
+def fetch_mviews(db_config: Any, owner: str, sql_out: list | None = None) -> list[dict]:
     """Every materialized view in the monitored schema with its refresh + staleness health
     (DBA_MVIEWS). One row per MV; the API massages it and attaches the Force-refresh action."""
     connection = None
@@ -900,7 +910,7 @@ def fetch_mviews(db_config: Any, owner: str) -> list[dict]:
     try:
         connection = connect(db_config)
         cursor = connection.cursor()
-        cursor.execute("""
+        _exec(cursor, sql_out, """
             SELECT owner, mview_name, refresh_mode, refresh_method, last_refresh_type,
                    TO_CHAR(last_refresh_date, 'DD-Mon-YYYY HH24:MI') AS last_refresh_date,
                    staleness, compile_state
@@ -2323,9 +2333,14 @@ def execute_sql(db_config: Any, sql: str) -> dict:
 def regression_run_start(db_config: Any, app_env: str, started_by: str,
                          git_branch: str | None = None, release_date: str | None = None,
                          change_number: str | None = None) -> int:
-    """Open a new regression run for this env; returns run_id. `git_branch` + `release_date` record
-    WHICH release this cycle targets (a month can have >1); `change_number` is the Change ticket the run is
-    tagged to (one CHG per release, may span >1 run). Commits."""
+    """Open a new regression run for this env; returns the new run_id (always > 0). `git_branch` +
+    `release_date` record WHICH release this cycle targets (a month can have >1); `change_number` is the
+    Change ticket the run is tagged to (one CHG per release, may span >1 run). Commits.
+
+    CONTRACT: this MUST return a positive run_id or raise — the API relies on that to decide the run was
+    really created. If you move the INSERT into a PL/SQL package, the proc must (a) hand the new id back
+    (OUT param / function return) into ``rid`` and (b) COMMIT; otherwise this returns nothing and the guard
+    below raises instead of silently reporting success."""
     connection = None
     cursor = None
     try:
@@ -2338,7 +2353,12 @@ def regression_run_start(db_config: Any, app_env: str, started_by: str,
             RETURNING run_id INTO :rid
         """, {"env": app_env, "sb": started_by, "br": git_branch, "rd": release_date, "chg": change_number, "rid": rid})
         connection.commit()
-        return int(rid.getvalue()[0])
+        val = rid.getvalue()
+        new_id = int(val[0]) if val and val[0] is not None else 0
+        if new_id <= 0:
+            raise RuntimeError("regression_run_start did not return a run_id — the run was not created "
+                               "(check the INSERT / run-start proc returns the new id and COMMITs).")
+        return new_id
     finally:
         if cursor:
             cursor.close()
@@ -3317,6 +3337,129 @@ def config_table_content(db_config: Any, *, table: str, date_col: str | None = N
             rec["rowid"] = str(row[0])
             table_data.append(rec)
         return {"cols": cols, "cols_data_types": cols_types, "Table_data": table_data}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_query_table(db_config: Any, *, table: str, where_col: str | None = None, where_val: Any = None,
+                       date_col: str | None = None, date_val: Any = None, select_cols: list[str] | None = None,
+                       count_only: bool = False, row_cap: int = 50) -> dict:
+    """Safe, parameterized lookup / count on a config table (for the assistant's query_table tool).
+
+    SAFETY: the table and EVERY column name are validated against the data dictionary
+    (``config_table_columns``) — an unknown identifier raises rather than being interpolated — and the
+    filter VALUE is always a **bind** (never string-concatenated). So this cannot be used for SQL injection.
+
+    * ``where_col`` / ``where_val`` — optional exact-match filter (``WHERE col = :v``).
+    * ``date_col`` / ``date_val``   — optional COB day filter (``>= day AND < day+1``).
+    * ``select_cols``               — columns to return (validated); omit for all.
+    * ``count_only``                — return ``{count}`` instead of rows.
+    Returns ``{table, count}`` or ``{table, cols, rows, row_count, truncated}``.
+    """
+    if not _is_ident(table):
+        raise ValueError(f"Invalid table name: {table}")
+    valid = {c["name"].upper() for c in config_table_columns(db_config, table)}
+    if not valid:
+        raise ValueError(f"Table '{table}' has no columns (does it exist?).")
+    if where_col and where_col.upper() not in valid:
+        raise ValueError(f"Unknown column '{where_col}'.")
+    if date_col and date_col.upper() not in valid:
+        raise ValueError(f"Unknown date column '{date_col}'.")
+    if select_cols:
+        bad = [c for c in select_cols if c.upper() not in valid]
+        if bad:
+            raise ValueError(f"Unknown column(s): {', '.join(bad)}.")
+
+    where_parts: list[str] = []
+    binds: dict = {}
+    if where_col and where_val is not None:
+        where_parts.append(f"{where_col} = :wv")
+        binds["wv"] = where_val
+    if date_col and date_val is not None:
+        where_parts.append(f"({date_col} >= :d1 AND {date_col} < :d1e)")
+        binds["d1"] = date_val
+        binds["d1e"] = date_val + datetime.timedelta(days=1)
+    where = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    cap = int(row_cap) if (row_cap and int(row_cap) > 0) else 50
+    cols_sql = ", ".join(select_cols) if select_cols else "*"        # identifiers validated above
+    count_sql = f"SELECT COUNT(*) FROM {table}{where}"
+    rows_sql = f"SELECT {cols_sql} FROM {table}{where} FETCH FIRST {cap} ROWS ONLY"
+    # A copy-pasteable rendering with the bind VALUES inlined (for display only — the executed statement
+    # still uses binds). Dates render as 'YYYY-MM-DD'.
+    disp_binds = {k: (v.strftime("%Y-%m-%d") if hasattr(v, "strftime") else v) for k, v in binds.items()}
+    shown = (count_sql if count_only else rows_sql)
+    for k, v in disp_binds.items():
+        shown = shown.replace(f":{k}", f"'{v}'" if isinstance(v, str) else str(v))
+
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        if count_only:
+            cursor.execute(count_sql, binds)
+            return {"table": table, "count": int(cursor.fetchone()[0]), "sql": shown}
+        cursor.execute(f"SELECT {cols_sql} FROM {table}{where} FETCH FIRST {cap + 1} ROWS ONLY", binds)
+        names = [d[0] for d in cursor.description]
+        rows = [{names[i]: _content_scalar(r[i]) for i in range(len(names))} for r in cursor.fetchall()]
+        return {"table": table, "cols": names, "rows": rows[:cap],
+                "row_count": min(len(rows), cap), "truncated": len(rows) > cap, "sql": shown}
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_find_similar_tables(db_config: Any, name: str, row_cap: int = 8) -> list[str]:
+    """Suggest tables whose name is close to ``name`` (for a 'did you mean?' when a table isn't found):
+    a substring match or an Oracle SOUNDEX match, from ALL_TABLES. The name is a **bind**, never
+    interpolated."""
+    n = str(name or "").strip()
+    if not n:
+        return []
+    cap = int(row_cap) if (row_cap and int(row_cap) > 0) else 8
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"""
+            SELECT table_name FROM all_tables
+             WHERE table_name LIKE '%' || UPPER(:n) || '%' OR SOUNDEX(table_name) = SOUNDEX(:n)
+             ORDER BY table_name FETCH FIRST {cap} ROWS ONLY
+        """, {"n": n})
+        return [r[0] for r in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_find_tables_with_column(db_config: Any, column: str, row_cap: int = 50) -> list[str]:
+    """Schema lookup: which tables have a column named ``column`` (data dictionary, ALL_TAB_COLUMNS). Lets the
+    assistant answer 'the lma_label for lma_code IXLQA90' **without** the user naming the table. Read-only
+    metadata; the column is a **bind** (UPPER-matched), never interpolated → no injection."""
+    col = str(column or "").strip()
+    if not col:
+        return []
+    cap = int(row_cap) if (row_cap and int(row_cap) > 0) else 50
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"""
+            SELECT DISTINCT table_name FROM all_tab_columns
+             WHERE column_name = UPPER(:c)
+             ORDER BY table_name FETCH FIRST {cap} ROWS ONLY
+        """, {"c": col})
+        return [r[0] for r in cursor.fetchall()]
     finally:
         if cursor:
             cursor.close()

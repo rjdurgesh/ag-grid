@@ -19,6 +19,7 @@ import { screenForNavUrl } from '../../auth/rbac.config';
 import { DefaultFooterComponent, DefaultHeaderComponent } from './';
 import { AppVersionComponent } from './app-version.component';
 import { navItems as NAV_ITEMS } from './_nav';
+import { OshivaWidgetComponent } from '../../oshiva/oshiva-widget.component';
 
 function isOverflown(element: HTMLElement) {
   return (
@@ -44,7 +45,8 @@ function isOverflown(element: HTMLElement) {
     NgScrollbar,
     RouterOutlet,
     RouterLink,
-    ShadowOnScrollDirective
+    ShadowOnScrollDirective,
+    OshivaWidgetComponent
   ]
 })
 export class DefaultLayoutComponent {

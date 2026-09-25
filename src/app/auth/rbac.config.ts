@@ -13,7 +13,8 @@ export type ScreenKey =
   | 'user_management'
   | 'extras'
   | 'docs'
-  | 'docs_technical';
+  | 'docs_technical'
+  | 'assistant';
 
 /** All screens (admin / read see every one of these). Note: `user_management` is NOT a normal
  *  opt-in screen — it is gated by the separate `ols_ops_access` table (see RbacService.canView). */
@@ -27,7 +28,8 @@ export const ALL_SCREENS: ScreenKey[] = [
   'user_management',
   'extras',
   'docs',
-  'docs_technical'
+  'docs_technical',
+  'assistant'
 ];
 
 /** Screens an `is_salt` user may see (and act on). Edit to taste. */
@@ -44,7 +46,8 @@ export const SCREEN_ROUTES: Record<ScreenKey, string> = {
   user_management: '/user_management',
   extras: '/login',
   docs: '/docs/user-guide',
-  docs_technical: '/docs/technical-guide'
+  docs_technical: '/docs/technical-guide',
+  assistant: '/home'   // OSHIVA is a floating widget, not a routed page — placeholder route (never navigated to)
 };
 
 /** Maps a sidebar nav item URL to its screen key, so the nav can be filtered. */

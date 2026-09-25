@@ -93,6 +93,8 @@ export const API = {
     stepMark: `${API_BASE_URL}/api/regression/step/mark`,
     stepUnlock: `${API_BASE_URL}/api/regression/step/unlock`,
     refreshDatabases: `${API_BASE_URL}/api/regression/refresh-databases`,
+    jenkinsDeployments: `${API_BASE_URL}/api/regression/jenkins-deployments`,
+    jenkinsOpen: `${API_BASE_URL}/api/regression/jenkins-open`,
     databases: `${API_BASE_URL}/api/regression/databases`,
     refreshDb: `${API_BASE_URL}/api/regression/refresh-db`,
     gitBranches: `${API_BASE_URL}/api/regression/git/branches`,
@@ -154,6 +156,20 @@ export const API = {
     catalog: `${API_BASE_URL}/api/docs/catalog`,
     /** `{ caller, id }` → `{ status, doc: DocContent }` (raw markdown; RBAC re-checked). */
     content: `${API_BASE_URL}/api/docs/content`
+  },
+  /**
+   * OLS Assistant (AI agent, Phase 2) — all POST (caller in the body). `chat` is an SSE stream; the
+   * others are JSON. Access is allow-listed server-side. See ai-learning/AI_AGENT_DESIGN.md.
+   */
+  assistant: {
+    /** `{ caller }` → `{ enabled }` — drives whether the chat launcher is shown. */
+    available: `${API_BASE_URL}/api/assistant/available`,
+    /** `{ caller, message, conversation_id?, history? }` → SSE stream of agent events. */
+    chat: `${API_BASE_URL}/api/assistant/chat`,
+    /** `{ caller, conversation_id, message_id, vote, comment? }` → `{ status }`. */
+    feedback: `${API_BASE_URL}/api/assistant/feedback`,
+    /** `{ caller, conversation_id }` → `{ status }` — expire a conversation's server-side memory. */
+    reset: `${API_BASE_URL}/api/assistant/reset`
   },
   system: {
     /** One-shot memory snapshot → `MemoryStats`. */

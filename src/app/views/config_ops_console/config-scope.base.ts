@@ -238,8 +238,10 @@ export abstract class ConfigScopeBase implements OnInit {
         this.categoryKey = resolveKey(cols, CATEGORY_KEYS, 'TABLE_CATEGORY');
         this.tableNameField.set(this.tableNameKey);
 
+        // TABLE_CATEGORY is access metadata (drives the OMT-category filter below), not a user-facing
+        // column — keep it in the row data but hide it from the grid.
         this.columns.set(
-          cols.map((field) => ({
+          cols.filter((field) => field !== this.categoryKey).map((field) => ({
             field,
             header: prettifyHeader(field),
             type: catalogueType(field),
@@ -248,7 +250,16 @@ export abstract class ConfigScopeBase implements OnInit {
         );
         // RBAC opt-in read: show only the tables this user may see (per-table / category grants).
         // ADMIN sees all. A table the user has no grant for is filtered out entirely.
-        const all = (data?.rows ?? []).map((arr) => Object.fromEntries(cols.map((c, i) => [c, arr[i]])));
+        // TABLE_CATEGORY drives that filter but is NOT shown: return it either as a named column (hidden from
+        // the grid above) OR — to keep the visible columns at 4, exactly like the hidden `rowid` — as a
+        // trailing value beyond `cols`. Capture that trailing value into the category key so the filter sees
+        // it without it ever becoming a column.
+        const catInCols = cols.some((c) => c.toUpperCase() === this.categoryKey.toUpperCase());
+        const all = (data?.rows ?? []).map((arr) => {
+          const obj = Object.fromEntries(cols.map((c, i) => [c, arr[i]]));
+          if (!catInCols && arr.length > cols.length) { obj[this.categoryKey] = arr[cols.length]; }
+          return obj;
+        });
         this.rows.set(all.filter((r) =>
           this.rbac.configTableAccess(this.scope, String(r[this.tableNameKey] ?? ''), String(r[this.categoryKey] ?? '')) !== 'none'
         ));

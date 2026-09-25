@@ -187,6 +187,63 @@ def housekeeping_config() -> dict:
     }
 
 
+# --- OLS Assistant (AI agent) ------------------------------------------------
+def assistant_config() -> dict:
+    """AI assistant settings (see AI_AGENT_DESIGN.md). Non-secret config in ``config/assistant.json``
+    (copy from ``assistant.example.json``); the model API key is a SECRET and comes from ``.env``
+    (``ASSISTANT_API_KEY``). ``allowed_users`` is the dev access allow-list (Phase 2.0 gate → B27886);
+    Phase 2.4 replaces it with an RBAC grant."""
+    j = _load("assistant")
+    allowed = j.get("allowed_users") if isinstance(j.get("allowed_users"), list) else None
+    if allowed is None:
+        raw = os.getenv("ASSISTANT_ALLOWED_USERS", "B27886")
+        allowed = [u.strip() for u in raw.split(",") if u.strip()]
+    try:
+        temperature = float(str(j.get("temperature", os.getenv("ASSISTANT_TEMPERATURE", "0.1"))))
+    except (TypeError, ValueError):
+        temperature = 0.1
+    return {
+        "enabled": _pick(j, "enabled", "ASSISTANT_ENABLED", True),
+        "allowed_users": [str(u).strip() for u in allowed if str(u).strip()],
+        "use_stub": _pick(j, "use_stub", "ASSISTANT_USE_STUB", True),        # scaffold brain (no model)
+        "use_mock_tools": _pick(j, "use_mock_tools", "ASSISTANT_USE_MOCK_TOOLS", True),
+        "model": _pick(j, "model", "ASSISTANT_MODEL", "gpt-oss-20b"),
+        "base_url": _pick(j, "base_url", "ASSISTANT_BASE_URL", ""),
+        "api_key": os.getenv("ASSISTANT_API_KEY", ""),                       # secret → .env only
+        "max_steps": _pick(j, "max_steps", "ASSISTANT_MAX_STEPS", 6),
+        "temperature": temperature,
+        "timeout": _pick(j, "timeout", "ASSISTANT_TIMEOUT", 60),   # per-call timeout to the real model (s)
+        # How long an idle conversation's server-side memory is kept before it's auto-purged.
+        "session_ttl_hours": _pick(j, "session_ttl_hours", "ASSISTANT_SESSION_TTL_HOURS", 72),
+        # DEV/DUMMY tool-authorization: which business scopes a caller may query (real mode uses RBAC).
+        # dummy_scope_grants = {username: ["cib", ...] or ["*"]}; dummy_default_scopes = fallback (["*"]=all).
+        "dummy_scope_grants": j.get("dummy_scope_grants") if isinstance(j.get("dummy_scope_grants"), dict) else {},
+        "dummy_default_scopes": j.get("dummy_default_scopes") if isinstance(j.get("dummy_default_scopes"), list) else ["*"],
+        # Edge rate limiting: max chat turns per caller per minute (0 disables). See oshiva/auth/rate_limit.py.
+        "rate_limit_per_min": _pick(j, "rate_limit_per_min", "ASSISTANT_RATE_LIMIT_PER_MIN", 20),
+        # Cost model (per 1,000 tokens). Self-hosted GPT-OSS has no bill → default 0; set to model a chargeback.
+        "cost_per_1k_input": _pick(j, "cost_per_1k_input", "ASSISTANT_COST_PER_1K_INPUT", 0.0),
+        "cost_per_1k_output": _pick(j, "cost_per_1k_output", "ASSISTANT_COST_PER_1K_OUTPUT", 0.0),
+        "cost_currency": _pick(j, "cost_currency", "ASSISTANT_COST_CURRENCY", "USD"),
+    }
+
+
+def redaction_config() -> dict:
+    """PII / secret redaction settings (see AI_PII_REDACTION.md). Central scrubbing of tool results before
+    they reach the model or the audit log. All non-secret; ``config/redaction.json`` may extend the built-in
+    key lists (it never shrinks them — the defaults always apply so nothing sensitive slips through)."""
+    j = _load("redaction")
+    extra_secret = j.get("extra_secret_keys") if isinstance(j.get("extra_secret_keys"), list) else []
+    extra_pii = j.get("extra_pii_keys") if isinstance(j.get("extra_pii_keys"), list) else []
+    return {
+        "enabled": _pick(j, "enabled", "OLS_REDACTION_ENABLED", True),
+        "placeholder": _pick(j, "placeholder", "OLS_REDACTION_PLACEHOLDER", "[redacted]"),
+        "redact_values": _pick(j, "redact_values", "OLS_REDACTION_VALUES", True),   # email/inline-secret patterns
+        "extra_secret_keys": [str(k).strip() for k in extra_secret if str(k).strip()],
+        "extra_pii_keys": [str(k).strip() for k in extra_pii if str(k).strip()],
+    }
+
+
 # Environment names that, when they are the ONLY top-level keys of a value, mark it as env-keyed —
 # e.g. refresh_databases: {"DEV": {...}, "STG": {...}}. Lets ONE committed config serve every env
 # (the section is chosen by APP_ENV; LIVE and PROD are the same env).
@@ -287,10 +344,28 @@ def regression_scope_config(scope: str) -> dict:
             row = _rdb(item, "")
             if row:
                 refresh_databases.append(row)
+    # jenkins_deployments: this SCOPE's deployable applications, each an EXISTING Jenkins pipeline. Not every
+    # release deploys all of them — the operator picks which per release; this is just the catalogue. Env-keyed
+    # ({"DEV":[…],"STG":[…]} → the APP_ENV section, so one file serves both) or a flat list. Normalises to
+    # [{key,name,build_url,deploy_url}] — deploy_url required, build_url optional.
+    jd = s.get("jenkins_deployments")
+    if jd is None:
+        jd = defaults.get("jenkins_deployments")
+    jd = _env_section(jd)
+    jenkins_deployments = []
+    for item in (jd or []):
+        if isinstance(item, dict) and item.get("key") and item.get("deploy_url"):
+            jenkins_deployments.append({
+                "key": str(item["key"]),
+                "name": str(item.get("name") or item["key"]),
+                "build_url": str(item.get("build_url") or ""),
+                "deploy_url": str(item["deploy_url"]),
+            })
     return {
         "script_roots": {str(k): str(v) for k, v in sr.items()},
         "batch_db_script_roots": {str(k): str(v) for k, v in br.items()},
         "refresh_databases": refresh_databases,
+        "jenkins_deployments": jenkins_deployments,
         "scope": scope,
         "log_dir": val("log_dir", "REGRESSION_LOG_DIR", ""),
         "git_url": val("git_url", "REGRESSION_GIT_URL", ""),

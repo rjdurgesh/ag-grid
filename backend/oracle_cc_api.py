@@ -98,15 +98,17 @@ class OracleTarget(BaseModel):
     key: str          # == db_configs scope key; used in the URL + UI tab
     label: str        # "OLS CIB"
     sub: str | None = None   # "BATCH" / "REPORTING"
-    instance: str            # display instance name
+    instance: str            # FALLBACK display instance name (dummy / unreachable); the live value is
+                             # resolved per-env from the connection at request time — see _instance()
     connection: str          # handle into app.state.db_configs (defaults to == key)
 
 
 # Per-scope DISPLAY metadata — only the bits a raw DB connection can't give you: the screen
-# label/sub and the instance's friendly name. **KEYS MUST MATCH your db_configs scopes
-# (connect_db()).** Everything structural (`key`, `connection`) is the scope itself, so the
-# catalog below is BUILT from this — not repeated. (If your real connection already exposes
-# `instance`, source it from there and drop it here — this map is just the hardcoded remainder.)
+# label/sub. **KEYS MUST MATCH your db_configs scopes (connect_db()).** Everything structural
+# (`key`, `connection`) is the scope itself, so the catalog below is BUILT from this — not repeated.
+# NOTE: `instance` here is only a FALLBACK (used in dummy mode / when a DB is unreachable). The REAL
+# instance shown per environment is read live from the connection at request time (see `_instance`),
+# so dev shows the dev instance, staging the staging instance — no per-env edits here.
 TARGET_META: dict[str, dict[str, Any]] = {
     "group":            {"label": "OLS GROUP",                        "instance": "OLSPRD1"},
     "cib_batch":        {"label": "OLS CIB",    "sub": "BATCH",       "instance": "CIBB1"},
@@ -148,6 +150,43 @@ def _reachable(request: Request | None, scope: str) -> bool:
     return bool(cfgs.get(scope))
 
 
+def _getdb(request: Request | None, scope: str) -> Any:
+    """This scope's live DB config handle from ``app.state.db_configs`` (the per-ENV source of truth —
+    dev creds in dev, staging creds in staging). Like ``_reachable`` but returns the handle itself, or
+    ``None`` when the scope is missing / failed / in dummy mode."""
+    if request is None:
+        return None
+    return (getattr(request.app.state, "db_configs", {}) or {}).get(scope)
+
+
+# Resolved instance names, cached per scope for the process (an instance name doesn't change at runtime).
+# We only cache a real, non-empty result, so a DB that's down at first call is retried once it's back.
+_INSTANCE_CACHE: dict[str, str] = {}
+
+
+def _instance(request: Request | None, scope: str) -> str:
+    """The instance name to DISPLAY for a scope — the ACTUAL connected instance (per environment), not a
+    hardcoded one. Reads it live from the connection (``database.fetch_instance_name`` → SYS_CONTEXT), cached
+    per scope. Falls back to the catalog's static name in dummy mode, when the scope is unreachable, or if the
+    lookup fails — so the tab list never hangs or breaks on a slow/down DB."""
+    fallback = TARGET_CATALOG[scope].instance if scope in TARGET_CATALOG else scope.upper()
+    if ORACLE_CC_USE_DUMMY or request is None:
+        return fallback
+    if scope in _INSTANCE_CACHE:
+        return _INSTANCE_CACHE[scope]
+    cfg = _getdb(request, scope)
+    if not cfg:                       # unreachable / not configured → don't touch the DB
+        return fallback
+    try:
+        name = (database.fetch_instance_name(cfg) or "").strip()
+    except Exception:                # noqa: BLE001 — display only; never fail the tab list on a lookup error
+        return fallback
+    if not name:
+        return fallback
+    _INSTANCE_CACHE[scope] = name
+    return name
+
+
 def _target(db: str) -> OracleTarget:
     t = TARGET_CATALOG.get(db)
     if not t:
@@ -163,7 +202,8 @@ def list_targets(request: Request) -> dict:
     add/remove a scope in app.py's loader and the tab list follows, no change needed here."""
     keys = _enabled_target_keys(request)
     return {"status": "success",
-            "data": [{**TARGET_CATALOG[k].model_dump(), "reachable": _reachable(request, k)} for k in keys]}
+            "data": [{**TARGET_CATALOG[k].model_dump(), "instance": _instance(request, k),
+                      "reachable": _reachable(request, k)} for k in keys]}
 
 
 @router.get("/overview")
@@ -179,7 +219,7 @@ def overview(request: Request) -> dict:
     for key in _enabled_target_keys(request):
         tgt = TARGET_CATALOG[key]
         reachable = _reachable(request, key)
-        tile = {"key": tgt.key, "label": tgt.label, "sub": tgt.sub, "instance": tgt.instance,
+        tile = {"key": tgt.key, "label": tgt.label, "sub": tgt.sub, "instance": _instance(request, key),
                 "reachable": reachable, "storage_pct": 0.0, "storage_sev": "ok",
                 "blocking": 0, "active": 0, "top_object": "—", "top_gb": 0.0}
         if reachable:

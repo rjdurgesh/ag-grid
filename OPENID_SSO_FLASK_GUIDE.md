@@ -340,6 +340,11 @@ def save_config():
     return jsonify({"status": "success"})
 ```
 
+> **Why does Mode B read identity from the DB?** In the password path there is **no IdP and no
+> `id_token`**, so the DB is the *only* source for username/email/name (and role). The "identity from
+> OIDC" rule applies **only to Mode A (SSO)**, where those fields come from the id_token claims; role is
+> from the DB in both modes.
+
 Wire it up + CORS for local dev:
 
 ```python

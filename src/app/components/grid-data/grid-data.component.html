@@ -152,8 +152,15 @@
             <span>Date Range</span>
           </label>
         </div>
-        @if (rollTargets().length) {
-          <p class="ols-roll__targets">Rolling to <strong>{{ rollTargets().length }}</strong> date(s): {{ rollTargets().join(', ') }}</p>
+        @if (rollTargets().length; as n) {
+          <div class="ols-roll__targets">
+            <span class="ols-roll__targets-sum">
+              Rolling to <strong>{{ n }}</strong> date(s)@if (n > 1) { · {{ rollTargets()[0] }} → {{ rollTargets()[n - 1] }}}
+            </span>
+            <div class="ols-roll__targets-chips">
+              @for (d of rollTargets(); track d) { <span class="ols-roll__chip">{{ d }}</span> }
+            </div>
+          </div>
         }
         <button cButton color="primary" variant="outline" class="ols-roll__process" [disabled]="rollBusy()" (click)="processRoll()">{{ rollBusy() ? 'Rolling…' : 'Process' }}</button>
         @if (rollNotice()) {
@@ -161,6 +168,8 @@
         }
         @if (rollResult(); as rr) {
           <div class="ols-roll__result" [class.has-fail]="rollFailed() > 0 || rollWarned() > 0">
+            <button type="button" class="ols-roll__result-close" (click)="rollResult.set(null)"
+                    title="Dismiss results" aria-label="Dismiss results">×</button>
             @if (rollFailed() > 0) {
               <div class="ols-roll__result-head is-fail">
                 ⚠ Rollover finished — {{ rr.targets.length - rollFailed() }} of {{ rr.targets.length }} target date(s) rolled,
@@ -194,7 +203,7 @@
                       } @else {
                         <td>
                           @if (t.count != null) { {{ t.count }} rows }
-                          <span class="ols-roll__mark">{{ rollCountMismatch(t) ? '⚠ differs from source' : '✓ rolled' }}</span>
+                          <span class="ols-roll__mark" [class.is-ok]="!rollCountMismatch(t)" [class.is-warn]="rollCountMismatch(t)">{{ rollCountMismatch(t) ? '⚠ differs from source' : '✓ rolled' }}</span>
                         </td>
                       }
                     </tr>
@@ -214,7 +223,7 @@
       </div>
     } @else if (modalError()) {
       <div class="ols-modal-state text-danger">{{ modalError() }}</div>
-    } @else if (modalContent()) {
+    } @else if (modalContent() && !rollOpen()) {
       <div class="ols-modal-grid" [attr.data-ag-theme-mode]="themeMode()" (click)="onGridClick($event, 'modal')">
         <ag-grid-angular
           class="ols-grid"
