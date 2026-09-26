@@ -37,7 +37,7 @@ multi-agent.
   in the browser), so the next message starts a **new** conversation. The old file is left behind and then
   removed by the TTL sweep below.
 - **Idle TTL:** `purge_expired()` deletes any session file idle longer than `session_ttl_hours` (default
-  **72h**, configurable in `config/assistant.json`). It runs as a **lazy sweep** — at most once an hour,
+  **72h**, configurable in `oshiva/assistant.json`). It runs as a **lazy sweep** — at most once an hour,
   triggered by normal use — so old conversations auto-expire without a separate scheduler.
 - **Not tied to auth/session cookies:** "session" here means *a conversation thread*, not a login session.
 

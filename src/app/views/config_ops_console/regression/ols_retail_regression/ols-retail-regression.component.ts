@@ -66,7 +66,8 @@ export class OlsRetailRegressionComponent implements OnInit {
   // operator ticks which to deploy THIS release (not every release deploys all). Selection is transient +
   // logged; the links open in a new tab (Jenkins takes it from there).
   readonly deployApps = signal<RegressionDeployment[]>([]);
-  readonly deploySelected = signal<string[]>([]);       // app keys ticked for this release
+  readonly deploySelected = signal<string[]>([]);       // app keys ticked for this release (default: none)
+  readonly deployStatus = signal<Record<string, 'done' | 'failed'>>({});  // per-app outcome the operator sets
   readonly loadingDeployments = signal(false);
   /** refreshDbList grouped by category (BATCH / REPORTING / …), first-seen order preserved. */
   readonly refreshGroups = computed(() => {
@@ -344,7 +345,8 @@ export class OlsRetailRegressionComponent implements OnInit {
    *  Add a new variant by appending its column name to the candidate list below. */
   readonly extractColDefs: ColDef[] = [
     { colId: 'business_date', headerName: 'BUSINESS_DATE', width: 160,
-      valueGetter: (p) => this.pickField(p.data, ['business_date', 'cob_dt', 'reporting_dt']) },
+      valueGetter: (p) => this.pickField(p.data, ['business_date', 'cob_dt', 'reporting_dt']),
+      valueFormatter: (p) => this.dateOnly(p.value) },   // show the calendar date only (drop any time part)
     { field: 'post_dt', headerName: 'POST_DT', width: 180 },
     { field: 'load_id', headerName: 'LOAD_ID', width: 140 },
     { colId: 'business_line', headerName: 'BUSINESS_LINE', width: 170,
@@ -358,6 +360,23 @@ export class OlsRetailRegressionComponent implements OnInit {
     const r = (row ?? {}) as Record<string, unknown>;
     for (const k of keys) { const v = r[k]; if (v !== undefined && v !== null && v !== '') { return v; } }
     return '';
+  }
+  /** Calendar date only, dropping any time part. Handles '2026-08-28 09:35:00', ISO 'T' strings,
+   *  Oracle 'DD-MON-YYYY HH:MI:SS', and Date objects; returns the input unchanged if it can't be parsed. */
+  private dateOnly(v: unknown): string {
+    if (v instanceof Date) { return isNaN(v.getTime()) ? '' : this.toIsoDate(v); }
+    const s = String(v ?? '').trim();
+    if (!s) { return ''; }
+    const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);           // '2026-08-28...' / '2026-08-28T...'
+    if (iso) { return iso[1]; }
+    const sp = s.search(/[ T]/);                            // 'DD-MON-YYYY HH:MI:SS' → part before the space/T
+    if (sp > 0) { return s.slice(0, sp); }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : this.toIsoDate(d);
+  }
+  private toIsoDate(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
   /** Regression Activity grid columns (paginated/filterable/sortable like the batch grid). */
   readonly activityColDefs: ColDef[] = [
@@ -378,7 +397,10 @@ export class OlsRetailRegressionComponent implements OnInit {
     { field: 'task_completion_time', headerName: 'Duration', width: 120, valueFormatter: (p) => this.fmtDuration(p.value as number) },
     { field: 'comments', headerName: 'Comments', flex: 2, minWidth: 220,
       valueFormatter: (p) => this.activityCommentsLabel(p),
-      cellClassRules: { 'rg-cell--link': (p) => this.isDetailRow(p.data as RegressionActivityRow) } },
+      tooltipField: 'comments',   // full text on hover; a comment can be long
+      // A comment can hold large text, so ANY non-empty Comments cell is clickable → opens the detail popup
+      // (structured rows get their rich popup; plain notes get a scrollable full-text popup).
+      cellClassRules: { 'rg-cell--link': (p) => !!String(p.value ?? '').trim() } },
   ];
   private isCopyRow(r?: RegressionActivityRow): boolean {
     return !!r && r.step_key === 'file_copy' && (r.action === 'copy' || r.action === 'copy_item');
@@ -507,7 +529,8 @@ export class OlsRetailRegressionComponent implements OnInit {
     if (this.isCleanDoneRow(r)) {
       try { return `${JSON.parse(r!.comments || '{}').summary || 'Cleanup summary'}  ⋯`; } catch { return `${r!.comments || ''}  ⋯`; }
     }
-    return String(p.value ?? '');
+    const text = String(p.value ?? '').trim();
+    return text ? `${text}  ⋯` : '';   // plain note → still clickable (⋯) to read the full text
   }
   /** Human-readable byte size ('12.0 MB', '0 B') — matches the backend/mock _fmt_bytes. */
   fmtBytes(n?: number): string {
@@ -517,22 +540,32 @@ export class OlsRetailRegressionComponent implements OnInit {
     while (b >= 1024 && u < units.length - 1) { b /= 1024; u++; }
     return u === 0 ? `${b} B` : `${b.toFixed(1)} ${units[u]}`;
   }
+  /** Plain free-text comment popup — for any Comments cell that isn't a structured detail row. */
+  readonly commentDetail = signal<{ title: string; value: string } | null>(null);
+  closeCommentDetail(): void { this.commentDetail.set(null); }
   onActivityCellClicked(e: { colDef?: { field?: string }; data?: RegressionActivityRow }): void {
-    if (e.colDef?.field !== 'comments' || !this.isDetailRow(e.data)) { return; }
-    if (this.isRunSqlRow(e.data)) { this.openSqlDetail(e.data!); return; }
-    if (this.isRunSqlDoneRow(e.data)) { this.openSqlSummary(e.data!); return; }
-    if (this.isRefreshRow(e.data)) { this.openRefreshDetail(e.data!); return; }
-    if (this.isRefreshDoneRow(e.data)) { this.openRefreshSummary(e.data!); return; }
-    if (this.isCleanRow(e.data)) { try { this.openCleanupDetail([JSON.parse(e.data!.comments || '{}')]); } catch { /* skip */ } return; }
-    if (this.isCleanDoneRow(e.data)) {
-      try { const d = JSON.parse(e.data!.comments || '{}'); if (Array.isArray(d.items)) { this.openCleanupDetail(d.items); } } catch { /* skip */ }
+    if (e.colDef?.field !== 'comments') { return; }
+    const r = e.data;
+    if (this.isDetailRow(r)) {
+      if (this.isRunSqlRow(r)) { this.openSqlDetail(r!); return; }
+      if (this.isRunSqlDoneRow(r)) { this.openSqlSummary(r!); return; }
+      if (this.isRefreshRow(r)) { this.openRefreshDetail(r!); return; }
+      if (this.isRefreshDoneRow(r)) { this.openRefreshSummary(r!); return; }
+      if (this.isCleanRow(r)) { try { this.openCleanupDetail([JSON.parse(r!.comments || '{}')]); } catch { /* skip */ } return; }
+      if (this.isCleanDoneRow(r)) {
+        try { const d = JSON.parse(r!.comments || '{}'); if (Array.isArray(d.items)) { this.openCleanupDetail(d.items); } } catch { /* skip */ }
+        return;
+      }
+      try {
+        const d = JSON.parse(r!.comments || '{}');
+        const items: FileCopyResult[] = r!.action === 'copy' ? (d.items || []) : (d.source ? [d] : []);
+        if (items.length) { this.openCopyDetail(items); }
+      } catch { /* not parseable */ }
       return;
     }
-    try {
-      const d = JSON.parse(e.data!.comments || '{}');
-      const items: FileCopyResult[] = e.data!.action === 'copy' ? (d.items || []) : (d.source ? [d] : []);
-      if (items.length) { this.openCopyDetail(items); }
-    } catch { /* not parseable */ }
+    // Any other row: the Comments cell may hold a long free-text note → open it in a scrollable popup.
+    const text = String(r?.comments ?? '').trim();
+    if (text) { this.commentDetail.set({ title: this.activityActionLabel({ value: r?.action, data: r }) || 'Comment', value: text }); }
   }
   /** Run-summary popup — the per-script results table for a whole Apply/Reset/Trigger run. */
   readonly sqlSummary = signal<{ summary: string; items: { script: string; db: string; status: string; log_file: string }[] } | null>(null);
@@ -785,7 +818,7 @@ export class OlsRetailRegressionComponent implements OnInit {
         this.state.set(s); this.toast.set({ kind: 'ok', text: `Regression run started for ${chg} · release ${d}.` });
         this.lastCompleted.set(null); this.resumed.set(false);
         this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyDbOrder.set([]); this.applyResults.set([]);
-        this.deploySelected.set([]);
+        this.deploySelected.set([]); this.deployStatus.set({});
         this.manifestLocations.set([]); this.selectedManifestPath.set(''); this.manifest.set([]);
         this.cleanupLocations.set([]); this.selectedCleanupPath.set(''); this.cleanupManifest.set([]);
         this.loadReleaseScripts();     // preload the default DB(s)' chg for this release
@@ -810,7 +843,7 @@ export class OlsRetailRegressionComponent implements OnInit {
     this.chgNumber.set(''); this.branches.set([]);
     this.selectedBranch.set(''); this.releaseDate.set(''); this.availableDates.set([]);
     this.applyScripts.set([]); this.applyFileDbs.set({}); this.applyOrder.set([]); this.applyDbOrder.set([]); this.applyResults.set([]);
-    this.deploySelected.set([]);
+    this.deploySelected.set([]); this.deployStatus.set({});
   }
 
   /** Close out the run once every step is complete/forced — logs completion + marks it finished. */
@@ -902,10 +935,23 @@ export class OlsRetailRegressionComponent implements OnInit {
     });
   }
   deployAppOn(key: string): boolean { return this.deploySelected().includes(key); }
-  toggleDeployApp(key: string): void { this.deploySelected.set(this.toggle(this.deploySelected(), key)); }
+  deployStatusOf(key: string): 'done' | 'failed' | undefined { return this.deployStatus()[key]; }
+  toggleDeployApp(key: string): void {
+    this.deploySelected.set(this.toggle(this.deploySelected(), key));
+    if (!this.deployAppOn(key)) {                    // unticked → it's "not required": drop any outcome
+      const m = { ...this.deployStatus() }; delete m[key]; this.deployStatus.set(m);
+    }
+  }
   toggleAllDeploy(): void {
     const all = this.deployApps().map((a) => a.key);
-    this.deploySelected.set(this.deploySelected().length === all.length ? [] : all);
+    const selectAll = this.deploySelected().length !== all.length;
+    this.deploySelected.set(selectAll ? all : []);
+    if (!selectAll) { this.deployStatus.set({}); }   // cleared selection → clear all outcomes
+  }
+  /** Record a per-app deployment outcome (Done / Failed). Ticks the app if it wasn't already selected. */
+  setDeployStatus(key: string, status: 'done' | 'failed'): void {
+    if (!this.deployAppOn(key)) { this.deploySelected.set([...this.deploySelected(), key]); }
+    this.deployStatus.set({ ...this.deployStatus(), [key]: status });
   }
   /** Open a Jenkins build/deploy pipeline in a NEW TAB and log that it was opened (audit: who deployed what).
    *  The link comes from trusted config; Jenkins takes it forward from there. */
@@ -916,21 +962,41 @@ export class OlsRetailRegressionComponent implements OnInit {
     if (!this.deployAppOn(app.key)) { this.deploySelected.set([...this.deploySelected(), app.key]); }
     this.svc.jenkinsOpen(this.runId, app.name, kind, url).subscribe({ error: () => { /* audit is best-effort */ } });
   }
-  /** Mark the Jenkins deployment step done (logged with the apps chosen), unlocking File copy. Works whether
-   *  or not any app was selected — not every release deploys something. */
+  /** Record the deployment outcome for the step: each selected app is Deployed or Failed, the rest are Not
+   *  required. Logs a summary to the activity trail. If any selected app FAILED the step is flagged Error
+   *  (File copy stays locked until you fix + re-mark, or Force-complete to proceed past the failure). */
   async markJenkinsComplete(): Promise<void> {
-    const picked = this.deployApps().filter((a) => this.deployAppOn(a.key)).map((a) => a.name);
-    const note = picked.length
-      ? `Jenkins deployment done for: ${picked.join(', ')}.`
-      : 'No Jenkins deployment required for this release.';
+    const picked = this.deployApps().filter((a) => this.deployAppOn(a.key));
+    const unmarked = picked.filter((a) => !this.deployStatusOf(a.key));
+    if (unmarked.length) {
+      await this.notifyRequired(`Mark each selected application as Done or Failed first — ${unmarked.length} still pending.`);
+      return;
+    }
+    const done = picked.filter((a) => this.deployStatusOf(a.key) === 'done').map((a) => a.name);
+    const failed = picked.filter((a) => this.deployStatusOf(a.key) === 'failed').map((a) => a.name);
+    const notReq = this.deployApps().length - picked.length;
+    const parts: string[] = [];
+    if (done.length) { parts.push(`Deployed: ${done.join(', ')}`); }
+    if (failed.length) { parts.push(`Failed: ${failed.join(', ')}`); }
+    if (notReq) { parts.push(`${notReq} not required`); }
+    const note = picked.length ? parts.join(' · ') + '.' : 'No Jenkins deployment required for this release.';
+    const stepStatus = failed.length ? 'error' : 'complete';
     const ok = await this.confirm.ask({
-      title: 'Jenkins deployment', message: `${note} Mark this step complete?`,
-      confirmLabel: 'Mark complete', tone: 'primary'
+      title: 'Record Jenkins deployment',
+      message: note + (failed.length
+        ? ` — ${failed.length} FAILED, so the step is flagged Error; fix and re-mark, or Force-complete to proceed past the failure.`
+        : ' Record this and complete the step?'),
+      confirmLabel: 'Record', tone: failed.length ? 'danger' : 'primary'
     });
     if (!ok) { return; }
-    this.svc.markStep(this.runId, 'jenkins_deploy', 'complete', false, note).subscribe({
-      next: () => { this.toast.set({ kind: 'ok', text: 'Jenkins deployment marked complete.' }); this.reloadState(); this.loadActivity(); },
-      error: (e) => this.fail(e, 'Could not mark the step complete')
+    this.svc.markStep(this.runId, 'jenkins_deploy', stepStatus, false, note).subscribe({
+      next: () => {
+        this.toast.set(failed.length
+          ? { kind: 'err', text: 'Deployment recorded — some failed (step flagged Error).' }
+          : { kind: 'ok', text: 'Jenkins deployment recorded & completed.' });
+        this.reloadState(); this.loadActivity();
+      },
+      error: (e) => this.fail(e, 'Could not record the deployment')
     });
   }
   toggleRefreshDb(d: string): void { this.refreshDbs.set(this.toggle(this.refreshDbs(), d)); }

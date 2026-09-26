@@ -15,6 +15,8 @@ import re as _re
 import uuid as _uuid
 from pathlib import Path as _Path
 
+from ..auth import scope_access as authz   # top-level so a missing/renamed authz module fails at startup
+
 
 def export_dir() -> _Path:
     """Shared folder for downloadable exports (served by GET /api/assistant/export/<file>).
@@ -24,11 +26,12 @@ def export_dir() -> _Path:
 
 def write_export(stem: str, content: str, ext: str = "txt") -> str:
     """Write ``content`` to a token-named export file and return its filename (for a download URL).
-    Used for outputs too big for the chat (e.g. an explain plan). Only ``csv``/``txt`` are served."""
+    Used for outputs too big for the chat (e.g. an explain plan, a generated manifest). Only
+    ``csv``/``txt``/``json`` are served (see api.export_download)."""
     d = export_dir()
     d.mkdir(parents=True, exist_ok=True)
     safe = _re.sub(r"[^A-Za-z0-9_]", "_", stem)[:40] or "export"
-    fname = f"{safe}_{_uuid.uuid4().hex}.{ext if ext in ('csv', 'txt') else 'txt'}"
+    fname = f"{safe}_{_uuid.uuid4().hex}.{ext if ext in ('csv', 'txt', 'json') else 'txt'}"
     (d / fname).write_text(content, encoding="utf-8")
     return fname
 
@@ -79,7 +82,6 @@ def scope_of_db(db: str) -> str:
 
 def deny(scope: str, scopes: set[str]) -> dict:
     """Standard, professional denial when the caller may not query ``scope``. Lists what they CAN query."""
-    from ..auth import scope_access as authz
     if not scopes:
         return {"denied": True,
                 "message": f"I can't access {scope.upper()} data with your current permissions. Your "

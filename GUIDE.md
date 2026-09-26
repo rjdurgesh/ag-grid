@@ -1162,11 +1162,13 @@ later by implementing `oshiva/llm/client._complete_real` and setting `use_stub:f
 | POST `/api/assistant/chat` | `{ caller, message, conversation_id?, history? }` | **SSE stream** of agent events (`start`/`route`/`tool`/`token`/`final`/`done`) |
 | POST `/api/assistant/feedback` | `{ caller, conversation_id, message_id, vote, comment? }` | `{ status }` |
 | POST `/api/assistant/reset` | `{ caller, conversation_id }` | `{ status }` — expires server-side memory (New chat) |
-| GET `/api/assistant/export/{file}` | — (unguessable token filename) | serves a CSV that `export_config` wrote (capability URL; data bypasses the model) |
+| GET `/api/assistant/export/{file}` | — (unguessable token filename) | serves a **CSV / TXT / JSON** a tool wrote — a config export, an explain plan, or a generated regression **manifest** (capability URL; data bypasses the model) |
 
 - **Backend** `backend/oshiva/` — a package grouped by concern (HTTP path stays `/api/assistant/*`):
   `api.py` (router), `agents/` (`coordinator.py` routes a turn → `runner.py` runs one agent's tool loop;
-  `registry.py` = `Agent`/`AGENTS`/`route()`, **per-domain agents: infra · database · config_ops**),
+  `registry.py` = `Agent`/`AGENTS`/`route()`, **per-domain agents: infra · database · config_ops · regression**;
+  `route()` weights each agent's `strong_keywords` ×3 so an unambiguous intent (e.g. "manifest") isn't misrouted
+  by a one-word overlap like "config" appearing inside a file **path**),
   `tools/` (**one module per screen** — `infra_pulse.py` `list_servers`+`service_status` wired to the live
   Infra/Service Console (`list_servers` filters: scope/os/RAM/CPU/disk-drive/health-state; `service_status`
   server+service+status; `list_services` cross-server by status; `list_shares` NAS utilization — all
@@ -1187,13 +1189,28 @@ later by implementing `oshiva/llm/client._complete_real` and setting `use_stub:f
   secret cols dropped — SQL in `database.config_query_table`) + `find_tables_with_column` (schema lookup, no
   table name needed) + `export_config` (CSV download, data bypasses the model; **COB/date-partitioned tables
   require a business date/range — too large to dump whole**; unknown table/column → "did you mean?"
-  suggestions) + `roll_config` (**WRITE**, confirm-gated preview→execute, WRITE-level authz); `regression.py` read-only
-  `regression_status`/`activity`/`batch_status`/`downstream_extract` (CIB-only, DEV/STG); `base.py` shared helpers;
+  suggestions) + `roll_config` (**WRITE**, confirm-gated preview→execute, WRITE-level authz). **OMT-category
+  enforcement (2026-09-26):** every per-table config tool (get/query/describe/export/roll) checks the caller's OMT
+  category grants against the table's category and REFUSES one they can't see — same rule as the config screen
+  (`_cat_matches` == `rbac.categoryMatches`: an OMT-BOTH table is visible to a TECHNICAL **or** FUNCTIONAL grant; a
+  TECHNICAL/FUNCTIONAL table only to its own). The table→category source is `database.config_table_category`
+  (master `ols_master_table_config.table_category`, editable constants); `list_config_tables` enumerates via
+  `config_tables_by_category` filtered by the caller. Best-effort: an unclassified table / absent master table
+  isn't blocked (scope check still applies). `regression.py` read-only
+  `regression_status`/`activity`/`batch_status`/`downstream_extract` (CIB-only, DEV/STG). `regression_status` now
+  names the step a run is **currently on** (`current_step` = first step not yet done, in the canonical
+  refresh_db→…→trigger order) plus a `N/7 done` count, and `regression_activity` lists the recent actions (not just a
+  count). **Manifest generators (2026-09-26):** `generate_filecopy_manifest` / `generate_cleanup_manifest` — safe,
+  side-effect-free **authoring** tools that build a **downloadable JSON** from the user's source→destination (or
+  path) values, or a labelled **sample** template when none are given. They copy/delete **nothing** (the real
+  File-copy / Server-cleanup steps still run, with pre-flight + confirm, from the Regression screen); output goes
+  through `base.write_export(..., ext="json")` → the `/api/assistant/export/{file}` capability URL. CIB-scoped like
+  the other regression tools (a non-CIB caller is refused). `base.py` shared helpers;
   `registry.py` aggregates + `run_tool()`), tools run **as the caller**, `auth/` (`gate.py` screen gate +
   `scope_access.py` per-business-line tool authz), `security/redaction.py` (PII/secret scrub),
   `memory/sessions.py` (conversation history + TTL), `llm/client.py` (stub ↔ real GPT-OSS),
   `observability/audit.py` (append-only JSONL under `Logs/assistant/`), `eval/` (evaluation suite — see below).
-  Config `config/assistant.json` (copy
+  Config `oshiva/assistant.json` (copy
   from `.example.json`); model API key is a secret in `.env` (`ASSISTANT_API_KEY`). Runtime data:
   `assistant_data/sessions/`, `Logs/assistant/`. Tool realness follows each screen's own `*_USE_DUMMY` flag
   (dev = dummy, prod = live), independent of the assistant stub.
@@ -1226,7 +1243,7 @@ later by implementing `oshiva/llm/client._complete_real` and setting `use_stub:f
   Frontend shows the launcher only when `/available` returns `enabled`.
 - **PII / secret redaction:** `oshiva/security/redaction.py`, applied centrally in `agents/runner.py`, scrubs
   DB passwords / connection strings / tokens and personal data (name/email/username/GUID/account number) from
-  every tool result **before it reaches the model or the audit log**. Config in `config/redaction.json` (copy
+  every tool result **before it reaches the model or the audit log**. Config in `oshiva/redaction.json` (copy
   from `.example.json`; built-in lists always apply). See `ai-learning/AI_PII_REDACTION.md`.
 - **Frontend** `src/app/oshiva/` — `oshiva.service.ts` (`OshivaService`, SSE via `fetch`),
   `oshiva-widget.component.*` (`OshivaWidgetComponent` `<app-oshiva-widget>` — launcher + drawer, streaming,

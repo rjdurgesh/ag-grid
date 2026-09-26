@@ -80,7 +80,7 @@ SCREEN_CATALOGUE = [
     {"key": "docs_technical", "label": "Docs — Technical Guide", "write_capable": False},
     # OSHIVA (AI assistant) — grant this to let a user open the assistant. Explicit-grant only (NOT auto-
     # granted by the full-access wildcard), and additionally pinned to an allow-list while in private beta
-    # (see assistant_api._is_allowed / config/assistant.json).
+    # (see assistant_api._is_allowed / oshiva/assistant.json).
     {"key": "assistant", "label": "OSHIVA — AI Assistant", "write_capable": False},
 ]
 CONFIG_SCOPE_CATALOGUE = [

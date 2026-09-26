@@ -588,9 +588,25 @@
   background: color-mix(in srgb, var(--rg-accent) 20%, transparent); color: var(--rg-accent);
 }
 
-/* full batch-error message popup (Monitoring Batches ERROR_DESC cell → click) */
+/* per-app Jenkins deployment outcome pill (Pending / Deployed / Failed) */
+.rg-depstatus {
+  display: inline-flex; align-items: center; padding: 0.12rem 0.5rem; border-radius: 999px;
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.02em;
+  border: 1px solid var(--cui-border-color, #d6dae1); color: var(--cui-secondary-color, #6b7280);
+  background: var(--cui-tertiary-bg, #f6f8fb);
+  &.is-done { color: #157347; border-color: color-mix(in srgb, #157347 45%, transparent); background: color-mix(in srgb, #157347 12%, transparent); }
+  &.is-failed { color: var(--cui-danger, #d13438); border-color: color-mix(in srgb, var(--cui-danger, #d13438) 45%, transparent); background: color-mix(in srgb, var(--cui-danger, #d13438) 12%, transparent); }
+}
+/* the chosen Done/Failed button reads as pressed */
+.rg-btn.is-active { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--rg-accent) 45%, transparent); }
+.rg-btn--danger.is-active { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cui-danger, #d13438) 55%, transparent); }
+
+/* full batch-error / comment message popup (Monitoring Batches ERROR_DESC + Regression Activity Comments → click) */
 .rg-errtext {
-  margin: 0; max-height: 55vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  margin: 0; max-width: 100%; max-height: min(62vh, 640px);
+  overflow: auto;                 /* BOTH scrollbars appear as needed (long lines scroll horizontally) */
+  white-space: pre;               /* keep original formatting; long lines scroll instead of breaking the layout */
+  overflow-wrap: normal;
   font-family: Consolas, "Courier New", monospace; font-size: 0.82rem; line-height: 1.5;
   color: var(--cui-body-color); background: var(--cui-tertiary-bg, #f6f8fb);
   border: 1px solid var(--cui-border-color, #d6dae1); border-radius: 8px; padding: 0.7rem 0.85rem;
@@ -670,8 +686,9 @@
   font-size: 0.72rem; font-weight: 650; color: var(--cui-emphasis-color, #1a1a2e); font-variant-numeric: tabular-nums;
 }
 
-/* detail popup */
-.rg-modal { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+/* detail popup — z-index above the CoreUI sticky header (1020) + fixed sidebar (1030) so the panel/close
+   button is never overlapped by the app chrome; sits just under the toast layer (1080). */
+.rg-modal { position: fixed; inset: 0; z-index: 1055; display: flex; align-items: center; justify-content: center; padding: 1rem; }
 .rg-modal__backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.42); }
 .rg-modal__panel {
   position: relative; z-index: 1; width: min(920px, 96vw); max-height: 82vh; display: flex; flex-direction: column;

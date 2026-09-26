@@ -82,7 +82,12 @@ def available(request: Request, body: AvailableBody) -> dict:
     """Whether the caller may use the assistant — the frontend shows the launcher only when true.
     Never 403s (it's a visibility check)."""
     caller = resolve_caller(request, body.caller)
-    return {"enabled": gate.is_allowed(request, caller)}
+    enabled = gate.is_allowed(request, caller)
+    # Diagnostic: if the bot won't appear for a user who should have it, this shows the EXACT resolved caller
+    # (from the OIDC token when SSO is on) vs the allow-list decision — the usual cause is a username-claim
+    # mismatch (case / domain suffix / GUID sub) against the hardcoded pin.
+    logger.info("OSHIVA /available: caller=%r enabled=%s", caller, enabled)
+    return {"enabled": enabled}
 
 
 @router.post("/chat")
@@ -183,16 +188,17 @@ def reset(request: Request, body: ResetBody) -> dict:
 
 @router.get("/export/{name}")
 def export_download(name: str):
-    """Serve a CSV/TXT that a tool wrote (e.g. a config export, or an explain plan too big for chat). Access
+    """Serve a CSV/TXT/JSON that a tool wrote (e.g. a config export, an explain plan, or a generated
+    regression manifest). Access
     is by the **unguessable token filename** (a capability URL), so a browser `<a>` download works without a
     bearer. The name is strictly validated (no traversal); only files inside the exports dir are served."""
-    m = re.fullmatch(r"[A-Za-z0-9_]+\.(csv|txt)", name)
+    m = re.fullmatch(r"[A-Za-z0-9_]+\.(csv|txt|json)", name)
     if not m:
         raise HTTPException(status_code=404, detail="Not found.")
     path = (_EXPORT_DIR / name).resolve()
     if _EXPORT_DIR.resolve() not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="Not found.")
-    media = "text/csv" if m.group(1) == "csv" else "text/plain"
+    media = {"csv": "text/csv", "json": "application/json"}.get(m.group(1), "text/plain")
     return FileResponse(path, media_type=media, filename=name)
 
 

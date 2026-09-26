@@ -5,7 +5,7 @@ or an abusive user can't run up cost or overload the model. It's the **Edge** bo
 cheap guard that runs *before* any expensive agent/tool/model work.
 
 > **Where it lives:** `backend/oshiva/auth/rate_limit.py`; enforced in `oshiva/api.py` at the top of `/chat`,
-> right after the access gate. Configured by `rate_limit_per_min` in `config/assistant.json` (or
+> right after the access gate. Configured by `rate_limit_per_min` in `oshiva/assistant.json` (or
 > `ASSISTANT_RATE_LIMIT_PER_MIN`).
 
 ---

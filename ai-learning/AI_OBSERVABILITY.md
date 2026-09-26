@@ -60,7 +60,7 @@ cost = prompt_tokens/1000 * cost_per_1k_input  +  completion_tokens/1000 * cost_
 
 Self-hosted GPT-OSS has **no per-token bill**, so both prices default to **0** — you still get token counts and
 latency (the numbers that actually tell you a prompt is too big or a turn too slow). Set real prices in
-`config/assistant.json` only if you want to model a chargeback or compare against a hosted API.
+`oshiva/assistant.json` only if you want to model a chargeback or compare against a hosted API.
 
 ---
 

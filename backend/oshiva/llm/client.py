@@ -112,6 +112,21 @@ def _complete_stub(messages: list[dict], tools: list[dict]) -> LlmResponse:
         if "blocking_sessions" in have and ("blocking" in tl or "block" in tl):
             return _occ_call("blocking_sessions", {"db": db})
 
+    # Regression manifest GENERATORS (authoring; side-effect-free) — checked BEFORE the read-only status tools
+    # so "generate a file-copy manifest" isn't stolen by the status fallback.
+    if have & {"generate_filecopy_manifest", "generate_cleanup_manifest"}:
+        kind_cleanup = ("cleanup" in tl or "clean up" in tl or "clean-up" in tl or "space clean" in tl)
+        kind_filecopy = ("file copy" in tl or "filecopy" in tl or "file-copy" in tl
+                         or ("copy" in tl and not kind_cleanup))
+        trigger = any(w in tl for w in ("manifest", "sample", "template", "generate", "create")) or "json" in tl
+        if trigger and (kind_cleanup or kind_filecopy):
+            paths = _parse_paths(text)
+            if kind_cleanup and "generate_cleanup_manifest" in have:
+                return _call("generate_cleanup_manifest", {"items": [{"path": paths[0]}]} if paths else {})
+            if "generate_filecopy_manifest" in have:
+                args = {"items": [{"source": paths[0], "destination": paths[1]}]} if len(paths) >= 2 else {}
+                return _call("generate_filecopy_manifest", args)
+
     # Regression (read-only status). Fires only inside the regression agent (it holds these tools).
     if have & {"regression_status", "regression_activity", "regression_batch_status",
                "regression_downstream_extract"}:
@@ -319,6 +334,14 @@ def _occ_sql_suffix(data: dict) -> str:
     return ""
 
 
+# Readable step labels for the regression summaries (mirrors the Regression screen / tools.regression).
+_STEP_LABEL = {
+    "refresh_db": "Refresh DB", "space_cleanup": "Server Space Cleanup", "apply_db": "Apply DB changes",
+    "jenkins_deploy": "Jenkins deployment", "file_copy": "File copy", "reset": "Reset batches",
+    "trigger": "Trigger batches", "git_pull": "Code pull",
+}
+
+
 def _summarise(tool_msg: dict) -> str:
     name = tool_msg.get("name", "")
     try:
@@ -334,7 +357,8 @@ def _summarise(tool_msg: dict) -> str:
     # Generic: a tool that returns an informational note (e.g. config in dummy mode, or a granted-tables list).
     # roll_config has richer data (source date + per-date counts) so it formats its own note.
     if data.get("note") and name not in ("list_servers", "service_status", "blocking_sessions",
-                                          "roll_config", "export_config", "query_table"):
+                                          "roll_config", "export_config", "query_table",
+                                          "generate_filecopy_manifest", "generate_cleanup_manifest"):
         gt = data.get("granted_tables")
         if gt:
             return "Config tables granted to you:\n" + "\n".join(f"• {t}" for t in gt) + f"\n\n{data['note']}"
@@ -502,13 +526,18 @@ def _summarise(tool_msg: dict) -> str:
         run = data.get("run")
         if not run:
             return data.get("message") or "No regression run is currently open."
-        steps = data.get("steps") or {}
-        done = sum(1 for v in steps.values()
-                   if str((v or {}).get("state", "")).lower() in ("done", "complete", "completed"))
         s = (f"Regression run **{run.get('run_id')}** — {run.get('status')} "
              f"(started by {run.get('started_by')}, change {run.get('change_number')}).")
-        if steps:
-            s += f" Steps: {done}/{len(steps)} done."
+        cur = data.get("current_step")
+        if cur:
+            st = str(cur.get("state") or "").lower()
+            sttxt = f" ({st})" if st and st != "pending" else ""
+            s += f"\n**Currently on:** {cur.get('label')}{sttxt}."
+        else:
+            s += "\nAll steps complete. ✅"
+        done, total = data.get("steps_done"), data.get("steps_total")
+        if done is not None and total:
+            s += f" Steps done: {done}/{total}."
         return s
 
     if name == "regression_batch_status":
@@ -529,7 +558,34 @@ def _summarise(tool_msg: dict) -> str:
 
     if name == "regression_activity":
         rows = data.get("rows") or []
-        return f"{len(rows)} recent activity record(s)." if rows else "No recent regression activity."
+        if not rows:
+            return data.get("note") or "No recent regression activity."
+        lines = []
+        for r in rows[:12]:
+            when = r.get("load_dt") or r.get("start_time") or ""
+            step = _STEP_LABEL.get(str(r.get("step_key") or ""), r.get("step_key") or "")
+            who = r.get("performed_by") or ""
+            line = f"• {when} — {step}: {r.get('action', '')} — {r.get('status', '')}"
+            if who:
+                line += f" (by {who})"
+            lines.append(line)
+        more = f"\n…and {len(rows) - 12} more" if len(rows) > 12 else ""
+        return f"Recent regression activity ({len(rows)}):\n" + "\n".join(lines) + more
+
+    if name in ("generate_filecopy_manifest", "generate_cleanup_manifest"):
+        url = data.get("download_url")
+        kind = "file-copy" if data.get("kind") == "filecopy" else "server-cleanup"
+        if not url:
+            return data.get("note") or "I couldn't generate the manifest."
+        head = (f"Here's a **sample {kind} manifest**" if data.get("sample")
+                else f"Generated a **{kind} manifest** with {data.get('item_count')} item(s)")
+        parts = [f"{head}: [Download JSON]({url})"]
+        warns = data.get("warnings") or []
+        if warns:
+            parts.append("\n".join(f"⚠️ {w}" for w in warns))
+        if data.get("note"):
+            parts.append(f"_{data['note']}_")
+        return "\n\n".join(parts)
 
     if name == "find_tables_with_column":
         tables = data.get("tables") or []
@@ -697,6 +753,12 @@ def _parse_table(text: str) -> str:
 def _parse_date(text: str) -> str:
     m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     return m.group(1) if m else ""
+
+
+def _parse_paths(text: str) -> list[str]:
+    """Stub-only: pull path-like tokens out of free text — 'D:/a', 'D:\\a', '//nas/x', '\\\\host\\x', '/data/x'.
+    Lets 'copy A to B' / 'clean up X' build a one-item manifest without a model. GPT-OSS fills items itself."""
+    return re.findall(r'[A-Za-z]:[\\/][^\s"\']+|//[^\s"\']+|\\\\[^\s"\']+|/[A-Za-z0-9_][^\s"\']*', text or "")
 
 
 def _parse_column(text: str) -> str:

@@ -1,0 +1,8 @@
+{
+  "_comment": "SERVER SPACE CLEANUP manifest for a release. Put the real file in the RELEASE REPO at <Scripts>/<release_date>/cleanup_manifest_<release_date>.json — discovered automatically. Each item deletes files under 'path'. Fields: include_subdir Y/N (recurse into subfolders); remove_empty_dir Y/N (delete subfolders left empty — NEVER the root 'path' itself); include_pattern / exclude_pattern filter by filename (* = all, e.g. *.log, tmp_*); older_than_days > 0 deletes only files older than N days (0 = no age filter). Defaults if omitted: include_subdir=N, remove_empty_dir=N, include_pattern=*, exclude_pattern='', older_than_days=0. The step runs a PREVIEW (dry-run) first — it lists exactly what WOULD be removed + space to be freed — and the real Clean is confirmed with that list. Use forward slashes or escape backslashes as \\\\.",
+  "items": [
+    { "path": "D:/ols/app/logs", "include_subdir": "Y", "remove_empty_dir": "N", "include_pattern": "*.log", "exclude_pattern": "", "older_than_days": 30 },
+    { "path": "D:/ols/app/tmp", "include_subdir": "Y", "remove_empty_dir": "Y", "include_pattern": "*", "exclude_pattern": "*.keep", "older_than_days": 0 },
+    { "path": "//nas/ols/archive/20260830", "include_subdir": "N", "remove_empty_dir": "N", "include_pattern": "*.bak", "exclude_pattern": "", "older_than_days": 7 }
+  ]
+}

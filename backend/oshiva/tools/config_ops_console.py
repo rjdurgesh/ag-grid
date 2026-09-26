@@ -17,7 +17,15 @@ Safety, by design:
 
 from __future__ import annotations
 
+# Internal cross-module imports at the TOP so a missing/renamed module fails at STARTUP, not on first tool call.
+# (No circular risk: these core modules never import oshiva, and oshiva.api loads last in app.py.)
+import access_api
+import config_api
+import database
+
 from . import base
+from ..auth import scope_access as authz
+from ..security import redaction
 
 _ROW_CAP = 50       # keep tool output small — the model doesn't need thousands of rows (the UI is for that)
 _PREVIEW_ROWS = 5   # query_table shows this many inline, then offers a full-CSV download link
@@ -67,43 +75,114 @@ def _resolve_db(scope: str, db_source: str, ctx: dict):
     return cfg, None
 
 
+# --- OMT category authorization (mirrors the config screen's rbac.categoryMatches) --------------------
+def _cat_matches(grant: str, table_cat: str) -> bool:
+    """Does a category GRANT cover a table's category? OMT-BOTH grant = all; TECHNICAL/FUNCTIONAL also cover
+    OMT-BOTH tables. Same rule as the Config screen's rbac.service.categoryMatches."""
+    g, t = (grant or "").upper(), (table_cat or "").upper()
+    if g in ("OMT-BOTH", "*"):
+        return True
+    if g == "OMT-TECHNICAL":
+        return t in ("OMT-TECHNICAL", "OMT-BOTH")
+    if g == "OMT-FUNCTIONAL":
+        return t in ("OMT-FUNCTIONAL", "OMT-BOTH")
+    return g == t
+
+
+def _snapshot(caller: str, ctx: dict):
+    """The caller's RBAC access snapshot (config grants), or None if it can't be built."""
+    try:
+        appdb = ctx.get("app_db_config")
+        grants = database.fetch_user_grants(appdb, caller) or []
+        ident = database.fetch_user_identity(appdb, caller)
+        return access_api.build_snapshot(ident, grants, ctx.get("app_env") or "PROD")
+    except Exception:  # noqa: BLE001 — can't evaluate → caller falls back to scope-only
+        return None
+
+
+def _category_allowed(snap: dict, scope: str, table: str, table_cat: str):
+    """True/False if the caller's OMT-category (and per-table) grants decide access; None when the table's
+    category is unknown (so the caller can't be judged on it). Mirrors rbac.configTableAccess."""
+    cfg = (snap or {}).get("config") or {}
+    if cfg.get("all"):
+        return True
+    tl = (table or "").lower()
+    for g in cfg.get("table_grants") or []:            # a per-table grant wins (incl. DENY)
+        if g.get("scope") == scope and str(g.get("table", "")).lower() == tl:
+            return str(g.get("level", "")).upper() != "DENY"
+    cat = (table_cat or "").upper()
+    if not cat:
+        return None                                    # unclassified / master table absent → unknown
+    allowed = False
+    for c in cfg.get("category_grants") or []:
+        if c.get("scope") != scope or not _cat_matches(str(c.get("category", "")), cat):
+            continue
+        if str(c.get("level", "")).upper() == "DENY":
+            return False
+        allowed = True
+    return allowed
+
+
+def _category_gate(caller: str, scope: str, table: str, cfg_db, ctx: dict) -> dict | None:
+    """Refuse (a deny dict) if the caller lacks OMT-category access to ``table``; else None. Best-effort: if the
+    snapshot can't be built or the table's category is unknown, don't block — the per-scope check already
+    applied and blocking on missing classification would break legitimate access."""
+    snap = _snapshot(caller, ctx)
+    if snap is None:
+        return None
+    category = ""
+    try:
+        category = database.config_table_category(cfg_db, table) or ""
+    except Exception:  # noqa: BLE001
+        category = ""
+    allowed = _category_allowed(snap, scope, table, category)
+    if allowed is False:
+        klass = category or "restricted"
+        return {"denied": True,
+                "message": (f"You don't have access to `{table}` — it's classified {klass} and your OMT category "
+                            f"grants ({scope.upper()}) don't cover it. Ask the access manager if you need it.")}
+    return None
+
+
 def _list_config_tables(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """The config tables the caller may work with for a scope (best-effort: their explicitly granted tables;
     category-level tables aren't enumerable, so naming a table directly always works)."""
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     if not scope:
         return {"error": "A 'scope' is required (cib / retail / group)."}
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
     if config_api.CONFIG_USE_DUMMY:
         return {"scope": scope, "tables": [],
                 "note": "Table listing isn't available in this environment — name a specific table and I can "
                         "read it in the live environment."}
-    try:
-        import access_api
-        import database
-        dbcfg = ctx.get("app_db_config")
-        grants = database.fetch_user_grants(dbcfg, caller) or []
-        ident = database.fetch_user_identity(dbcfg, caller)
-        snap = access_api.build_snapshot(ident, grants, ctx.get("app_env") or "PROD")
-        granted = [str(t) for t in ((snap.get("config") or {}).get("table_grants") or [])]
-        return {"scope": scope, "granted_tables": granted,
-                "note": "These are the config tables explicitly granted to you; category-level tables aren't "
-                        "listed here — name any table you know and I can read it."}
-    except Exception as exc:  # noqa: BLE001 — never crash; guide the user
-        return {"scope": scope, "tables": [],
-                "note": f"Couldn't list tables ({exc}); name a specific table and I can read it."}
+    snap = _snapshot(caller, ctx)
+    # Enumerate the scope's classified tables from the master config table and keep only the ones this caller
+    # may see by OMT category (True = granted; None = unclassified/unknown → shown; False = hidden).
+    cfg, _cfgerr = _resolve_db(scope, "", ctx)
+    if cfg is not None and snap is not None:
+        try:
+            visible = [{"table": r.get("table"), "category": r.get("category")}
+                       for r in database.config_tables_by_category(cfg)
+                       if _category_allowed(snap, scope, r.get("table"), r.get("category")) is not False]
+            if visible:
+                return {"scope": scope, "tables": visible,
+                        "note": "The config tables you can access in this scope, filtered by your OMT category grants."}
+        except Exception:  # noqa: BLE001 — master table absent/unreadable → fall back to grants below
+            pass
+    # Fallback: the tables explicitly granted to you (category enumeration unavailable here).
+    granted = []
+    for g in ((snap or {}).get("config", {}) or {}).get("table_grants") or []:
+        if g.get("scope") == scope and str(g.get("level", "")).upper() != "DENY":
+            granted.append(str(g.get("table")))
+    return {"scope": scope, "granted_tables": granted,
+            "note": "Category listing isn't available here — these are the tables explicitly granted to you. "
+                    "Name any table you know and I'll read it, subject to your OMT category access."}
 
 
 def _describe_config_table(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Column definitions (name / type / nullable) for one config table."""
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     table = str(args.get("table") or "").strip()
     db_source = str(args.get("db_source") or "").strip().lower()
@@ -115,17 +194,15 @@ def _describe_config_table(args: dict, caller: str, use_mock: bool, scopes: set[
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
     if config_api.CONFIG_USE_DUMMY:
         return {"scope": scope, "table": table, "columns": [],
                 "note": "Config runs in dummy mode here; column details are available in the live environment."}
     cfg, err = _resolve_db(scope, db_source, ctx)
     if err:
         return {"error": err}
+    gate = _category_gate(caller, scope, table, cfg, ctx)
+    if gate:
+        return gate
     try:
         return {"scope": scope, "table": table, "column_detail": database.config_column_detail(cfg, table)}
     except Exception as exc:  # noqa: BLE001
@@ -135,8 +212,6 @@ def _describe_config_table(args: dict, caller: str, use_mock: bool, scopes: set[
 def _get_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Read a config table's rows (capped). For a COB (date-partitioned) table, pass ``business_date`` to
     filter to that day; otherwise the whole table is returned (capped). Secret columns are dropped."""
-    from ..auth import scope_access as authz
-    from ..security import redaction
     scope = str(args.get("scope") or "").strip().lower()
     table = str(args.get("table") or "").strip()
     db_source = str(args.get("db_source") or "").strip().lower()
@@ -146,17 +221,15 @@ def _get_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: 
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
     if config_api.CONFIG_USE_DUMMY:
         return {"scope": scope, "table": table, "columns": [], "rows": [],
                 "note": "Config runs in dummy mode here; live rows are available in the real environment."}
     cfg, err = _resolve_db(scope, db_source, ctx)
     if err:
         return {"error": err}
+    gate = _category_gate(caller, scope, table, cfg, ctx)
+    if gate:
+        return gate
     is_cob = bool(business_date)
     date_col = None
     start = None
@@ -194,8 +267,6 @@ def _get_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: 
 def _query_table(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Look up rows by an exact column value, and/or count matching rows, choosing which columns to return.
     Optional business_date adds a COB day filter (and reports clearly if the table has no date column)."""
-    from ..auth import scope_access as authz
-    from ..security import redaction
     scope = str(args.get("scope") or "").strip().lower()
     table = str(args.get("table") or "").strip()
     match_column = str(args.get("match_column") or "").strip() or None
@@ -212,11 +283,6 @@ def _query_table(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
 
     db_used = db_source or f"ols_{scope}_batch"     # the real config DB this runs against (per env)
     where_bits = []
@@ -240,6 +306,9 @@ def _query_table(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
         cfg, err = _resolve_db(scope, db_source, ctx)
         if err:
             return {"error": err}
+        gate = _category_gate(caller, scope, table, cfg, ctx)
+        if gate:
+            return gate
         # Optional COB date filter — resolve the table's date column and confirm it actually exists.
         date_col = date_val = None
         if business_date:
@@ -321,11 +390,6 @@ def _query_table(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
 def _has_config_write(caller: str, scope: str, ctx: dict) -> bool:
     """WRITE access to this config scope (mirrors config_api._require_config_access write): full-access WRITE
     or a config_ops:<scope> WRITE grant. Dummy mode → allowed (dev)."""
-    try:
-        import config_api
-        import database
-    except Exception:  # noqa: BLE001
-        return False
     if config_api.CONFIG_USE_DUMMY:
         return True
     want = f"config_ops:{scope}".lower()
@@ -348,7 +412,6 @@ def _roll_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
     policy — the tool cannot execute a roll that wasn't explicitly confirmed."""
     from datetime import timedelta
 
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     table = str(args.get("table") or "").strip()
     from_date = str(args.get("from_date") or "").strip()
@@ -414,11 +477,6 @@ def _roll_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
                             "Reply 'yes' to proceed.")}
 
     # confirm == true → execute
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
     if config_api.CONFIG_USE_DUMMY:
         return {"status": "success", "executed": True, "scope": scope, "table": table,
                 "source_date": f"{src:%Y-%m-%d}", "source_count": 0,
@@ -427,6 +485,9 @@ def _roll_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
     cfg, err = _resolve_db(scope, db_source, ctx)
     if err:
         return {"error": err}
+    gate = _category_gate(caller, scope, table, cfg, ctx)
+    if gate:
+        return gate
     try:
         # result = {source_date, source_count, targets:[{date, status, count, error?}]}
         result = database.config_roll_dates(cfg, table=table, source_date=src, target_dates=tgt, uid=caller)
@@ -437,7 +498,6 @@ def _roll_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
 
 def _find_tables_with_column(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Schema lookup — which config tables contain a given column (so the user needn't name the table)."""
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     column = str(args.get("column") or "").strip()
     db_source = str(args.get("db_source") or "").strip().lower()
@@ -446,11 +506,6 @@ def _find_tables_with_column(args: dict, caller: str, use_mock: bool, scopes: se
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
     if config_api.CONFIG_USE_DUMMY:
         return {"scope": scope, "column": column, "tables": [],
                 "note": "Schema lookup runs against the live DB; in this (dummy) environment it returns "
@@ -472,8 +527,6 @@ def _export_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ct
     import re as _re
     import uuid
 
-    from ..auth import scope_access as authz
-    from ..security import redaction
     scope = str(args.get("scope") or "").strip().lower()
     table = str(args.get("table") or "").strip()
     business_date = str(args.get("business_date") or "").strip()
@@ -488,11 +541,6 @@ def _export_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ct
     if not authz.scope_allowed(scopes, scope):
         return base.deny(scope, scopes)
     ctx = ctx or {}
-    try:
-        import config_api
-        import database
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Config service unavailable ({exc})."}
 
     # Gather rows (data stays server-side).
     if config_api.CONFIG_USE_DUMMY:
@@ -504,6 +552,9 @@ def _export_config(args: dict, caller: str, use_mock: bool, scopes: set[str], ct
         cfg, err = _resolve_db(scope, db_source, ctx)
         if err:
             return {"error": err}
+        gate = _category_gate(caller, scope, table, cfg, ctx)
+        if gate:
+            return gate
         # Table exists? If not, suggest the nearest matches.
         try:
             valid = {c["name"].upper() for c in database.config_table_columns(cfg, table)}

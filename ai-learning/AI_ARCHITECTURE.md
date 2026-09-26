@@ -71,7 +71,7 @@ order** so you can learn each piece as we add it.
 ## 1a. Where the code lives — the `oshiva` package
 
 All bot code lives under **`backend/oshiva/`**, grouped by concern so each architecture box maps to a
-subpackage (restructured 2026-09-23 — the HTTP contract `/api/assistant/*` and `config/assistant.json` are
+subpackage (restructured 2026-09-23 — the HTTP contract `/api/assistant/*` and `oshiva/assistant.json` are
 unchanged; only the code moved):
 
 ```
@@ -90,7 +90,9 @@ backend/oshiva/
                                 list_sessions · sql_detail (plan/monitor → download); writes → link to screen
     config_ops_console.py    ← read (list/get/describe/query_table) + find_tables_with_column +
                                 export_config (CSV download) + roll_config (confirm-gated WRITE)
-    regression.py            ← regression_status/activity/batch_status/downstream_extract (read-only)
+    regression.py            ← regression_status (names the step it's on) /activity/batch_status/
+                                downstream_extract (read-only) + generate_filecopy_manifest /
+                                generate_cleanup_manifest (author a downloadable JSON; nothing copied/deleted)
     registry.py              ← thin aggregator: gathers each module's SCHEMAS/TOOLS + run_tool()
   auth/
     gate.py                  ← screen gate: "may you use OSHIVA at all?" (enabled + allow-list / RBAC)
@@ -120,7 +122,7 @@ Runtime data keeps its existing on-disk names: sessions in `backend/assistant_da
 | **Authentication** (bank identity provider) | OIDC / SSO (`auth_token.py`, `sso.config.ts`) — see `AI_AUTHENTICATION.md` | ✅ Built (design) | done |
 | **API** | FastAPI `/api/assistant/*` | ✅ Built | 2.0 |
 | **Coordinator Agent** | `oshiva/agents/coordinator.py` (routes a turn to an agent) | ✅ Built | 2.0 |
-| **Specialist Agents** (Accounts/Transaction/Service) | `oshiva/agents/registry.py` — **3 per-domain agents: infra · database · config_ops**; pluggable (add = append to `AGENTS`). Routing is keyword-based (one agent/turn, no extra model call) so more agents don't add latency | ✅ Built (3 agents) | grows |
+| **Specialist Agents** (Accounts/Transaction/Service) | `oshiva/agents/registry.py` — **4 per-domain agents: infra · database · config_ops · regression**; pluggable (add = append to `AGENTS`). Routing is keyword-based (one agent/turn, no extra model call) so more agents don't add latency; `strong_keywords` carry ×3 weight so an unambiguous intent beats an accidental one-word overlap | ✅ Built (4 agents) | grows |
 | **MCP Servers** | `oshiva/tools/*` (per-screen modules, direct functions now) → MCP servers later | ◑ Direct tools | later |
 | **Downstream operations** (balance, txn, KYC…) | Infra/Service/OCC/Config tools — Infra + Service Console + OCC (blocking, top tables/indexes, index health, sessions, sql_id investigation) + Config Ops all wired (dummy in dev, live in prod); reads open, writes refuse+link | ✅ wired | 2.0 |
 | **Authorisation** | RBAC: `SCREEN/assistant` grant (screen gate) **+ per-tool scope checks** (tools run *as the user* — deny/filter by group/cib/retail; see `AI_TOOL_AUTHZ.md`) | ✅ Built | 2.0 |

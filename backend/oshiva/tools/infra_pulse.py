@@ -9,6 +9,9 @@ hit the real stored proc + agents. Authorization is applied per row/server via `
 from __future__ import annotations
 
 from . import base
+from ..auth import scope_access as authz   # top-level so a missing/renamed authz module fails at startup
+                                           # (the infrastructure_health_api / service_console_api imports stay
+                                           # lazy on purpose — graceful on an infra-service outage)
 
 # Health thresholds (any of RAM% / CPU% / disk% at/above these = that state). Simple + explicit; can move to
 # config later. "critical" >= _CRIT, "warning" >= _WARN, else "healthy"; an unreachable agent = "unreachable".
@@ -41,7 +44,6 @@ def _list_servers(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx
     """List estate servers from the live Infra catalogue. scope/os filter the catalogue cheaply; RAM/CPU/disk
     thresholds and a health-state filter trigger a per-server metrics fan-out (``call_agent``). Per-row authz —
     a caller never sees a business line they can't access, even for an unscoped 'list all'."""
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     os_ = str(args.get("os") or "").strip().lower()
     min_ram = base.num(args.get("min_ram_percent"))
@@ -130,7 +132,6 @@ def _service_names(monitoring_config) -> list[str]:
 def _service_status(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Status of the services configured on ONE server. Finds the server in the Infra catalogue (for its
     agent port + configured service list), authorizes by scope, then asks the Service Console agent."""
-    from ..auth import scope_access as authz
     server = str(args.get("server") or "").strip()
     if not server:
         return {"error": "A server name is required."}
@@ -185,7 +186,6 @@ def _status_is(actual: str, want: str) -> bool:
 def _list_services(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict | None = None) -> dict:
     """Services ACROSS servers (a fan-out), filtered by scope/os and status (running/stopped/unknown). Use for
     'which services are stopped' or 'list unknown services in group'. Per-row authz by scope."""
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     os_ = str(args.get("os") or "").strip().lower()
     status_want = str(args.get("status") or "").strip().lower()
@@ -233,7 +233,6 @@ def _list_shares(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
     Per-row authz by scope. In dev (INFRA_HEALTH_USE_DUMMY) space is synthetic so it's demoable."""
     import random
 
-    from ..auth import scope_access as authz
     scope = str(args.get("scope") or "").strip().lower()
     min_pct = base.num(args.get("min_percent"))
     if scope and not authz.scope_allowed(scopes, scope):

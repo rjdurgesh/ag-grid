@@ -477,6 +477,15 @@
                               <button type="button" class="rg-btn rg-btn--sm" (click)="openDeploy(app, 'build')" title="Open this app's build pipeline in a new tab">Build ↗ <span class="rg-force__opt">optional</span></button>
                             }
                             <button type="button" class="rg-btn rg-btn--primary rg-btn--sm" (click)="openDeploy(app, 'deploy')" title="Open this app's deploy pipeline in a new tab">Deploy ↗</button>
+                            @if (deployAppOn(app.key)) {
+                              <span class="rg-depstatus"
+                                    [class.is-done]="deployStatusOf(app.key) === 'done'"
+                                    [class.is-failed]="deployStatusOf(app.key) === 'failed'">
+                                {{ deployStatusOf(app.key) === 'done' ? 'Deployed' : deployStatusOf(app.key) === 'failed' ? 'Failed' : 'Pending' }}
+                              </span>
+                              <button type="button" class="rg-btn rg-btn--sm" [class.is-active]="deployStatusOf(app.key) === 'done'" (click)="setDeployStatus(app.key, 'done')" title="Mark this deployment done">✓ Done</button>
+                              <button type="button" class="rg-btn rg-btn--sm rg-btn--danger" [class.is-active]="deployStatusOf(app.key) === 'failed'" (click)="setDeployStatus(app.key, 'failed')" title="Mark this deployment failed">✗ Failed</button>
+                            }
                           </div>
                         </div>
                       }
@@ -484,8 +493,8 @@
                   } @else {
                     <p class="rg-warn">No Jenkins deployments are configured for this scope. Add them under <code>jenkins_deployments</code> in the regression config, or mark the step complete if none are needed this release.</p>
                   }
-                  <p class="rg-hint rg-hint--order">Opening a link is logged (who deployed what). Marking complete records the apps you selected and unlocks File copy.</p>
-                  <button type="button" class="rg-btn rg-btn--primary" (click)="markJenkinsComplete()">Mark deployment done</button>
+                  <p class="rg-hint rg-hint--order">For each selected application, mark it <strong>✓ Done</strong> or <strong>✗ Failed</strong> after you run its pipeline; unselected applications are recorded as <em>not required</em>. Opening a link is logged (who deployed what). <strong>Record deployment outcome</strong> writes the summary to the activity log and completes the step — if any application failed, the step is flagged Error until you re-mark it or Force-complete.</p>
+                  <button type="button" class="rg-btn rg-btn--primary" (click)="markJenkinsComplete()">Record deployment outcome</button>
                 }
 
                 @case ('file_copy') {
@@ -985,6 +994,21 @@
         </div>
         <div class="rg-modal__body">
           <pre class="rg-errtext">{{ err.value }}</pre>
+        </div>
+      </div>
+    </div>
+  }
+
+  @if (commentDetail(); as cm) {
+    <div class="rg-modal" role="dialog" aria-modal="true" aria-label="Comment detail">
+      <div class="rg-modal__backdrop" (click)="closeCommentDetail()"></div>
+      <div class="rg-modal__panel">
+        <div class="rg-modal__head">
+          <strong>{{ cm.title }}</strong>
+          <button type="button" class="rg-iconbtn rg-iconbtn--close" (click)="closeCommentDetail()" aria-label="Close" title="Close">×</button>
+        </div>
+        <div class="rg-modal__body">
+          <pre class="rg-errtext">{{ cm.value }}</pre>
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 """Screen-level access gate for OSHIVA — "may you use OSHIVA at all?".
 
-THE single place that decides who can see/use the bot. Two config knobs in ``config/assistant.json``:
+THE single place that decides who can see/use the bot. Two config knobs in ``oshiva/assistant.json``:
   1. ``enabled``       — MASTER on/off. false ⇒ OSHIVA is off for EVERYONE (even B27886).
   2. ``allowed_users`` — the access mode:
        · ["B27886"]  → PRIVATE BETA: only these exact usernames (RBAC is bypassed — the pin is tighter).
@@ -48,11 +48,14 @@ def is_allowed(request: Request, caller: str) -> bool:
     """Whether ``caller`` may use OSHIVA (visibility check — never raises)."""
     if not bool(_CFG.get("enabled", True)):
         return False
-    allowed = {str(u).strip() for u in _CFG.get("allowed_users", [])}
+    # Case-insensitive, trimmed match: with OIDC on, `caller` is the token's username claim, whose case can
+    # differ from the configured pin (e.g. token "b27886" vs allow-list "B27886"). NOTE: a domain suffix
+    # (B27886@corp) or a GUID `sub` still won't match — that's an OIDC_USERNAME_CLAIM config issue, not this.
+    allowed = {str(u).strip().casefold() for u in _CFG.get("allowed_users", []) if str(u).strip()}
     if "*" in allowed:
         return True                       # PUBLIC
     if allowed:
-        return caller in allowed          # PRIVATE BETA pin (RBAC bypassed)
+        return (caller or "").strip().casefold() in allowed   # PRIVATE BETA pin (RBAC bypassed)
     return _has_rbac_assistant(request, caller)   # MANAGED BY RBAC
 
 

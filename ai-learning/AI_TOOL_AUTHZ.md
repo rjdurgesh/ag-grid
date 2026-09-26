@@ -29,10 +29,10 @@ Where a scope comes from:
 - **REAL mode** (`ACCESS_USE_DUMMY` off): from the caller's RBAC — full-access wildcard → all scopes; else
   the caller's Config-Ops scopes from `access_api.build_snapshot` (the estate-scope proxy). Fails **closed**
   (no scopes) on any RBAC error — never leaks on failure.
-- **DEV / DUMMY mode**: from `config/assistant.json` — `dummy_scope_grants` (`{username: ["retail","group"]}`)
+- **DEV / DUMMY mode**: from `oshiva/assistant.json` — `dummy_scope_grants` (`{username: ["retail","group"]}`)
   falling back to `dummy_default_scopes` (default `["*"]`). This is how we demonstrate a real denial in dev.
 
-## Config (`config/assistant.json`)
+## Config (`oshiva/assistant.json`)
 ```jsonc
 "dummy_default_scopes": ["*"],                       // every dev caller sees all, unless overridden
 "dummy_scope_grants":  { "OPS-10432": ["retail", "group"] }   // this dev user has NO cib → CIB is refused
@@ -44,6 +44,17 @@ In production these are ignored — access comes from real RBAC grants.
 | --- | --- | --- |
 | Screen gate | "May you use OSHIVA at all?" | `oshiva.auth.gate.is_allowed` (`SCREEN/assistant` + private-beta pin) |
 | **Tool authz** | "May you see THIS business line's data?" | **`scope_access.allowed_scopes` + per-tool checks (this doc)** |
+| **Config OMT category** | "May you see THIS config table (by category)?" | `config_ops_console._category_gate` (see below) |
+
+## Config-table OMT category (a third dimension, config tools only)
+Within a permitted business line, config tables are further classified `OMT-TECHNICAL` / `OMT-FUNCTIONAL` /
+`OMT-BOTH`. Every per-table config tool (`get_config`, `query_table`, `describe_config_table`, `export_config`,
+`roll_config`) resolves the table's category (`database.config_table_category`) and refuses one the caller's OMT
+category grants don't cover — the **same rule as the Config screen** (`_cat_matches` mirrors
+`rbac.service.categoryMatches`): an `OMT-BOTH` table is visible to a `TECHNICAL` **or** `FUNCTIONAL` grant, while a
+`TECHNICAL`/`FUNCTIONAL` table is visible only to its own grant; `config.all` sees everything; a per-table grant
+(incl. DENY) wins. `list_config_tables` enumerates the caller's visible tables the same way. It's best-effort: an
+unclassified table (or an absent master table) isn't blocked, since the business-line scope check already applies.
 
 ## Files
 | File | Role |

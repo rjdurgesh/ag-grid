@@ -3467,6 +3467,72 @@ def config_find_tables_with_column(db_config: Any, column: str, row_cap: int = 5
             connection.close()
 
 
+# --- config table CATEGORY (OMT-TECHNICAL / OMT-FUNCTIONAL / OMT-BOTH) --------------------------------
+# The category classification lives in a master config table (deployment-specific). These defaults match the
+# OLS convention — ``ols_master_table_config.table_category`` keyed by ``table_name``; EDIT them here if your
+# names differ. Read-only metadata used by the OSHIVA bot to enforce OMT-category access on config tables.
+# The table name being looked up is a BIND; the master-table/column identifiers are validated (not free SQL).
+CONFIG_CATEGORY_MASTER = "ols_master_table_config"
+CONFIG_CATEGORY_NAME_COL = "table_name"
+CONFIG_CATEGORY_COL = "table_category"
+
+
+def _safe_ident(name: Any, default: str) -> str:
+    """Allow only a plain SQL identifier (letters/digits/_/./$); anything else falls back to the default —
+    so a misconfigured master-table/column name can't inject SQL when interpolated."""
+    n = str(name or "").strip()
+    return n if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.$]*", n) else default
+
+
+def config_table_category(db_config: Any, table: str, *, master_table: str | None = None,
+                          name_col: str | None = None, category_col: str | None = None) -> str:
+    """The OMT category of one config table (e.g. 'OMT-TECHNICAL'), read from the master config table.
+    Returns '' when the table isn't classified / the master table isn't present — callers treat '' as
+    'unknown' and fall back to scope-only access rather than blocking."""
+    t = str(table or "").strip()
+    if not t:
+        return ""
+    mt = _safe_ident(master_table, CONFIG_CATEGORY_MASTER)
+    nc = _safe_ident(name_col, CONFIG_CATEGORY_NAME_COL)
+    cc = _safe_ident(category_col, CONFIG_CATEGORY_COL)
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"SELECT {cc} FROM {mt} WHERE UPPER({nc}) = UPPER(:t) FETCH FIRST 1 ROWS ONLY", {"t": t})
+        row = cursor.fetchone()
+        return str(row[0]).strip().upper() if row and row[0] is not None else ""
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
+def config_tables_by_category(db_config: Any, *, master_table: str | None = None, name_col: str | None = None,
+                              category_col: str | None = None, row_cap: int = 500) -> list[dict]:
+    """Every classified config table + its OMT category, from the master config table → ``[{table, category}]``.
+    Lets the bot enumerate the tables a caller may see (after category filtering). Empty on any error."""
+    mt = _safe_ident(master_table, CONFIG_CATEGORY_MASTER)
+    nc = _safe_ident(name_col, CONFIG_CATEGORY_NAME_COL)
+    cc = _safe_ident(category_col, CONFIG_CATEGORY_COL)
+    cap = int(row_cap) if (row_cap and int(row_cap) > 0) else 500
+    connection = None
+    cursor = None
+    try:
+        connection = connect(db_config)
+        cursor = connection.cursor()
+        cursor.execute(f"SELECT {nc}, {cc} FROM {mt} ORDER BY {nc} FETCH FIRST {cap} ROWS ONLY")
+        return [{"table": str(r[0]), "category": (str(r[1]).strip().upper() if r[1] is not None else "")}
+                for r in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if connection is not None and connection is not db_config:
+            connection.close()
+
+
 # PL/SQL procedure that applies config-table UPDATEs from a JSON CLOB. SET THIS to your
 # package.procedure. Expected signature (a PROCEDURE with an OUT row count):
 #   PROCEDURE config_update_rows(p_table      IN  VARCHAR2,

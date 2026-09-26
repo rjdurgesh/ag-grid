@@ -37,6 +37,10 @@ _FEATURE_DIRS = {
     "reconciliation": _BACKEND_DIR / "reconciliation",
     "config_ops": _BACKEND_DIR / "config_ops",
     "docs": _BACKEND_DIR / "docs",
+    # OSHIVA's config lives WITH its code (backend/oshiva/), like regression.json under backend/regression/.
+    # config_loader still falls back to backend/config/, so an existing assistant.json there keeps working.
+    "assistant": _BACKEND_DIR / "oshiva",
+    "redaction": _BACKEND_DIR / "oshiva",
 }
 _cache: dict[str, dict] = {}
 
@@ -189,7 +193,7 @@ def housekeeping_config() -> dict:
 
 # --- OLS Assistant (AI agent) ------------------------------------------------
 def assistant_config() -> dict:
-    """AI assistant settings (see AI_AGENT_DESIGN.md). Non-secret config in ``config/assistant.json``
+    """AI assistant settings (see AI_AGENT_DESIGN.md). Non-secret config in ``oshiva/assistant.json``
     (copy from ``assistant.example.json``); the model API key is a SECRET and comes from ``.env``
     (``ASSISTANT_API_KEY``). ``allowed_users`` is the dev access allow-list (Phase 2.0 gate → B27886);
     Phase 2.4 replaces it with an RBAC grant."""
@@ -230,7 +234,7 @@ def assistant_config() -> dict:
 
 def redaction_config() -> dict:
     """PII / secret redaction settings (see AI_PII_REDACTION.md). Central scrubbing of tool results before
-    they reach the model or the audit log. All non-secret; ``config/redaction.json`` may extend the built-in
+    they reach the model or the audit log. All non-secret; ``oshiva/redaction.json`` may extend the built-in
     key lists (it never shrinks them — the defaults always apply so nothing sensitive slips through)."""
     j = _load("redaction")
     extra_secret = j.get("extra_secret_keys") if isinstance(j.get("extra_secret_keys"), list) else []

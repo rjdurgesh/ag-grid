@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import re
 
+import access_api
+import config_loader
+import database
+
 from . import base
+from ..auth import scope_access as authz   # top-level so a missing/renamed authz module fails at startup
 
 OCC_ROUTE = "/oracle_command_center"
 
@@ -75,7 +80,6 @@ def _resolve_occ_db(raw: str, ctx: dict):
 
 def _occ():
     """(use_dummy, schema) from config."""
-    import config_loader
     c = config_loader.occ_config()
     return bool(c.get("use_dummy", True)), c.get("schema", "OLS")
 
@@ -86,8 +90,6 @@ def _has_occ_write(caller: str, db_key: str, ctx: dict) -> bool:
     if _occ()[0]:
         return True
     try:
-        import access_api
-        import database
         app_db = (ctx or {}).get("app_db_config")
         grants = database.fetch_user_grants(app_db, caller) or []
         ident = database.fetch_user_identity(app_db, caller)
@@ -121,7 +123,6 @@ def _with_sql(result: dict, args: dict, caller: str, db_key: str, ctx: dict, sql
 def _prep(args: dict, scopes: set[str], ctx: dict):
     """Common: resolve+require an exact db, authorize by its scope, return
     (key, label, scope, cfg, use_dummy, schema) or an ask/deny/error dict."""
-    from ..auth import scope_access as authz
     ctx = ctx or {}
     key, ask = _resolve_occ_db(str(args.get("db") or ""), ctx)
     if ask is not None:
@@ -150,7 +151,6 @@ def _blocking_sessions(args: dict, caller: str, use_mock: bool, scopes: set[str]
         return _with_sql({"db": db, "database": db_label, "count": len(rows), "blocking_sessions": rows},
                          args, caller, db, ctx or {}, sql_out)
     try:
-        import database
         rows = database.fetch_blocking(cfg, sql_out=sql_out) or []
         return _with_sql({"db": db, "database": db_label, "count": len(rows), "blocking_sessions": rows},
                          args, caller, db, ctx or {}, sql_out)
@@ -173,7 +173,6 @@ def _top_tables(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: 
         return _with_sql({"db": db, "database": db_label, "top_tables": rows[:limit]},
                          args, caller, db, ctx or {}, sql_out)
     try:
-        import database
         raw = database.fetch_top_segments(cfg, schema, limit, 10, sql_out=sql_out)
         rows = [{"table": t["segment_name"], "size_gb": t["size_gb"]} for t in (raw.get("tables") or [])[:limit]]
         return _with_sql({"db": db, "database": db_label, "top_tables": rows}, args, caller, db, ctx or {}, sql_out)
@@ -194,7 +193,6 @@ def _top_indexes(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx:
         return _with_sql({"db": db, "database": db_label, "top_indexes": rows[:limit]},
                          args, caller, db, ctx or {}, sql_out)
     try:
-        import database
         raw = database.fetch_top_indexes(cfg, schema, limit, 10, sql_out=sql_out)
         rows = [{"index": i["index_name"], "table": i["table_name"], "size_gb": i["size_gb"]}
                 for i in (raw.get("indexes") or [])[:limit]]
@@ -218,7 +216,6 @@ def _unusable_indexes(args: dict, caller: str, use_mock: bool, scopes: set[str],
                  "detail": "Stats out of date"}]
     else:
         try:
-            import database
             rows = [{"index": r["index_name"], "table": r["table_name"], "state": r["state"],
                      "detail": r.get("detail", "")} for r in database.fetch_index_health(cfg, schema, sql_out=sql_out)]
         except Exception as exc:  # noqa: BLE001
@@ -247,7 +244,6 @@ def _mviews(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: dict
                  "compile": "NEEDS COMPILE"}]
     else:
         try:
-            import database
             rows = list(database.fetch_mviews(cfg, schema, sql_out=sql_out) or [])
         except Exception as exc:  # noqa: BLE001
             return {"error": f"Materialized-views query failed: {exc}"}
@@ -271,7 +267,6 @@ def _list_sessions(args: dict, caller: str, use_mock: bool, scopes: set[str], ct
         return _with_sql({"db": db, "database": db_label, "status": status, "count": len(rows), "sessions": rows},
                          args, caller, db, ctx or {}, sql_out)
     try:
-        import database
         data = database.fetch_sessions(cfg, status, sql_out=sql_out) or {}
         rows = data.get("rows") if isinstance(data, dict) else (data or [])
         rows = rows or []
@@ -327,7 +322,6 @@ def _sql_detail(args: dict, caller: str, use_mock: bool, scopes: set[str], ctx: 
                              "execs_5d": 210, "avg_elapsed_s": 3.4}}
     # --- real ---
     try:
-        import database
         days = 5
         if aspect == "plan":
             plans = database.fetch_sql_plans(cfg, sql_id, days)

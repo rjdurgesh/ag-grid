@@ -50,6 +50,10 @@ _ROUTING = [
     EvalCase("route-config", "routing", "roll the config dates for retail", expect_agent="config_ops"),
     EvalCase("route-regression", "routing", "what is the current regression status?", expect_agent="regression"),
     EvalCase("route-infra-metric", "routing", "which servers have RAM over 70%?", expect_agent="infra"),
+    EvalCase("route-manifest-path-collision", "routing",
+             "generate a file copy manifest to copy D:/rel/app.config to D:/ols/app/config/app.config",
+             expect_agent="regression",
+             note="'app.config' in the path must not misroute the manifest request to config_ops"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -67,6 +71,13 @@ _TOOL = [
     # The new OCC SQL-exposure feature: asking to see the SQL must set include_sql on the OCC call.
     EvalCase("tool-occ-include-sql", "tool", "show me the top tables on cib_batch and the SQL you ran",
              expect_agent="database", expect_tool="top_tables", expect_args_contains={"include_sql": True}),
+    # Manifest generators (authoring, side-effect-free) → a downloadable JSON link, nothing executed.
+    EvalCase("tool-filecopy-manifest-sample", "tool", "give me a sample file copy manifest",
+             expect_agent="regression", expect_tool="generate_filecopy_manifest",
+             answer_contains=("download", ".json")),
+    EvalCase("tool-cleanup-manifest", "tool", "create a cleanup manifest for D:/ols/app/logs",
+             expect_agent="regression", expect_tool="generate_cleanup_manifest",
+             answer_contains=("download", ".json")),
 ]
 
 # ---------------------------------------------------------------------------
@@ -82,6 +93,10 @@ _AUTHZ = [
              caller="OPS-10432", scopes=("group",),
              expect_agent="infra", answer_contains=("access",),
              note="group-only caller asking for retail servers is refused"),
+    EvalCase("authz-manifest-denied", "authz", "generate a file copy manifest",
+             caller="OPS-10432", scopes=("retail", "group"),
+             expect_agent="regression", answer_contains=("access",),
+             note="regression is CIB-scoped → a non-CIB caller can't author its manifest"),
 ]
 
 # ---------------------------------------------------------------------------

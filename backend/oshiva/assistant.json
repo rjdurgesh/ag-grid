@@ -1,0 +1,19 @@
+{
+  "_comment": "OSHIVA - per-server config (git-ignored). 'enabled' is the MASTER on/off (false = off for everyone incl B27886). 'allowed_users' is the hard-coded allow-list (['*'] = public). NOTE: 'OPS-10432' is the shared dev-bypass username (environment.ts, SSO off) added here ONLY so OSHIVA is testable on this laptop; production/office config should be just ['B27886']. use_stub=true runs the built-in brain (no model). See assistant.example.json / AI_AGENT_DESIGN.md.",
+
+  "enabled": true,
+  "allowed_users": ["B27886", "OPS-10432"],
+  "use_stub": true,
+  "use_mock_tools": true,
+  "model": "gpt-oss-20b",
+  "base_url": "",
+  "timeout": 60,
+  "max_steps": 6,
+  "temperature": 0.1,
+  "rate_limit_per_min": 20,
+  "cost_per_1k_input": 0.0,
+  "cost_per_1k_output": 0.0,
+  "cost_currency": "USD",
+  "dummy_default_scopes": ["*"],
+  "dummy_scope_grants": { "OPS-10432": ["retail", "group"] }
+}

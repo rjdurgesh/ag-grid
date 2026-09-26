@@ -20,6 +20,6 @@ each box of the target architecture maps to a subpackage:
   observability/             — operability.
       audit.py                 append-only audit log of every turn + feedback vote.
 
-The public HTTP contract stays ``/api/assistant/*`` and the config file stays ``config/assistant.json`` —
+The public HTTP contract stays ``/api/assistant/*`` and the config file stays ``oshiva/assistant.json`` —
 only the code was reorganised into this package.
 """

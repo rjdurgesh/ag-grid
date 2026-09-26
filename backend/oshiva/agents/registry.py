@@ -28,7 +28,9 @@ class Agent:
     description: str               # what it's for (used for routing + docs)
     system_prompt: str             # persona/instructions sent to the model
     tool_names: tuple[str, ...]    # which tools it may call
-    keywords: tuple[str, ...] = field(default=())   # routing hints (coordinator matches on these)
+    keywords: tuple[str, ...] = field(default=())   # routing hints (coordinator matches on these; weight 1)
+    strong_keywords: tuple[str, ...] = field(default=())  # high-signal, unambiguous hints (weight 3) — beat an
+    # accidental keyword hit from another agent (e.g. "config" inside the path "app.config" in a manifest request)
 
     def tool_schemas(self) -> list[dict]:
         """This agent's slice of the global tool catalogue (so it can only call its own tools)."""
@@ -115,17 +117,27 @@ CONFIG_OPS_AGENT = Agent(
 REGRESSION_AGENT = Agent(
     name="regression",
     title="Regression agent",
-    description="Read-only status of the CIB regression: current run, activity, batch status, downstream extract.",
+    description="Read-only status of the CIB regression (current run, which step it's on, activity, batch "
+                "status, downstream extract), and generation of downloadable file-copy / server-cleanup "
+                "manifest JSON files.",
     system_prompt=(
         "You are the Regression specialist inside OSHIVA (OLS Hybrid Intelligence Virtual Assistant). "
-        "You report READ-ONLY on the CIB regression workflow (current run, who started it, step state, batch "
-        "status, downstream extract). You never start/mark/roll/trigger anything — those are done in the "
-        "Regression screen. " + _BASE_RULES
+        "You report READ-ONLY on the CIB regression workflow (current run, who started it, which step it's "
+        "currently on, batch status, downstream extract). You can also GENERATE a downloadable manifest JSON "
+        "for the File-copy step (generate_filecopy_manifest) or the Server-cleanup step "
+        "(generate_cleanup_manifest) — from source/destination (or path) values the user gives, or a labeled "
+        "SAMPLE when they don't. Always give the user the download link and remind them it only AUTHORS the "
+        "file — the actual copy/cleanup still runs from the Regression screen (pre-flight + confirm). "
+        "You never start/mark/roll/trigger/copy/delete anything — those are done in the Regression screen. "
+        + _BASE_RULES
     ),
     tool_names=("regression_status", "regression_activity", "regression_batch_status",
-                "regression_downstream_extract"),
+                "regression_downstream_extract", "generate_filecopy_manifest", "generate_cleanup_manifest"),
     keywords=("regression", "downstream", "extract", "batch", "release", "changenumber", "chg", "rollout",
-              "step", "run"),
+              "step", "run", "sample", "template"),
+    # Manifest words are unambiguous regression intent — weight them so a stray "config"/"table" inside a file
+    # PATH in the request can't misroute a "generate a file-copy manifest" to the Config Ops agent.
+    strong_keywords=("regression", "manifest", "filecopy", "cleanup"),
 )
 
 # The registry. To add a specialist later, define an Agent and append it to this tuple — nothing else changes.
@@ -142,8 +154,10 @@ def route(message: str) -> Agent:
     best_score = 0
     for agent in AGENTS.values():
         # Word-boundary match so a keyword like "ram" doesn't falsely fire inside "ols_param",
-        # or "up" inside "group". Keywords are single words.
-        score = sum(1 for kw in agent.keywords if re.search(rf"\b{re.escape(kw)}\b", text))
+        # or "up" inside "group". Keywords are single words. Strong keywords carry weight 3 so an
+        # unambiguous intent outranks an accidental one-word overlap from another agent.
+        score = (sum(3 for kw in agent.strong_keywords if re.search(rf"\b{re.escape(kw)}\b", text))
+                 + sum(1 for kw in agent.keywords if re.search(rf"\b{re.escape(kw)}\b", text)))
         if score > best_score:
             best, best_score = agent, score
     return best or AGENTS[DEFAULT_AGENT]

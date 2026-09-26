@@ -125,7 +125,15 @@ def route(message: str) -> Agent:
 ```
 
 **How it decides, in words:** lower-case the message, and for each agent **count how many of its keywords
-appear as whole words**. The highest count wins. Nobody matches → fall back to `DEFAULT_AGENT` (infra).
+appear as whole words** — a normal `keyword` scores **1**, a `strong_keyword` scores **3**. The highest total
+wins. Nobody matches → fall back to `DEFAULT_AGENT` (infra).
+
+**Why the ×3 strong tier:** some words are *unambiguous* intent. "manifest", "filecopy" and "cleanup" only ever
+mean the regression manifest tools, so they're `strong_keywords` on the regression agent. Without the weight,
+*"generate a file-copy manifest to copy D:/rel/app.config to …"* tied 1–1 (regression's `manifest` vs config_ops'
+`config` — matched **inside the path** `app.config`) and, on a tie, the earlier-registered config_ops agent won →
+misroute. With the weight, `manifest` (3) clearly beats an accidental `config` (1). Reach for a strong keyword only
+when a word is a near-certain signal for exactly one agent.
 
 #### Worked scoring example
 

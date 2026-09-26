@@ -9,7 +9,7 @@ Resolution:
   * REAL mode (ACCESS_USE_DUMMY off): derive from the caller's RBAC — full-access wildcard → all scopes,
     else the caller's Config-Ops scopes from ``access_api.build_snapshot`` (used as the estate-scope proxy;
     refine per tool when tools go fully live).
-  * DUMMY / dev mode: from ``config/assistant.json`` — ``dummy_scope_grants`` maps a username to its scopes,
+  * DUMMY / dev mode: from ``oshiva/assistant.json`` — ``dummy_scope_grants`` maps a username to its scopes,
     falling back to ``dummy_default_scopes`` (default ["*"] = all). This lets us DEMONSTRATE denials in dev
     (e.g. give the dev user only retail+group and watch CIB get refused).
 

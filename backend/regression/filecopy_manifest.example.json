@@ -1,0 +1,8 @@
+{
+  "_comment": "FILE-COPY manifest for a release. Put the real file in the RELEASE REPO at <Scripts>/<release_date>/filecopy_manifest_<release_date>.json (e.g. sql/Scripts/20260930/filecopy_manifest_20260930.json) — the screen discovers it automatically. Each item copies source -> destination. If 'source' is a DIRECTORY or ends with '*', the whole tree is copied as ONE unit (all-or-nothing; re-run recopies the folder). Use forward slashes (recommended), or escape backslashes as \\\\ in Windows/UNC paths. A pre-flight readiness check (source exists, destination writable, enough free space) runs before the copy.",
+  "items": [
+    { "source": "//nas/ols/releases/20260930/app.config", "destination": "D:/ols/app/config/app.config" },
+    { "source": "//nas/ols/releases/20260930/reports/*", "destination": "D:/ols/app/reports" },
+    { "source": "D:/ols/staging/bm/bm.jar", "destination": "D:/ols/app/lib/bm.jar" }
+  ]
+}

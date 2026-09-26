@@ -76,7 +76,7 @@ telling you to set `.env` or turn the stub back on.
 
 ## 3. Configuring & switching
 
-All via config (`config/assistant.json`) or `.env` — see [`AI_AGENT_DESIGN.md`](AI_AGENT_DESIGN.md) §8 for the
+All via config (`oshiva/assistant.json`) or `.env` — see [`AI_AGENT_DESIGN.md`](AI_AGENT_DESIGN.md) §8 for the
 go-live detail:
 
 | Key | Meaning |

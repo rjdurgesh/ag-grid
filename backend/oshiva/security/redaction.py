@@ -16,7 +16,7 @@ the source); this module is the safety net on top of that, and it covers EVERY t
 because it's applied once, centrally, in ``agents/runner.py``.
 
 Design notes:
-  * The built-in key lists always apply; ``config/redaction.json`` can only ADD to them, never shrink them,
+  * The built-in key lists always apply; ``oshiva/redaction.json`` can only ADD to them, never shrink them,
     so a misconfiguration can't expose something.
   * Secret keys use aggressive SUBSTRING matching (a secret must never leak). PII keys use tighter matching
     so we don't redact useful, non-personal fields like ``HOST_NAME`` / ``APP_NAME``.

@@ -46,7 +46,7 @@ and the audit log only ever stores the already-redacted result.
 
 ## Configuration
 
-Built-in lists always apply. `config/redaction.json` (copy from `.example.json`) can only **add** to them —
+Built-in lists always apply. `oshiva/redaction.json` (copy from `.example.json`) can only **add** to them —
 it can never shrink them, so a misconfiguration can't expose something:
 
 ```jsonc

@@ -32,7 +32,7 @@ then use it as a dictionary. Terms link loosely to each other; follow your curio
 
 - **Temperature** — a dial (0–~1) for randomness. Low (e.g. 0.1) = focused, repeatable, factual answers;
   high = more creative/varied. For an ops assistant we want low.
-  *In OSHIVA:* `temperature` in `config/assistant.json` (default 0.1).
+  *In OSHIVA:* `temperature` in `oshiva/assistant.json` (default 0.1).
 
 - **Hallucination** — when the model states something false but confident, because it's predicting
   plausible-sounding text rather than checking facts. The main defence is **grounding**: make it answer from
