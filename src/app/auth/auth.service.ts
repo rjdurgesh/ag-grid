@@ -1,4 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
+import { Router } from '@angular/router';
 import { Observable, tap } from 'rxjs';
 
 import { ApiDataService } from '../shared/api-data.service';
@@ -23,9 +24,14 @@ export class AuthService {
   private readonly api = inject(ApiDataService);
   private readonly sso = inject(SsoAuthService);
   private readonly rbac = inject(RbacService);
+  private readonly router = inject(Router);
 
   /** True when the app is running in OpenID/SSO mode. */
   readonly ssoEnabled = environment.isSsoEnabled;
+
+  /** True while a sign-out is in progress — drives the full-screen logout overlay (app.component), so the
+   *  user never sees the half-cleared dashboard between "clear session" and "land on /login". */
+  readonly loggingOut = signal(false);
 
   /** Current user, kept in sync for the header greeting. */
   readonly user = signal<AuthUser | null>(this.readStoredUser());
@@ -107,19 +113,33 @@ export class AuthService {
     return environment.isSsoEnabled ? this.sso.renew() : Promise.resolve(false);
   }
 
+  /**
+   * Sign out. Shows the logout overlay first (so the emptying dashboard is never visible), clears the
+   * session, then lands on /login. Callers just invoke this — navigation is handled here for every path
+   * (account menu, no-access page, idle-timeout), so nothing needs to navigate afterwards.
+   */
   logout(): void {
+    if (this.loggingOut()) {
+      return;   // already signing out — ignore repeat clicks
+    }
+    this.loggingOut.set(true);   // overlay up immediately, before we clear anything
     this.rbac.reset();
     if (environment.isSsoEnabled) {
-      // Clears the session, then either logs out at the provider (if an
-      // end_session_endpoint is configured) or goes straight to /login locally.
+      // Clears the session, then either logs out at the provider (if an end_session_endpoint is
+      // configured) or goes straight to /login locally. The overlay stays until the browser navigates.
       this.user.set(null);
       this.sso.logout();
       return;
     }
+    // Bypass mode: clear the local session, hold the overlay briefly for a professional hand-off,
+    // then land on /login and drop the overlay.
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(LOGIN_AT_KEY);
     this.user.set(null);
+    setTimeout(() => {
+      void this.router.navigateByUrl('/login').finally(() => this.loggingOut.set(false));
+    }, 650);
   }
 
   private readStoredUser(): AuthUser | null {

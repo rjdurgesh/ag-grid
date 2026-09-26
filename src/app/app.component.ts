@@ -10,13 +10,14 @@ import { iconSubset } from './icons/icon-subset';
 import { ConfirmComponent } from './components/confirm/confirm.component';
 import { ErrorReportComponent } from './components/error-report/error-report.component';
 import { ValueModalComponent } from './components/grid-data/value-modal/value-modal.component';
+import { LogoutOverlayComponent } from './components/logout-overlay/logout-overlay.component';
 
 @Component({
   selector: 'app-root',
   // The shared value modal, confirmation prompt and error popup are mounted once
   // here so any component in the app can use them.
-  template: '<router-outlet /><app-value-modal /><app-confirm /><app-error-report />',
-  imports: [RouterOutlet, ValueModalComponent, ConfirmComponent, ErrorReportComponent]
+  template: '<router-outlet /><app-value-modal /><app-confirm /><app-error-report /><app-logout-overlay />',
+  imports: [RouterOutlet, ValueModalComponent, ConfirmComponent, ErrorReportComponent, LogoutOverlayComponent]
 })
 export class AppComponent implements OnInit {
   title = 'OLS Dashboard';

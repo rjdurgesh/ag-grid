@@ -58,9 +58,6 @@ export class IdleTimeoutService {
     if (this.timer) {
       clearTimeout(this.timer);
     }
-    this.auth.logout();             // SSO: clears + provider/local logout; dummy: clears local session
-    if (!this.auth.ssoEnabled) {
-      this.router.navigate(['/login']);
-    }
+    this.auth.logout();             // shows the overlay + clears the session + navigates to /login (both modes)
   }
 }

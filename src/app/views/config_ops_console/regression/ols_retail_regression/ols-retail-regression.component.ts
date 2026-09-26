@@ -12,6 +12,7 @@ import { LoaderComponent } from '../../../../components/loader/loader.component'
 import { ConfirmService } from '../../../../components/confirm/confirm.service';
 import { olsGridTheme, olsGridThemeDark } from '../../../../components/grid-data/grid-data.model';
 import { formatDateTime, syncAgo } from '../../../../shared/date-utils';
+import { ToBodyDirective } from '../../../../shared/to-body.directive';
 import {
   BatchMonitorResult, CleanupItem, CleanupManifestLocation, CleanupResult, FileCopyItem, FileCopyManifestLocation,
   FileCopyPreflight, FileCopyResult, RegressionActivityRow, RegressionDb, RegressionDeployment, RegressionDownstreamExtractRow,
@@ -31,7 +32,7 @@ interface TreeNode { name: string; path: string; dir: boolean; children: TreeNod
 @Component({
   selector: 'app-ols-retail-regression',
   standalone: true,
-  imports: [FormsModule, NgTemplateOutlet, LoaderComponent, AgGridAngular],
+  imports: [FormsModule, NgTemplateOutlet, LoaderComponent, AgGridAngular, ToBodyDirective],
   templateUrl: './ols-retail-regression.component.html',
   styleUrls: ['./ols-retail-regression.component.scss']
 })

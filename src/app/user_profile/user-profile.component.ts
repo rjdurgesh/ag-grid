@@ -90,10 +90,7 @@ export class UserProfileComponent {
   });
 
   logout(): void {
+    // AuthService shows the sign-out overlay and handles navigation to /login (both SSO and bypass).
     this.auth.logout();
-    // In SSO mode logout() already redirects via the provider; this covers bypass mode.
-    if (!this.auth.ssoEnabled) {
-      this.router.navigate(['/login']);
-    }
   }
 }

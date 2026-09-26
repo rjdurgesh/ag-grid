@@ -161,6 +161,16 @@
   background: color-mix(in srgb, var(--cui-danger, #e55353) 12%, transparent);
   color: var(--cui-danger, #b02a37); border-color: color-mix(in srgb, var(--cui-danger, #e55353) 30%, transparent);
 }
+/* "Sign in again" action shown in an expired-session error bubble */
+.oa-reauth {
+  display: inline-block; margin-top: 8px; padding: 5px 12px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.01em;
+  color: #fff; background: var(--cui-danger, #e55353); border: 0;
+  transition: filter 0.15s ease;
+  &:hover { filter: brightness(1.06); }
+  &:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-danger, #e55353) 30%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .oa-reauth { transition: none; } }
 
 /* streaming caret */
 .oa-caret {

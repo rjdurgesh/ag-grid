@@ -905,6 +905,9 @@
     </div>
   }
 
+  <!-- All popups live in one host that is relocated to <body> (appToBody) so their position:fixed
+       overlay escapes the .ols-surface stacking context and never clashes with the sidebar/header. -->
+  <div class="rg-portal" appToBody>
   <!-- ============ File-copy detail popup ============ -->
   @if (copyDetail(); as det) {
     <div class="rg-modal" role="dialog" aria-modal="true" aria-label="File copy details">
@@ -1138,6 +1141,7 @@
       </div>
     </div>
   }
+  </div><!-- /.rg-portal -->
 </div>
 
 <!-- reusable result list (Apply / Reset / Trigger) -->

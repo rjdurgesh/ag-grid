@@ -20,6 +20,7 @@ interface ChatMsg {
   messageId?: string;         // server id (for feedback)
   vote?: 'up' | 'down';
   error?: boolean;
+  authError?: boolean;        // the turn failed because the session expired → offer "Sign in again"
   at: number;                 // client timestamp
   copied?: boolean;
 }
@@ -130,7 +131,7 @@ export class OshivaWidgetComponent {
               this.patch(botMsg.id, (m) => (m.content = ev.content || m.content));
               break;
             case 'error':
-              this.patch(botMsg.id, (m) => { m.content = ev.detail; m.error = true; });
+              this.patch(botMsg.id, (m) => { m.content = ev.detail; m.error = true; m.authError = ev.code === 'auth'; });
               break;
             case 'done':
               this.patch(botMsg.id, (m) => (m.streaming = false));
@@ -155,6 +156,11 @@ export class OshivaWidgetComponent {
     this.streamSub = undefined;
     this.messages.update((list) => list.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     this.busy.set(false);
+  }
+
+  /** Re-authenticate after a mid-chat session expiry (SSO → provider redirect; bypass → login page). */
+  reauth(): void {
+    this.svc.reauth();
   }
 
   vote(msg: ChatMsg, vote: 'up' | 'down'): void {

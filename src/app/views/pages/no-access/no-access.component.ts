@@ -25,9 +25,7 @@ export class NoAccessComponent {
   readonly notProvisioned = computed(() => !this.rbac.snapshot().active);
 
   logout(): void {
+    // AuthService shows the sign-out overlay and handles navigation to /login.
     this.auth.logout();
-    if (!this.auth.ssoEnabled) {
-      this.router.navigate(['/login']);
-    }
   }
 }

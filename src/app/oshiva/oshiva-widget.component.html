@@ -87,6 +87,9 @@
                        [class.oa-bubble--user]="m.role === 'user'" [class.is-error]="m.error">
                     <span [innerHTML]="render(m.content)"></span><!--
                     -->@if (m.role === 'assistant' && m.streaming) { <span class="oa-caret" aria-hidden="true"></span> }
+                    @if (m.authError) {
+                      <button type="button" class="oa-reauth" (click)="reauth()">Sign in again</button>
+                    }
                   </div>
                 }
 

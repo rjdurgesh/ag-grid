@@ -14,7 +14,7 @@ export type OshivaEvent =
   | { type: 'tool_result'; name: string }
   | { type: 'token'; text: string }
   | { type: 'final'; content: string }
-  | { type: 'error'; detail: string }
+  | { type: 'error'; detail: string; code?: 'auth' | 'forbidden' }
   | { type: 'done'; conversation_id: string; message_id: string };
 
 /** A prior turn sent back for context (kept short client-side). */
@@ -39,55 +39,90 @@ export class OshivaService {
       .pipe(map((r) => !!r?.enabled));
   }
 
-  /** Stream one question. Emits each {@link OshivaEvent}; completes on `done`/error. Unsubscribe aborts. */
+  /** Stream one question. Emits each {@link OshivaEvent}; completes on `done`/error. Unsubscribe aborts.
+   *  On a 401 (an expired OIDC session mid-chat) it tries ONE silent token renewal and retries transparently;
+   *  if that fails it emits an `error` with `code:'auth'` so the widget can prompt a clean re-login. */
   chat(message: string, history: ChatTurn[], conversationId?: string): Observable<OshivaEvent> {
     return new Observable<OshivaEvent>((sub) => {
       const controller = new AbortController();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const token = this.auth.token;
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      fetch(API.assistant.chat, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ caller: this.caller(), message, history, conversation_id: conversationId }),
-        signal: controller.signal
-      })
-        .then(async (res) => {
-          if (!res.ok || !res.body) {
-            sub.next({ type: 'error', detail: `Assistant request failed (${res.status}).` });
-            sub.complete();
-            return;
-          }
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) { break; }
-            buffer += decoder.decode(value, { stream: true });
-            // SSE frames are separated by a blank line.
-            let idx: number;
-            while ((idx = buffer.indexOf('\n\n')) !== -1) {
-              const frame = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 2);
-              const line = frame.split('\n').find((l) => l.startsWith('data:'));
-              if (!line) { continue; }
-              try {
-                sub.next(JSON.parse(line.slice(5).trim()) as OshivaEvent);
-              } catch { /* ignore a malformed frame */ }
-            }
-          }
-          sub.complete();
-        })
-        .catch((err) => {
+
+      const run = async (isRetry: boolean): Promise<void> => {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const token = this.auth.token;
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+        let res: Response;
+        try {
+          res = await fetch(API.assistant.chat, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ caller: this.caller(), message, history, conversation_id: conversationId }),
+            signal: controller.signal
+          });
+        } catch {
           if (controller.signal.aborted) { sub.complete(); return; }
           sub.next({ type: 'error', detail: 'Could not reach the assistant. Is the backend running?' });
           sub.complete();
-        });
+          return;
+        }
+
+        // Session expired (invalid/expired bearer): try a single silent renew, then retry once; else re-login.
+        if (res.status === 401) {
+          if (!isRetry && await this.auth.tryRenew()) { return run(true); }
+          sub.next({
+            type: 'error', code: 'auth',
+            detail: 'Your session has expired. Please sign in again to continue — your last message wasn’t sent.'
+          });
+          sub.complete();
+          return;
+        }
+        // Access to the assistant was refused (not a token problem — re-login won't help).
+        if (res.status === 403) {
+          sub.next({
+            type: 'error', code: 'forbidden',
+            detail: 'You no longer have access to the assistant. Please contact the OLS team.'
+          });
+          sub.complete();
+          return;
+        }
+        if (!res.ok || !res.body) {
+          sub.next({ type: 'error', detail: `Assistant request failed (${res.status}).` });
+          sub.complete();
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) { break; }
+          buffer += decoder.decode(value, { stream: true });
+          // SSE frames are separated by a blank line.
+          let idx: number;
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const line = frame.split('\n').find((l) => l.startsWith('data:'));
+            if (!line) { continue; }
+            try {
+              sub.next(JSON.parse(line.slice(5).trim()) as OshivaEvent);
+            } catch { /* ignore a malformed frame */ }
+          }
+        }
+        sub.complete();
+      };
+
+      void run(false);
       return () => controller.abort();
     });
+  }
+
+  /** Send the user to sign in again (SSO → provider redirect; bypass → re-establish session), returning to
+   *  the current page afterwards. Used by the widget's "Sign in again" prompt after a mid-chat session expiry. */
+  reauth(): void {
+    void this.auth.signIn(window.location.pathname + window.location.search);
   }
 
   /** Record a thumbs up/down on an answer. */
